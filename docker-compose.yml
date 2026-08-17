@@ -1,0 +1,15 @@
+services:
+  couchdb:
+    image: couchdb:3.4
+    container_name: geneus-couchdb
+    restart: unless-stopped
+    environment:
+      COUCHDB_USER: ${COUCHDB_USER:-admin}
+      COUCHDB_PASSWORD: ${COUCHDB_PASSWORD:-devpassword}
+    ports:
+      - '5984:5984'
+    volumes:
+      - couchdb-data:/opt/couchdb/data
+
+volumes:
+  couchdb-data:
