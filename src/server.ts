@@ -14,7 +14,15 @@ import { registerFacilityRoutes } from './routes/facilities.ts';
 const config = loadConfig();
 const signer = createSigner(config.signingPrivateKey);
 
-const app = Fastify({ logger: { transport: { target: 'pino-pretty' } } });
+/**
+ * Pretty printing is a terminal convenience, and `pino-pretty` is a dev
+ * dependency the production image does not install — asking for it there would
+ * crash the process at boot. Production logs raw JSON to stdout, which is what
+ * the debug map (PLAN.md §5) assumes you can grep.
+ */
+const app = Fastify({
+  logger: config.isProduction ? true : { transport: { target: 'pino-pretty' } },
+});
 
 const couch = nano({
   url: config.couchUrl,

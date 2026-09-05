@@ -12,6 +12,7 @@ const Config = z.object({
   port: z.coerce.number().int().positive(),
   corsOrigins: z.array(z.url()).min(1),
   signingPrivateKey: z.string().optional(),
+  isProduction: z.boolean(),
 });
 
 export type Config = z.infer<typeof Config>;
@@ -27,4 +28,5 @@ export const loadConfig = (): Config =>
       .split(',')
       .map((origin) => origin.trim()),
     signingPrivateKey: process.env.SIGNING_PRIVATE_KEY,
+    isProduction: process.env.NODE_ENV === 'production',
   });

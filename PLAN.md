@@ -32,8 +32,9 @@
 
 ## 1. Non-negotiable constraints (inherited)
 
-1. **Data residency = Nigeria** — everything hosts in Nigeria; registered with the NDPC
-   (PRD §14.2).
+1. **Hosting region is a deployment choice, not an architectural constraint** — host where
+   it is cheapest and closest, and meet the operating country's data-protection duties (in
+   Nigeria, NDPC registration). Nothing here may assume a region (PRD §14.2).
 2. **CouchDB is the single source of truth.** Anything derived (the future Postgres
    projection) is rebuildable by replay — losing it is never data loss (root §2.3).
    Corollary: derived stores can be **deferred** at zero cost until their phase is real.
@@ -55,10 +56,10 @@
                  └─────────────────────────────────────────────┘
 ```
 
-1. **CouchDB** — one instance on a Nigerian VM (Docker), per-facility databases,
-   automated snapshots + in-country off-site backup. *(Honest note: there is no true
-   managed-CouchDB offering in Nigeria; this is a thin self-hosted VM, so backup and a
-   **tested restore drill** are first-class BE-M0 deliverables, not ops later.)*
+1. **CouchDB** — one instance (Docker) on a persistent disk, per-facility databases,
+   automated snapshots + off-site backup. *(Honest note: there is no true managed-CouchDB
+   offering in scope on any host; this is a self-hosted container either way, so backup
+   and a **tested restore drill** are first-class BE-M0 deliverables, not ops later.)*
 2. **One Node process** — Fastify API with node-cron sweeps in the same process. One
    codebase, one container, one log stream, one place to debug. No workers, no queue,
    no second datastore in v1.
@@ -67,20 +68,47 @@ Everything else in earlier drafts (change-feed consumer, Postgres, referral rout
 separate watchdog worker) is **deferred to the evolution ladder (§6)** — each has a named
 trigger and a pre-decided shape, so deferring is not forgetting.
 
+### 2.1 Deploy target — Render
+
+The MVP deploys to **Render** (`render.yaml`): CouchDB as a disk-backed web service, the
+Node process as a Docker web service, both in **Frankfurt** — the closest region by network
+path, since West African cables land in Europe. The platform supplies TLS, certificate
+renewal and git-triggered deploys, which removes the reverse-proxy and VM-administration
+work entirely. Both services sit on **starter** (512MB RAM, 0.5 CPU) — enough for a pilot,
+and deliberately not oversized. CouchDB holds one database per facility, so that ceiling is
+the likeliest thing to bite first; §6 names the trigger and the response.
+
+**The region is not baked in, and that is deliberate.** If a deployment ever has to sit in
+one country, keep the Node process on Render and move CouchDB to a VM there: the clinical
+path is device → CouchDB, so that move alone relocates every patient record, and the server
+is thin, sits off the clinical path, and reaches CouchDB only to provision. The change is
+two environment variables — `COUCHDB_URL` and `COUCHDB_PUBLIC_URL` — not a redesign.
+
+Three things Render does not solve, all still owned here. Its disk snapshots are explicitly
+not a database backup (§8). A disk-backed service is stopped before its replacement starts,
+so every CouchDB redeploy is downtime — tolerable only because devices queue offline by
+design. And **CouchDB's configuration does not live on the disk**: only `/opt/couchdb/data`
+is mounted, while `_node/_local/_config` writes land in `/opt/couchdb/etc`, so redeploying
+CouchDB drops the CORS settings the PWA replicates through. `ensureCors` runs at every
+server boot precisely so this self-heals, which makes the ordering a rule: **redeploy
+CouchDB → restart `geneus-server`.** Skip it and the app stops syncing with a browser error
+that nothing in the CouchDB log explains — the one symptom the debug map (§5) would
+otherwise not place.
+
 ## 3. Stack (decided — keep it small)
 
 | Concern | Choice | Why |
 | --- | --- | --- |
 | Language | **TypeScript (Node.js)** | Shares the Zod contract with `geneus-web`; one language across the stack |
 | HTTP framework | **Fastify** | Light, schema-first, pairs with Zod |
-| Operational store | **CouchDB** (Nigerian VM, Docker) | The sync target and source of truth |
+| Operational store | **CouchDB** (Docker; region per deployment) | The sync target and source of truth |
 | CouchDB client | **`nano`** (or direct HTTP) | Boring, official-style |
 | Device credentials | **CouchDB `_users` + per-DB `_security`** | Built-in, and the auth state is *inspectable in Fauxton* — a sync failure is debugged by looking at two documents, not decoding tokens. Revocation = delete the user doc. |
 | Validation | **Zod** (from `geneus-shared`) | Same schema validates API payloads and documents |
 | Signing | **Ed25519** (node `crypto`) | One keypair signs rosters + the `/time` response; public key ships in the PWA build so devices verify fully offline |
 | Scheduling | **node-cron, in-process** | Sweeps run inside the API process; no separate worker |
 | Analytics store | **— deferred —** | Postgres enters at Phase 3 (§6); the facility's own dashboard is client-side by design (root plan), so nothing needs it before then |
-| Deploy | **One container + CouchDB, on a Nigerian VM** | The whole production system is two things |
+| Deploy | **One container + CouchDB, on Render** | The whole production system is two things; the region, and how to move it, recorded in §2.1 |
 
 > Deliberately **no message broker, no Redis, no Kafka, no Postgres, no second process in
 > v1.** CouchDB's `_changes` is the queue when a queue is eventually needed; a cron sweep
@@ -89,10 +117,27 @@ trigger and a pre-decided shape, so deferring is not forgetting.
 ## 4. What the one process does
 
 ### 4.1 Auth & roster signing
-- Facility admin uploads the roster → server validates (Zod) → **signs it (Ed25519,
-  detached signature over canonicalized payload)** → writes the signed roster doc into the
-  facility's CouchDB DB, from where devices replicate it down and verify **offline**.
-- Issues/rotates staff credentials the same way (signed, replicated, verified locally).
+- **Rosters are written on the device and signed by sweep.** An admin assigns shifts
+  offline like any other document; replication carries them up; a checkpointed cron sweep
+  signs every `roster_shift` still missing a valid signature (Ed25519, detached, over the
+  canonicalized `staffId, facilityId, startsAt, endsAt`) and writes that signature back
+  into the same document, from where devices replicate it down and verify **offline**.
+  *There is no upload endpoint:* a facility with no signal must still be able to roster its
+  staff, so roster assignment cannot depend on reaching the server.
+- **A device honours a shift whether or not it is signed**; the admin screen shows unsigned
+  ones as unverified. The signature is therefore **tamper-evidence, not an access gate** —
+  anyone who can write to a device's own PouchDB can grant themselves a shift, and signing
+  does not prevent that, it makes it visible at the next sync. Refusing unsigned shifts was
+  rejected: it locks out any staff member added while a facility is dark, which is the
+  7-day window the product exists to honour.
+- Two consequences the implementation owns: the sweep writes a **new revision of a document
+  the device also writes**, so signing must be conflict-safe and retried rather than
+  one-shot; and re-assigning a shift replaces its signature, so the sweep re-signs instead
+  of assuming a document is signed once and forever.
+- **Staff PINs are owned by the device, not by this server.** A PIN is set and verified on
+  the device that set it, never travels, and is never a document (SCHEMA.md §8). Offline
+  login must work with no network while the contract keeps credentials out of the replica —
+  a server-issued credential could satisfy at most one of those.
 - **`GET /time`** returns a signed server timestamp. The PWA calls it opportunistically on
   any connectivity to reconcile clock skew and satisfy the **7-day sync-or-freeze** window
   (root §4.3). Login itself is **never** a server call.
@@ -125,11 +170,17 @@ is inherent to offline-first replication: a device that must work for 7 days wit
 has to hold a durable credential. Mitigations are de-enrollment (§4.2, not yet built),
 TLS in transit, and a strict CSP so app-level XSS cannot read it. Note the credential
 cannot be locked behind the staff PIN — background sync must run with nobody signed in
-(root §4.3a).
+(root §4.3a). Roster signing does not narrow this path either: it is evidence, not
+enforcement (§4.1), so de-enrollment and TLS carry the weight here.
 
 ### 4.2 Device enrollment & remote wipe
+- **How a device asks:** an already-enrolled admin device issues a short-lived device
+  code; the joining device posts it to **`POST /devices`**. Facility registration mints the
+  admin's device credential through that same path — one credential **per device**, never
+  one per facility, because revocation is only meaningful per device.
 - Enroll → create a per-device CouchDB `_users` doc + add it to the facility DB's
-  `_security` members. The device is now a durable, syncing replica (root §4.3c).
+  `_security` members, and write the `device_enrollment` document. The device is now a
+  durable, syncing replica (root §4.3c).
 - De-enroll → delete the `_users` doc (sync dies on next contact) + write a **wipe flag
   doc** the device acts on when it next connects.
 - Un-enrolled devices get no durable credential: session-only, nothing persists.
@@ -197,7 +248,8 @@ under pressure.
 | Sweeps/consumer measurably degrade API latency | Split into a second process **from the same image** (`CMD api` / `CMD worker`) |
 | Poll lag actually hurts a real workflow | Move that sweep from polling to a continuous `_changes` feed |
 | Facility count makes per-DB sweeps slow | Switch discovery to the global `_db_updates` feed |
-| CouchDB VM becomes a real ops burden | Revisit managed options / a second replica — with pilot-scale facts in hand |
+| CouchDB hosting becomes a real ops burden | Revisit managed options / a second replica — with pilot-scale facts in hand |
+| Starter's 512MB is the *measured* bottleneck (memory pressure, slow view builds) | Move CouchDB to a small VM (§2.1) rather than up a Render tier — the next tier costs more than a whole VM, and the move is two environment variables |
 
 ## 7. Repository structure
 
@@ -209,7 +261,9 @@ geneus-server/
     sweeps/            # poll-based jobs (M3: referral router, watchdog)
     couch/             # nano client, provisioning, generated design docs
     lib/               # signing, config (Zod-validated env), logging
-  scripts/             # provision-facility, backup + restore drill
+  scripts/             # create-invite, generate-signing-key, backup + restore drill
+  Dockerfile           # the one image; no build step, Node runs the sources
+  render.yaml          # the deployment (§2.1)
   tests/               # signing/verify round-trip; provisioning; (M3) referral lifecycle
 ```
 
@@ -219,14 +273,20 @@ Local dev: docker-compose with CouchDB; tests that touch sync semantics run agai
 ## 8. Build order
 
 ### BE-M0 — Foundations
-- Nigerian VM: CouchDB in Docker, TLS, **automated backup + a scripted, tested restore
-  drill** (the source of truth must survive the VM).
+- Render blueprint: CouchDB on a persistent disk + the Node process; TLS from the platform.
+- **Automated backup + a scripted, tested restore drill.** Render's disk snapshots are
+  explicitly not a database backup, so this stays ours: replicate to a second CouchDB, and
+  run the restore rather than only scripting it.
 - `provision-facility` script + generated `validate_doc_update` from the Zod contract.
 - The one process deployed with `/health` and `/time` (signed) live.
+- Ed25519 signing key minted (`scripts/generate-signing-key.ts`) into the platform secret
+  store; the public half baked into the PWA build so devices verify offline.
 
 ### BE-M1 — Trust anchor (supports the single-facility core)
-- Roster upload → validate → sign → replicated roster doc; credential issuance.
-- Device enrollment / de-enrollment / wipe-flag via `_users` + `_security`.
+- Roster signing sweep (§4.1) + the signing public key baked into the PWA build, since a
+  device that cannot verify offline gains nothing from a signature.
+- `POST /devices` + admin-issued device codes; per-device enrollment / de-enrollment /
+  wipe-flag via `_users` + `_security` (§4.2).
 - *(This is everything root M1 needs from the server. M2 needs nothing new — the
   facility dashboard and monthly totals are client-side by design.)*
 
@@ -238,14 +298,16 @@ Local dev: docker-compose with CouchDB; tests that touch sync semantics run agai
   DHIS2 export adapter; export-on-exit tooling (sourced from CouchDB, the truth).
 
 ### Cross-cutting (every milestone)
-- TLS everywhere; NDPA compliance + NDPC registration; backups verified by drill;
-  monitoring = `/health` + a simple uptime ping.
+- TLS everywhere; compliance with the operating country's data-protection law (NDPA +
+  NDPC registration in Nigeria); backups verified by drill; monitoring = `/health` + a
+  simple uptime ping.
 
 ## 9. Key risks (backend-specific)
 
 | Risk | Mitigation |
 | --- | --- |
-| Losing CouchDB = losing everything | Automated snapshots + off-site (in-country) copy + **restore drill actually run** on a schedule |
+| Losing CouchDB = losing everything | Automated snapshots + off-site copy + **restore drill actually run** on a schedule; platform disk snapshots do not count as a database backup |
+| A deployment's country demands in-country hosting | The region is never baked in: move CouchDB to a VM there and change `COUCHDB_URL` / `COUCHDB_PUBLIC_URL` (§2.1) |
 | A device reads another facility's data | Per-facility DBs, `_security` scoping, generated `validate_doc_update`; de-enroll deletes the user doc |
 | Wrong roster/time signing breaks offline login safety | One keypair, small surface, signing round-trip covered by standing tests; key in a secret store |
 | Referral lost when a facility is offline | Referral rides replication (device-local write + sync) + printed note always travels + watchdog flag-back |
@@ -254,8 +316,9 @@ Local dev: docker-compose with CouchDB; tests that touch sync semantics run agai
 
 ## 10. Immediate next steps
 
-1. **Provision the Nigerian VM**: CouchDB in Docker + backups + restore drill. Start NDPC
-   registration in parallel (long lead time).
+1. **Deploy the Render blueprint** (`render.yaml`) — `/health` and signed `/time` live, then
+   backups + restore drill. Start whatever data-protection registration the launch country
+   requires in parallel — long lead time.
 2. **Scaffold the one process**: Fastify + `geneus-shared` submodule + `/health` + signed
    `/time`; docker-compose for local CouchDB; CI.
 3. **`provision-facility` + generated `validate_doc_update`** so bad/cross-facility writes
