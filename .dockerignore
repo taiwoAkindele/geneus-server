@@ -1,0 +1,16 @@
+# node_modules is reinstalled inside the image; copying the host's would drag in
+# dev dependencies and platform-specific binaries.
+node_modules
+shared/node_modules
+
+.git
+.gitignore
+.gitmodules
+
+# Secrets never enter the image, even by accident.
+.env
+.env.*
+
+docker-compose.yml
+*.md
+shared/*.md

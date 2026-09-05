@@ -1,0 +1,67 @@
+# Render Blueprint — the whole deployment: CouchDB, and the one Node process.
+#
+# REGION: Frankfurt — the closest Render region by network path, since West
+# African cables land in Europe. Hosting region is a deployment choice, not an
+# architectural constraint (PRODUCT.md §14.2). If a deployment ever has to sit in
+# one country, PLAN.md §2.1 covers it: CouchDB moves to a VM there and only
+# COUCHDB_URL and COUCHDB_PUBLIC_URL change, not the design.
+
+envVarGroups:
+  # Shared so the two services cannot drift apart — a mismatched admin password
+  # surfaces as the server failing to provision, which looks like a CouchDB bug.
+  - name: geneus-couch-admin
+    envVars:
+      - key: COUCHDB_USER
+        value: geneus-admin
+      - key: COUCHDB_PASSWORD
+        generateValue: true
+
+services:
+  # CouchDB is a web service rather than a private one because the PWA
+  # replicates against it directly from the browser — it has to be public.
+  - name: geneus-couchdb
+    type: web
+    runtime: image
+    region: frankfurt
+    plan: starter
+    image:
+      url: docker.io/library/couchdb:3.4
+    # A pinned image: nothing in this repo changes it, and a disk-backed service
+    # is stopped before the replacement starts, so redeploys are downtime.
+    autoDeployTrigger: off
+    disk:
+      name: couchdb-data
+      mountPath: /opt/couchdb/data
+      sizeGB: 20
+    envVars:
+      - fromGroup: geneus-couch-admin
+      # CouchDB listens on 5984 and ignores Render's injected PORT, so the port
+      # is declared rather than detected.
+      - key: PORT
+        value: 5984
+
+  - name: geneus-server
+    type: web
+    runtime: docker
+    region: frankfurt
+    plan: starter
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    autoDeployTrigger: commit
+    envVars:
+      - fromGroup: geneus-couch-admin
+      - key: NODE_ENV
+        value: production
+      # Internal address: provisioning traffic never leaves Render's network.
+      - key: COUCHDB_URL
+        value: http://geneus-couchdb:5984
+      # Deliberately not derived. This is written into every facility's sync
+      # credential at registration, so it is set by hand once the CouchDB
+      # service exists and its real URL is known.
+      - key: COUCHDB_PUBLIC_URL
+        sync: false
+      - key: APP_ORIGINS
+        sync: false
+      # node scripts/generate-signing-key.ts
+      - key: SIGNING_PRIVATE_KEY
+        sync: false
