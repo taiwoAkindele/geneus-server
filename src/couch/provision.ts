@@ -6,8 +6,10 @@ import { buildDesignDoc } from './designDoc.ts';
  * One database per facility (root §2.2): small replicas, and a device that is
  * only ever given access to its own facility's data.
  */
+const FACILITY_DB_PREFIX = 'facility-';
+
 export const databaseNameFor = (facilityCode: string): string =>
-  `facility-${facilityCode.toLowerCase().replace(/[^a-z0-9_$()+-]/g, '-')}`;
+  `${FACILITY_DB_PREFIX}${facilityCode.toLowerCase().replace(/[^a-z0-9_$()+-]/g, '-')}`;
 
 export type SyncCredential = { username: string; password: string; database: string };
 
@@ -50,6 +52,60 @@ export const provisionFacility = async (
   });
 
   return { username, password, database };
+};
+
+export type DesignDocOutcome = 'created' | 'updated' | 'unchanged' | 'unresolved';
+export type DesignDocSyncResult = { database: string; facilityId?: string; outcome: DesignDocOutcome };
+
+/**
+ * A facility's database name is its code lowercased, and the facility document's
+ * `_id` is that same code — so the name gives a candidate that a lookup either
+ * confirms or refutes. Confirming matters: the guard embeds this value, and a
+ * wrong one would reject every write in that database.
+ */
+const facilityIdOf = async (
+  facilityDb: nano.DocumentScope<Record<string, unknown>>,
+  database: string,
+): Promise<string | undefined> => {
+  const candidate = database.slice(FACILITY_DB_PREFIX.length).toUpperCase();
+  const document = await facilityDb.get(candidate).catch(() => undefined);
+  return document?.type === 'facility' ? candidate : undefined;
+};
+
+/**
+ * Pushes the current guard into every facility database that does not already
+ * have it. The guard is generated from the contract (SCHEMA.md §6) but written
+ * only at provisioning, so without this a contract change reaches facilities
+ * registered afterwards and no others — and an older facility rejects the new
+ * document type at replication, days from the device that wrote it.
+ *
+ * Idempotent by comparison, not by force: an unchanged database is left at its
+ * current revision so re-running is free and safe.
+ */
+export const syncDesignDocs = async (couch: nano.ServerScope): Promise<DesignDocSyncResult[]> => {
+  const databases = await couch.db.list();
+  const results: DesignDocSyncResult[] = [];
+
+  for (const database of databases.filter((name) => name.startsWith(FACILITY_DB_PREFIX))) {
+    const facilityDb = couch.use<Record<string, unknown>>(database);
+    const facilityId = await facilityIdOf(facilityDb, database);
+    if (!facilityId) {
+      results.push({ database, outcome: 'unresolved' });
+      continue;
+    }
+
+    const wanted = buildDesignDoc(facilityId);
+    const current = await facilityDb.get(wanted._id).catch(() => undefined);
+    if (current?.validate_doc_update === wanted.validate_doc_update) {
+      results.push({ database, facilityId, outcome: 'unchanged' });
+      continue;
+    }
+
+    await facilityDb.insert({ ...wanted, ...(current ? { _rev: current._rev } : {}) } as never);
+    results.push({ database, facilityId, outcome: current ? 'updated' : 'created' });
+  }
+
+  return results;
 };
 
 const ALREADY_EXISTS = 412;
