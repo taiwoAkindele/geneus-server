@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto';
 import nano from 'nano';
 import { SCHEMA_VERSION } from '#shared';
 import { loadConfig } from '../src/lib/config.ts';
-import { databaseNameFor } from '../src/couch/provision.ts';
+import { databaseNameFor, ensureSystemDatabases } from '../src/couch/provision.ts';
 
 /**
  * Tests that touch sync semantics run against real CouchDB in Docker, never a
@@ -32,6 +32,9 @@ export const requireCouch = async (): Promise<nano.ServerScope> => {
   } catch {
     throw new Error(`CouchDB is not reachable at ${config.couchUrl} — run: npm run couch:up`);
   }
+  // Provisioning writes into _users, which a fresh CouchDB does not have. The
+  // server does this at boot; the suite must not depend on a server having run.
+  await ensureSystemDatabases(couch);
   return couch;
 };
 
