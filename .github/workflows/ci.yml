@@ -1,0 +1,55 @@
+name: CI
+
+# Pull requests are where review happens; main and dev are what deploys. A push
+# to a feature branch with an open PR would otherwise run the same job twice.
+on:
+  pull_request:
+  push:
+    branches: [main, dev]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+
+    services:
+      # The suite talks to real CouchDB by design (PLAN.md §7): the guard under
+      # test is executed by CouchDB's own JS engine, so running it anywhere else
+      # would prove nothing. These credentials are throwaway — the container
+      # lives for one job and is reachable only from inside it.
+      couchdb:
+        image: couchdb:3.4
+        env:
+          COUCHDB_USER: admin
+          COUCHDB_PASSWORD: devpassword
+        ports:
+          - 5984:5984
+
+    env:
+      COUCHDB_URL: http://127.0.0.1:5984
+      COUCHDB_USER: admin
+      COUCHDB_PASSWORD: devpassword
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The shared contract is a submodule; without it nothing resolves.
+          submodules: recursive
+
+      - uses: actions/setup-node@v4
+        with:
+          # Matches the Dockerfile: Node runs the TypeScript sources directly,
+          # so the runtime version is the build.
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      # Polled from the runner rather than declared as a container health check,
+      # because the CouchDB image ships no curl — a health command that cannot
+      # run would gate nothing and the tests would race the database.
+      - name: Wait for CouchDB
+        run: timeout 60 bash -c 'until curl -sf http://127.0.0.1:5984/_up > /dev/null; do sleep 2; done'
+
+      - run: npm run typecheck
+
+      - run: npm test

@@ -1,5 +1,6 @@
 import Fastify from 'fastify';
 import nano from 'nano';
+import { SCHEMA_VERSION } from '#shared';
 import { loadConfig } from './lib/config.ts';
 import { createSigner } from './lib/signing.ts';
 import { ensureCors, ensureSystemDatabases } from './couch/provision.ts';
@@ -45,12 +46,32 @@ app.addHook('onRequest', async (request, reply) => {
   if (request.method === 'OPTIONS') return reply.code(204).send();
 });
 
+const startedOn = new Date().toISOString();
+
+/**
+ * "Is it working?" has to be one URL (PLAN.md §5), so this reports the state of
+ * each thing the process is trusted for rather than just answering 200. The
+ * signing key is here because an unset one is invisible otherwise: it signs
+ * perfectly well, and only a restart reveals that every signature it issued has
+ * become unverifiable.
+ */
 app.get('/health', async () => {
   const reachable = await couch.info().then(
     () => true,
     () => false,
   );
-  return { status: reachable ? 'ok' : 'degraded', couchdb: reachable ? 'reachable' : 'unreachable' };
+  const degraded = !reachable || (config.isProduction && signer.isEphemeral);
+
+  return {
+    status: degraded ? 'degraded' : 'ok',
+    couchdb: reachable ? 'reachable' : 'unreachable',
+    signingKey: {
+      source: signer.isEphemeral ? 'ephemeral' : 'configured',
+      fingerprint: signer.publicKeyFingerprint,
+    },
+    schemaVersion: SCHEMA_VERSION,
+    startedOn,
+  };
 });
 
 /**
@@ -71,9 +92,9 @@ const start = async () => {
   });
   await ensureCors(couch, config.corsOrigins);
   await ensureInvitesDatabase(couch);
-  if (!config.signingPrivateKey) {
+  if (signer.isEphemeral) {
     app.log.warn(
-      { publicKey: signer.publicKeyBase64 },
+      { fingerprint: signer.publicKeyFingerprint },
       'no SIGNING_PRIVATE_KEY: generated an ephemeral key, so signatures change on restart',
     );
   }

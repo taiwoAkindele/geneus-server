@@ -250,6 +250,7 @@ under pressure.
 | Facility count makes per-DB sweeps slow | Switch discovery to the global `_db_updates` feed |
 | CouchDB hosting becomes a real ops burden | Revisit managed options / a second replica — with pilot-scale facts in hand |
 | Starter's 512MB is the *measured* bottleneck (memory pressure, slow view builds) | Move CouchDB to a small VM (§2.1) rather than up a Render tier — the next tier costs more than a whole VM, and the move is two environment variables |
+| **The first real patient record exists** | Build the backup: a per-database document dump to object storage, plus a restore drill that is actually run. Dumps, not a hot standby — they are point-in-time, while a mirror replicates a bad write faithfully within seconds. A standby answers downtime, which is a separate and later question |
 
 ## 7. Repository structure
 
@@ -261,7 +262,7 @@ geneus-server/
     sweeps/            # poll-based jobs (M3: referral router, watchdog)
     couch/             # nano client, provisioning, generated design docs
     lib/               # signing, config (Zod-validated env), logging
-  scripts/             # create-invite, generate-signing-key, backup + restore drill
+  scripts/             # create-invite, generate-signing-key, sync-design-docs; backup + restore drill when §6 triggers
   Dockerfile           # the one image; no build step, Node runs the sources
   render.yaml          # the deployment (§2.1)
   tests/               # signing/verify round-trip; provisioning; (M3) referral lifecycle
@@ -274,9 +275,12 @@ Local dev: docker-compose with CouchDB; tests that touch sync semantics run agai
 
 ### BE-M0 — Foundations
 - Render blueprint: CouchDB on a persistent disk + the Node process; TLS from the platform.
-- **Automated backup + a scripted, tested restore drill.** Render's disk snapshots are
-  explicitly not a database backup, so this stays ours: replicate to a second CouchDB, and
-  run the restore rather than only scripting it.
+- **Backup + restore drill — deferred; trigger: the first real patient record (§6).**
+  Render takes automatic daily disk snapshots, and its own documentation warns against
+  restoring a disk to recover a database — it can come back corrupt. That makes snapshots
+  an acceptable safety net for synthetic data and *not* the backup. Deferring is a dated
+  decision, not an oversight: while every record is synthetic, the cost of losing the
+  database is an afternoon of reseeding.
 - `provision-facility` script + generated `validate_doc_update` from the Zod contract.
 - The one process deployed with `/health` and `/time` (signed) live.
 - Ed25519 signing key minted (`scripts/generate-signing-key.ts`) into the platform secret

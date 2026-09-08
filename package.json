@@ -10,6 +10,7 @@
     "dev": "node --watch src/server.ts",
     "start": "node src/server.ts",
     "invite": "node scripts/create-invite.ts",
+    "sync:design": "node scripts/sync-design-docs.ts",
     "typecheck": "tsc --noEmit",
     "test": "node --test",
     "couch:up": "docker compose up -d couchdb",

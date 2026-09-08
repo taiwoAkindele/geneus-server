@@ -55,6 +55,20 @@ describe('signing', () => {
     assert.equal(verifyAsDevice(payload, first.sign(payload), second.publicKeyBase64), false);
   });
 
+  it('reports whether the key was configured, so /health can say so out loud', () => {
+    assert.equal(createSigner(privateKeyBase64()).isEphemeral, false);
+    assert.equal(createSigner(undefined).isEphemeral, true);
+  });
+
+  it('fingerprints the public key, so a changed key is visible without comparing keys', () => {
+    const configured = privateKeyBase64();
+    const signer = createSigner(configured);
+
+    assert.equal(signer.publicKeyFingerprint, createSigner(configured).publicKeyFingerprint);
+    assert.notEqual(signer.publicKeyFingerprint, createSigner(privateKeyBase64()).publicKeyFingerprint);
+    assert.match(signer.publicKeyFingerprint, /^[0-9a-f]{16}$/);
+  });
+
   it('signs key order as written, since the verifier reproduces the same canonical JSON', () => {
     const signer = createSigner(privateKeyBase64());
     const signature = signer.sign({ now: 'a', facilityId: 'b' });
