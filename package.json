@@ -11,6 +11,7 @@
     "start": "node src/server.ts",
     "invite": "node scripts/create-invite.ts",
     "typecheck": "tsc --noEmit",
+    "test": "node --test",
     "couch:up": "docker compose up -d couchdb",
     "couch:down": "docker compose down"
   },
