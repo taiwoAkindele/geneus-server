@@ -1,125 +1,66 @@
-import { randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
-import type nano from 'nano';
-import { z } from 'zod';
-import { Facility, SCHEMA_VERSION, Staff } from '#shared';
-import { databaseNameFor, facilityExists, provisionFacility } from '../couch/provision.ts';
-import { claimInvite, findInvite, rejectionFor, releaseInvite } from '../couch/invites.ts';
+import { FacilityRegistration, type ApiErrorBody } from '#shared';
+import type { Sql } from '../db/client.ts';
 import type { Config } from '../lib/config.ts';
+import { findInvite, rejectionFor, type InviteRejection } from '../facilities/invites.ts';
+import { registerFacility } from '../facilities/registration.ts';
 
-/**
- * Facility registration is the one thing a device cannot do for itself: no
- * database exists yet and it holds no credential. Everything afterwards —
- * staff, rosters, patients — is an ordinary document written on the device and
- * carried up by replication, so it needs no endpoint here.
- */
-const Registration = z.object({
-  code: z
-    .string()
-    .min(2)
-    .max(20)
-    .regex(/^[A-Z0-9]+(?:-[A-Z0-9]+)*$/, 'Use uppercase letters, digits and hyphens'),
-  name: z.string().min(1),
-  state: z.string().min(1),
-  lga: z.string().min(1),
-  level: Facility.shape.level,
-  adminFullName: z.string().min(1),
-  deviceId: z.string().min(1),
-  inviteToken: z.string().min(1),
-});
-
-const INVITE_REJECTIONS = {
+const INVITE_REJECTIONS: Record<InviteRejection, string> = {
   unknown: 'That invite code is not recognised',
   expired: 'That invite code has expired',
   already_used: 'That invite code has already been used',
-} as const;
+};
 
-export const registerFacilityRoutes = (app: FastifyInstance, couch: nano.ServerScope, config: Config) => {
+const inviteError = (rejection: InviteRejection): ApiErrorBody => ({
+  error: 'invalid_invite',
+  message: INVITE_REJECTIONS[rejection],
+});
+
+export const registerFacilityRoutes = (app: FastifyInstance, sql: Sql, config: Config) => {
   /** Lets the onboarding screen reject a bad code before asking for any details. */
   app.get<{ Params: { token: string } }>('/invites/:token', async (request, reply) => {
-    const invite = await findInvite(couch, request.params.token);
+    const invite = await findInvite(sql, request.params.token);
     const rejection = rejectionFor(invite);
-    if (rejection || !invite) {
-      return reply.code(404).send({ error: 'invalid_invite', message: INVITE_REJECTIONS[rejection ?? 'unknown'] });
-    }
+    if (rejection || !invite) return reply.code(404).send(inviteError(rejection ?? 'unknown'));
     return { label: invite.label, expiresOn: invite.expiresOn };
   });
 
+  /**
+   * The one bootstrap endpoint (PLAN.md §4.1a). The response carries the
+   * registering device's credential — shown once, never a database credential.
+   */
   app.post('/facilities', async (request, reply) => {
-    const parsed = Registration.safeParse(request.body);
+    const parsed = FacilityRegistration.safeParse(request.body);
     if (!parsed.success) {
-      return reply.code(400).send({ error: 'invalid_registration', issues: parsed.error.issues });
-    }
-    const registration = parsed.data;
-
-    const invite = await findInvite(couch, registration.inviteToken);
-    const rejection = rejectionFor(invite);
-    if (rejection || !invite) {
-      return reply.code(403).send({ error: 'invalid_invite', message: INVITE_REJECTIONS[rejection ?? 'unknown'] });
+      return reply.code(400).send({
+        error: 'invalid_registration',
+        message: 'The registration is incomplete or malformed',
+        issues: parsed.error.issues,
+      } satisfies ApiErrorBody);
     }
 
-    if (await facilityExists(couch, registration.code)) {
-      return reply.code(409).send({
-        error: 'facility_code_taken',
-        message: `Facility code ${registration.code} is already registered`,
-      });
+    const outcome = await registerFacility(sql, parsed.data, config.powerSyncPublicUrl);
+    if (!outcome.ok) {
+      switch (outcome.error) {
+        case 'invalid_invite':
+          return reply.code(403).send(inviteError(outcome.rejection));
+        case 'facility_code_taken':
+          return reply.code(409).send({
+            error: 'facility_code_taken',
+            message: `Facility code ${parsed.data.code} is already registered`,
+          } satisfies ApiErrorBody);
+        case 'device_already_enrolled':
+          return reply.code(409).send({
+            error: 'device_already_enrolled',
+            message: 'This device is already enrolled with a facility',
+          } satisfies ApiErrorBody);
+      }
     }
 
-    if (!(await claimInvite(couch, invite, registration.code))) {
-      return reply.code(403).send({ error: 'invalid_invite', message: INVITE_REJECTIONS.already_used });
-    }
-
-    const credential = await provisionFacility(couch, registration.code).catch(async (cause) => {
-      await releaseInvite(couch, invite.token);
-      throw cause;
-    });
-    const facilityDb = couch.use(databaseNameFor(registration.code));
-    const createdOn = new Date().toISOString();
-    const envelope = {
-      facilityId: registration.code,
-      schemaVersion: SCHEMA_VERSION,
-      createdBy: 'system',
-      createdOn,
-      deviceId: registration.deviceId,
-    };
-
-    const facility = Facility.parse({
-      ...envelope,
-      _id: registration.code,
-      type: 'facility',
-      code: registration.code,
-      name: registration.name,
-      state: registration.state,
-      lga: registration.lga,
-      level: registration.level,
-    });
-
-    const staffId = `staff:${randomUUID()}`;
-    const admin = Staff.parse({
-      ...envelope,
-      _id: staffId,
-      type: 'staff',
-      staffId,
-      fullName: registration.adminFullName,
-      role: 'facility_admin',
-      permission: 'read_write',
-      active: true,
-    });
-
-    await facilityDb.insert(facility as never);
-    await facilityDb.insert(admin as never);
-
-    request.log.info({ facility: registration.code, database: credential.database }, 'facility provisioned');
-
-    return reply.code(201).send({
-      facility,
-      admin,
-      sync: {
-        url: config.couchPublicUrl,
-        database: credential.database,
-        username: credential.username,
-        password: credential.password,
-      },
-    });
+    request.log.info(
+      { facility: outcome.result.facility.id, device: outcome.result.device.deviceId },
+      'facility registered',
+    );
+    return reply.code(201).send(outcome.result);
   });
 };

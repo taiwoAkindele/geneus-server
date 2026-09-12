@@ -8,6 +8,15 @@
 
 **Version:** 1.1 (Draft) · **Owner:** Solo founder-builder
 
+> **Status — migration to PostgreSQL + PowerSync in progress.** The decisions below that
+> name CouchDB as the store, `_users`/`_security` as device credentials, or
+> `validate_doc_update` as the guard describe the *previous* architecture and are being
+> replaced phase by phase. What is already true: PostgreSQL is the source of truth
+> (`src/db/migrations/`), device credentials are rows (`devices`, `device_credentials`),
+> facility registration runs in one PostgreSQL transaction, and the server authorises
+> uploaded mutations itself (Phase C). This plan is rewritten in full in Phase F; the
+> contract's [SCHEMA.md](shared/SCHEMA.md) already describes the target model.
+
 > **Governing principle:** start with the **simplest architecture that preserves the core
 > requirements**, and evolve it only when a **real, observed bottleneck** appears. A solo
 > engineer must never have to *search* for where a bug lives — every symptom must have one

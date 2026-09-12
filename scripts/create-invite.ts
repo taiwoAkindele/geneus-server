@@ -1,6 +1,6 @@
-import nano from 'nano';
+import { createSql } from '../src/db/client.ts';
 import { loadConfig } from '../src/lib/config.ts';
-import { createInvite, ensureInvitesDatabase } from '../src/couch/invites.ts';
+import { createInvite } from '../src/facilities/invites.ts';
 
 /**
  * Issues the code a facility needs to register itself. Run by whoever approves
@@ -16,14 +16,9 @@ if (!label) {
   process.exit(1);
 }
 
-const config = loadConfig();
-const couch = nano({
-  url: config.couchUrl,
-  requestDefaults: { auth: { username: config.couchUser, password: config.couchPassword } },
-});
-
-await ensureInvitesDatabase(couch);
-const invite = await createInvite(couch, label, Number(days ?? 14));
+const sql = createSql(loadConfig().postgresUrl);
+const invite = await createInvite(sql, label, Number(days ?? 14));
+await sql.end();
 
 console.log(`\n  invite code: ${invite.token}`);
 console.log(`  for:         ${invite.label}`);

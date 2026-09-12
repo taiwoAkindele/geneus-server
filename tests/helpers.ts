@@ -1,7 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import nano from 'nano';
 import { SCHEMA_VERSION } from '#shared';
-import { loadConfig } from '../src/lib/config.ts';
 import { databaseNameFor, ensureSystemDatabases } from '../src/couch/provision.ts';
 
 /**
@@ -9,7 +8,15 @@ import { databaseNameFor, ensureSystemDatabases } from '../src/couch/provision.t
  * mock (PLAN.md §7): the guard under test is executed by CouchDB's own JS
  * engine, so running it anywhere else would prove nothing about production.
  */
-const config = loadConfig();
+/**
+ * Legacy (removed in Phase F): the server no longer has CouchDB configuration,
+ * so these suites read their connection straight from the environment.
+ */
+const config = {
+  couchUrl: process.env.COUCHDB_URL ?? 'http://127.0.0.1:5984',
+  couchUser: process.env.COUCHDB_USER ?? 'admin',
+  couchPassword: process.env.COUCHDB_PASSWORD ?? 'devpassword',
+};
 
 export const adminCouch = (): nano.ServerScope =>
   nano({

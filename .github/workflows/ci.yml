@@ -12,10 +12,27 @@ jobs:
     runs-on: ubuntu-latest
 
     services:
-      # The suite talks to real CouchDB by design (PLAN.md §7): the guard under
-      # test is executed by CouchDB's own JS engine, so running it anywhere else
-      # would prove nothing. These credentials are throwaway — the container
-      # lives for one job and is reachable only from inside it.
+      # The suite talks to real PostgreSQL by design: the constraints under test
+      # are enforced by PostgreSQL, so running them anywhere else would prove
+      # nothing. Each test file creates and drops its own database, which is
+      # why the user is the superuser. These credentials are throwaway — the
+      # container lives for one job and is reachable only from inside it.
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: geneus
+          POSTGRES_PASSWORD: devpassword
+          POSTGRES_DB: geneus
+        options: >-
+          --health-cmd "pg_isready -U geneus -d geneus"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+        ports:
+          - 5433:5432
+
+      # Legacy (removed in Phase F): the CouchDB suites still run until the
+      # last CouchDB code paths are deleted.
       couchdb:
         image: couchdb:3.4
         env:
@@ -25,6 +42,7 @@ jobs:
           - 5984:5984
 
     env:
+      POSTGRES_URL: postgres://geneus:devpassword@127.0.0.1:5433/geneus
       COUCHDB_URL: http://127.0.0.1:5984
       COUCHDB_USER: admin
       COUCHDB_PASSWORD: devpassword

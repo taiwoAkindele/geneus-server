@@ -1,5 +1,4 @@
 import nano from 'nano';
-import { loadConfig } from '../src/lib/config.ts';
 import { syncDesignDocs } from '../src/couch/provision.ts';
 
 /**
@@ -10,10 +9,12 @@ import { syncDesignDocs } from '../src/couch/provision.ts';
  *
  *   node scripts/sync-design-docs.ts
  */
-const config = loadConfig();
+// Legacy (removed in Phase F): reads CouchDB straight from the environment.
 const couch = nano({
-  url: config.couchUrl,
-  requestDefaults: { auth: { username: config.couchUser, password: config.couchPassword } },
+  url: process.env.COUCHDB_URL ?? 'http://127.0.0.1:5984',
+  requestDefaults: {
+    auth: { username: process.env.COUCHDB_USER ?? 'admin', password: process.env.COUCHDB_PASSWORD ?? 'devpassword' },
+  },
 });
 
 const results = await syncDesignDocs(couch);
