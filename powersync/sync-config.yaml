@@ -1,0 +1,104 @@
+# GENERATED from the shared contract by `npm run sync:config` — do not edit by hand.
+# One stream per synced record type, every contract column aliased to its
+# contract name, filtered to the facility in the device's sync token. See
+# src/sync/syncConfig.ts for why it is generated and SCHEMA.md §6 for the rule.
+config:
+  edition: 3
+
+streams:
+  patients:
+    auto_subscribe: true
+    query: |
+      SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", patient_id AS "patientId", full_name AS "fullName", address, sex, date_of_birth AS "dateOfBirth", dob_estimated AS "dobEstimated", age_years AS "ageYears", occupation, religion, allergies, phone, nin, legacy_paper_ref AS "legacyPaperRef"
+      FROM patients
+      WHERE facility_id = auth.parameter('facility_id')
+  visits:
+    auto_subscribe: true
+    query: |
+      SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", patient_id AS "patientId", unit_id AS "unitId", visit_date AS "visitDate", setting, symptoms, diagnosis, treatment, referral_id AS "referralId", notes
+      FROM visits
+      WHERE facility_id = auth.parameter('facility_id')
+  handoffs:
+    auto_subscribe: true
+    query: |
+      SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", patient_id AS "patientId", from_unit_id AS "fromUnitId", to_unit_id AS "toUnitId", instruction, status
+      FROM handoffs
+      WHERE facility_id = auth.parameter('facility_id')
+  appointments:
+    auto_subscribe: true
+    query: |
+      SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", patient_id AS "patientId", reason, scheduled_for AS "scheduledFor", status
+      FROM appointments
+      WHERE facility_id = auth.parameter('facility_id')
+  register_definitions:
+    auto_subscribe: true
+    query: |
+      SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", register_id AS "registerId", version, name, category, description, status, fields
+      FROM register_definitions
+      WHERE facility_id = auth.parameter('facility_id')
+  register_entries:
+    auto_subscribe: true
+    query: |
+      SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", register_id AS "registerId", register_version AS "registerVersion", entry_date AS "entryDate", setting, patient_id AS "patientId", values
+      FROM register_entries
+      WHERE facility_id = auth.parameter('facility_id')
+  referrals:
+    auto_subscribe: true
+    query: |
+      SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", referral_id AS "referralId", patient_id AS "patientId", from_facility_id AS "fromFacilityId", to_facility_id AS "toFacilityId", tier1, status, delivery_status AS "deliveryStatus", sent_on AS "sentOn", seen_on AS "seenOn", arrived_on AS "arrivedOn", closed_on AS "closedOn", not_yet_arrived_flagged AS "notYetArrivedFlagged"
+      FROM referrals
+      WHERE facility_id = auth.parameter('facility_id')
+  stock_items:
+    auto_subscribe: true
+    query: |
+      SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", name, category, unit_of_measure AS "unitOfMeasure", quantity_on_hand AS "quantityOnHand", reorder_level AS "reorderLevel"
+      FROM stock_items
+      WHERE facility_id = auth.parameter('facility_id')
+  stock_movements:
+    auto_subscribe: true
+    query: |
+      SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", item_id AS "itemId", change, reason, moved_on AS "movedOn", note
+      FROM stock_movements
+      WHERE facility_id = auth.parameter('facility_id')
+  facilities:
+    auto_subscribe: true
+    query: |
+      SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", code, name, lga, state, level
+      FROM facilities
+      WHERE facility_id = auth.parameter('facility_id')
+  units:
+    auto_subscribe: true
+    query: |
+      SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", unit_id AS "unitId", name, active
+      FROM units
+      WHERE facility_id = auth.parameter('facility_id')
+  staff:
+    auto_subscribe: true
+    query: |
+      SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", staff_id AS "staffId", full_name AS "fullName", role, permission, active
+      FROM staff
+      WHERE facility_id = auth.parameter('facility_id')
+  roster_shifts:
+    auto_subscribe: true
+    query: |
+      SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", staff_id AS "staffId", starts_at AS "startsAt", ends_at AS "endsAt", signature, extended_until AS "extendedUntil"
+      FROM roster_shifts
+      WHERE facility_id = auth.parameter('facility_id')
+  devices:
+    auto_subscribe: true
+    query: |
+      SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", label, enrolled_by AS "enrolledBy", status, wipe_requested AS "wipeRequested", enrolled_on AS "enrolledOn", revoked_on AS "revokedOn", last_seen_on AS "lastSeenOn"
+      FROM devices
+      WHERE facility_id = auth.parameter('facility_id')
+  audit_events:
+    auto_subscribe: true
+    query: |
+      SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", actor_staff_id AS "actorStaffId", action, entity_type AS "entityType", entity_id AS "entityId", result, occurred_on AS "occurredOn", received_on AS "receivedOn", metadata
+      FROM audit_events
+      WHERE facility_id = auth.parameter('facility_id')
+  sync_rejections:
+    auto_subscribe: true
+    query: |
+      SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", entity_type AS "entityType", entity_id AS "entityId", operation, category, reason, attributed_to AS "attributedTo", occurred_on AS "occurredOn", conflicts, resolved_on AS "resolvedOn", resolved_by AS "resolvedBy", resolution
+      FROM sync_rejections
+      WHERE facility_id = auth.parameter('facility_id')
