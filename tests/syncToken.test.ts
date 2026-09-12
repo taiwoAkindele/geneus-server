@@ -92,6 +92,17 @@ describe('sync tokens', () => {
     assert.equal((await app.inject({ method: 'POST', url: '/sync/token' })).statusCode, 401);
   });
 
+  /** The browser client used to send this header with no body, which Fastify turns into a 400 before the route runs. */
+  it('is minted even when the client sends a JSON content-type with an empty body', async () => {
+    const response = await app.inject({
+      method: 'POST',
+      url: '/sync/token',
+      headers: { ...asDevice(facility.device.credential), 'content-type': 'application/json' },
+    });
+
+    assert.equal(response.statusCode, 200, response.body);
+  });
+
   it('records the contact on the device', async () => {
     await token(facility.device.credential);
 

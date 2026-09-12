@@ -1,7 +1,7 @@
 # The reference deployment: PostgreSQL (source of truth), the PowerSync
 # service, and the one Node process.
 #
-# Two ways to run it:
+# Three ways to run it:
 #   development  — `npm run dev` on the host + `npm run sync:up` (postgres and
 #                  powersync only); PowerSync reaches the host server's JWKS via
 #                  host.docker.internal.
@@ -9,6 +9,10 @@
 #                  POWERSYNC_JWKS_URI=http://server:8080/.well-known/jwks.json
 #                  and a SIGNING_PRIVATE_KEY (production refuses to start
 #                  without one). This is the shape a production host runs.
+#   managed PostgreSQL (e.g. Neon) — set POSTGRES_URL, POWERSYNC_SOURCE_URI,
+#                  POWERSYNC_STORAGE_URI and POWERSYNC_SSLMODE=verify-full in .env
+#                  and start only `powersync` (and `server`); the local postgres
+#                  service is simply not used.
 services:
   postgres:
     image: postgres:17-alpine
@@ -40,14 +44,13 @@ services:
     container_name: geneus-powersync
     restart: unless-stopped
     command: ['start', '-r', 'unified']
-    depends_on:
-      postgres:
-        condition: service_healthy
     environment:
       POWERSYNC_CONFIG_PATH: /config/service.yaml
-      PS_SOURCE_URI: postgresql://powersync:${POWERSYNC_DB_PASSWORD:-devpassword}@postgres:5432/${POSTGRES_DB:-geneus}
-      PS_STORAGE_URI: postgresql://powersync:${POWERSYNC_DB_PASSWORD:-devpassword}@postgres:5432/powersync_storage
-      PS_SSLMODE: disable
+      # Default to the local postgres service; a managed PostgreSQL overrides
+      # all three (no ?sslmode= in the URIs — PS_SSLMODE carries it).
+      PS_SOURCE_URI: ${POWERSYNC_SOURCE_URI:-postgresql://powersync:${POWERSYNC_DB_PASSWORD:-devpassword}@postgres:5432/${POSTGRES_DB:-geneus}}
+      PS_STORAGE_URI: ${POWERSYNC_STORAGE_URI:-postgresql://powersync:${POWERSYNC_DB_PASSWORD:-devpassword}@postgres:5432/powersync_storage}
+      PS_SSLMODE: ${POWERSYNC_SSLMODE:-disable}
       PS_JWKS_URI: ${POWERSYNC_JWKS_URI:-http://host.docker.internal:8080/.well-known/jwks.json}
       PS_PORT: '8080'
     extra_hosts:
@@ -75,7 +78,7 @@ services:
     environment:
       NODE_ENV: ${NODE_ENV:-production}
       PORT: '8080'
-      POSTGRES_URL: postgres://${POSTGRES_USER:-geneus}:${POSTGRES_PASSWORD:-devpassword}@postgres:5432/${POSTGRES_DB:-geneus}
+      POSTGRES_URL: ${POSTGRES_URL:-postgres://${POSTGRES_USER:-geneus}:${POSTGRES_PASSWORD:-devpassword}@postgres:5432/${POSTGRES_DB:-geneus}}
       # Device-facing: what the PWA is told to connect PowerSync to.
       POWERSYNC_PUBLIC_URL: ${POWERSYNC_PUBLIC_URL:-http://127.0.0.1:8090}
       POWERSYNC_INTERNAL_URL: http://powersync:8080

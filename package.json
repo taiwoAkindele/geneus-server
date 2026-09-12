@@ -7,18 +7,19 @@
     "#shared": "./shared/src/index.ts"
   },
   "scripts": {
-    "dev": "node --watch src/server.ts",
-    "start": "node src/server.ts",
-    "invite": "node scripts/create-invite.ts",
+    "dev": "node --env-file-if-exists=.env --watch src/server.ts",
+    "start": "node --env-file-if-exists=.env src/server.ts",
+    "invite": "node --env-file-if-exists=.env scripts/create-invite.ts",
+    "key:generate": "node --env-file-if-exists=.env scripts/generate-signing-key.ts",
     "typecheck": "tsc --noEmit",
     "test": "node --test",
-    "test:sync": "node --test tests/powersync.integration.ts",
+    "test:sync": "node --env-file-if-exists=.env --test tests/powersync.integration.ts",
     "db:up": "docker compose up -d postgres",
     "db:down": "docker compose down",
     "sync:up": "docker compose up -d postgres powersync",
     "sync:down": "docker compose stop powersync",
-    "db:migrate": "node scripts/migrate.ts",
-    "sync:config": "node scripts/generate-sync-config.ts"
+    "db:migrate": "node --env-file-if-exists=.env scripts/migrate.ts",
+    "sync:config": "node --env-file-if-exists=.env scripts/generate-sync-config.ts"
   },
   "dependencies": {
     "fastify": "^5.2.0",

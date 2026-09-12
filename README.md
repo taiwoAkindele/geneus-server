@@ -17,7 +17,10 @@ npm run sync:up      # the PowerSync service on :8090 (needs the server up for i
 ```
 
 `docker-compose.yml` supplies PostgreSQL and PowerSync; `.env.example` lists every
-variable with its local default. There is no manual database setup: the first start of
+variable with its local default. The npm scripts load `.env` when it exists
+(`--env-file-if-exists`), and so does Compose — `npm test` deliberately does not, so the
+suite can never point at a real database by accident. A running `npm run dev` does not
+re-read `.env`; restart it after editing. There is no manual database setup: the first start of
 the PostgreSQL volume runs `docker/postgres/01-powersync.sh` (the `powersync` replication
 role and its bucket-storage database), and the server applies pending migrations from
 `src/db/migrations/` at every boot (`npm run db:migrate` does the same without starting
@@ -120,7 +123,7 @@ verify which human typed the offline PIN — attribution rests on the device's s
 | `npm run sync:config` | Regenerate `powersync/sync-config.yaml` from the contract |
 | `npm run test:sync` | The stack integration suite (needs the compose services) |
 | `npm run invite -- "<label>" [days]` | Mint a single-use facility registration code |
-| `node scripts/generate-signing-key.ts` | Mint the Ed25519 signing keypair (once per environment) |
+| `npm run key:generate` | Mint the Ed25519 signing keypair (once per environment) |
 | `scripts/backup.sh [dir]` | `pg_dump` of the source of truth (custom format), prunes by `RETENTION_DAYS` |
 | `scripts/restore.sh <dump> [db] [--replace]` | Restore into a new database (default) or replace the live one |
 | `scripts/restore-drill.sh` | Backup → restore into a scratch database → compare every table's row count → drop |
@@ -150,7 +153,7 @@ caveats are in [ARCHITECTURE.md §11](../docs/ARCHITECTURE.md).
 
 ```
 # full stack, as a production host runs it
-cp .env.example .env    # then set SIGNING_PRIVATE_KEY (generate-signing-key.ts),
+cp .env.example .env    # then set SIGNING_PRIVATE_KEY (npm run key:generate),
                         # POWERSYNC_JWKS_URI=http://server:8080/.well-known/jwks.json,
                         # the public URLs devices will use, and real passwords
 docker compose --profile stack up -d
@@ -161,6 +164,25 @@ Ordering on a fresh host: PostgreSQL → the schema (the server migrates at boot
 `npm run db:migrate`) → PowerSync, which needs the `powersync` publication from migration
 0003 before it can replicate. Put TLS in front of the server and PowerSync; PostgreSQL is
 never public. The server refuses to start in production without `SIGNING_PRIVATE_KEY`.
+
+### Managed PostgreSQL (Neon and similar)
+
+Only PostgreSQL moves; the server and PowerSync run as before. Once per database, as the
+owner role: enable logical replication (Neon: project settings), `npm run db:migrate`
+against the **direct** endpoint (creates the tables and the `powersync` publication), then
+
+```sql
+CREATE ROLE powersync WITH REPLICATION LOGIN PASSWORD '<set in the console afterwards>';
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO powersync;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO powersync;
+GRANT powersync TO <owner role>;            -- needed to own the next database
+CREATE DATABASE powersync_storage OWNER powersync;
+```
+
+Then set `POSTGRES_URL`, `POWERSYNC_SOURCE_URI`, `POWERSYNC_STORAGE_URI` and
+`POWERSYNC_SSLMODE=verify-full` (see `.env.example`) and start `powersync` (and `server`)
+without the local `postgres` service. A replication connection keeps a scale-to-zero
+provider's compute awake; budget for always-on hours.
 
 ## Backup and restore
 

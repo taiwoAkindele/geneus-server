@@ -26,6 +26,20 @@ export const buildApp = ({ config, sql, signer }: AppDependencies, options: AppO
   const app = Fastify({ logger });
 
   /**
+   * A POST with `content-type: application/json` and no body (a token request
+   * carries its credential in a header) is a 400 in Fastify's default parser,
+   * before the route sees it. Treat an empty body as "no body" instead.
+   */
+  app.addContentTypeParser('application/json', { parseAs: 'string' }, (_request, body, done) => {
+    if (body === '') return done(null, undefined);
+    try {
+      done(null, JSON.parse(body as string));
+    } catch (cause) {
+      done(cause as Error, undefined);
+    }
+  });
+
+  /**
    * The PWA is served from a different origin, so browsers preflight these
    * calls. Only the configured app origins are allowed — a handful of lines
    * instead of a dependency. `authorization` carries the device credential.
