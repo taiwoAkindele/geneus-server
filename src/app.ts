@@ -3,7 +3,9 @@ import { SCHEMA_VERSION } from '#shared';
 import type { Sql } from './db/client.ts';
 import type { Config } from './lib/config.ts';
 import type { Signer } from './lib/signing.ts';
+import { registerDeviceRoutes } from './routes/devices.ts';
 import { registerFacilityRoutes } from './routes/facilities.ts';
+import { registerSyncRoutes } from './routes/sync.ts';
 
 /**
  * The HTTP application, separate from the process that listens (server.ts) so
@@ -77,6 +79,8 @@ export const buildApp = ({ config, sql, signer }: AppDependencies, options: AppO
   });
 
   registerFacilityRoutes(app, sql, config);
+  registerDeviceRoutes(app, sql, config);
+  registerSyncRoutes(app, sql, config, signer);
 
   return app;
 };

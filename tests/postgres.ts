@@ -1,12 +1,21 @@
 import { randomBytes } from 'node:crypto';
+import type { FastifyInstance } from 'fastify';
+import {
+  Staff,
+  type FacilityRegistrationResult,
+  type Role,
+  type StaffPermission,
+  type UploadRequest,
+  type UploadResponse,
+} from '#shared';
 import { createSql, type Sql } from '../src/db/client.ts';
 import { migrate } from '../src/db/migrate.ts';
+import { insertRecord } from '../src/db/records.ts';
 import { loadConfig, type Config } from '../src/lib/config.ts';
 import { createSigner, type Signer } from '../src/lib/signing.ts';
 import { buildApp } from '../src/app.ts';
 import { createInvite } from '../src/facilities/invites.ts';
 import { registerFacility } from '../src/facilities/registration.ts';
-import type { FacilityRegistrationResult } from '#shared';
 
 /**
  * Tests that touch persistence run against real PostgreSQL in Docker, never a
@@ -119,3 +128,45 @@ export const refusal = async (attempt: Promise<unknown>): Promise<PostgresError>
   if (!outcome) throw new Error('expected PostgreSQL to refuse this statement, but it succeeded');
   return outcome;
 };
+
+/* ------------------------------------------------------------------ */
+/* Upload-path fixtures                                                */
+/* ------------------------------------------------------------------ */
+
+/** A member of staff written straight into the facility, the way sync would have. */
+export const addStaff = async (
+  sql: Sql,
+  facility: FacilityRegistrationResult,
+  staff: { role: Role; permission?: StaffPermission; active?: boolean; name?: string },
+): Promise<Staff> => {
+  const id = `staff:${randomBytes(4).toString('hex')}`;
+  const record = Staff.parse({
+    ...envelopeFor(facility),
+    id,
+    type: 'staff',
+    staffId: id,
+    fullName: staff.name ?? `${staff.role} ${id}`,
+    role: staff.role,
+    permission: staff.permission ?? 'read_write',
+    active: staff.active ?? true,
+  });
+  await insertRecord(sql, 'staff', record);
+  return record;
+};
+
+export const asDevice = (credential: string) => ({ authorization: `Bearer ${credential}` });
+
+/** Uploads as the device and returns the acknowledged response. */
+export const upload = async (
+  app: FastifyInstance,
+  credential: string,
+  request: UploadRequest,
+): Promise<UploadResponse> => {
+  const response = await app.inject({ method: 'POST', url: '/sync/upload', headers: asDevice(credential), payload: request });
+  if (response.statusCode !== 200) throw new Error(`upload returned ${response.statusCode}: ${response.body}`);
+  return response.json() as UploadResponse;
+};
+
+let nextClientId = 1;
+/** PowerSync numbers queued writes per device; tests just need them distinct. */
+export const clientId = (): number => nextClientId++;
