@@ -1,0 +1,44 @@
+# PowerSync service configuration (self-hosted). Environment variables are
+# substituted with `!env` and must be prefixed PS_; docker-compose.yml sets
+# them. Nothing secret lives in this file.
+
+# The source of truth it replicates from — PostgreSQL's logical replication,
+# through the `powersync` publication created by migration 0003.
+replication:
+  connections:
+    - type: postgresql
+      uri: !env PS_SOURCE_URI
+      # Plain TCP inside the compose network; a deployment that crosses a
+      # network boundary sets `verify-full` and mounts the CA certificate.
+      sslmode: !env PS_SSLMODE
+
+# PowerSync's own bucket state, in its own database on the same server
+# (PostgreSQL ≥ 14 allows it) — never in the application database.
+storage:
+  type: postgresql
+  uri: !env PS_STORAGE_URI
+  sslmode: !env PS_SSLMODE
+
+# Sync Streams (edition 3), generated from the shared contract.
+sync_config:
+  path: /config/sync-config.yaml
+
+# Devices authenticate with the EdDSA token geneus-server mints from the device
+# credential; the public key comes from the server's JWKS endpoint. The
+# `facility_id` claim in that token is what every stream filters on.
+client_auth:
+  jwks_uri: !env PS_JWKS_URI
+  audience: ['powersync']
+  # PowerSync refuses JWKS URLs on private networks by default. Inside compose
+  # the server *is* on a private network, so the refusal is switched off here;
+  # a public deployment can leave the default in place.
+  jwks_reject_ip_ranges: []
+
+port: !env PS_PORT::number
+
+healthcheck:
+  probes:
+    use_http: true
+
+telemetry:
+  disable_telemetry_sharing: true

@@ -16,20 +16,55 @@ reads and writes happen on the device against SQLite; PowerSync moves them.
 
 ```
 npm install
-npm run db:up        # PostgreSQL 17 in Docker on :5433 (wal_level=logical, for PowerSync)
+npm run db:up        # PostgreSQL 17 in Docker on :5433 (wal_level=logical)
 npm run dev          # the server on :8080, watching sources; migrates at boot
+npm run sync:up      # the PowerSync service on :8090 (needs the server up for its JWKS)
 ```
 
-`docker-compose.yml` supplies PostgreSQL and `.env.example` lists every variable with
-its local default. There is no manual database setup: the server applies pending
-migrations from `src/db/migrations/` at every boot (`npm run db:migrate` does the same
-without starting the process).
+`docker-compose.yml` supplies PostgreSQL and PowerSync; `.env.example` lists every
+variable with its local default. There is no manual database setup: the first start of
+the PostgreSQL volume runs `docker/postgres/01-powersync.sh` (the `powersync` replication
+role and its bucket-storage database), and the server applies pending migrations from
+`src/db/migrations/` at every boot (`npm run db:migrate` does the same without starting
+the process). Migration `0003` creates the `powersync` publication over the synced
+tables only.
+
+> **Existing database (created before Phase D)?** Run the statements in
+> `docker/postgres/01-powersync.sh` once by hand, then `npm run db:migrate`.
+
+## PowerSync
+
+The PowerSync service (`journeyapps/powersync-service`, pinned in `docker-compose.yml`)
+replicates the tables in the `powersync` publication into its own bucket storage
+(`powersync_storage`, same PostgreSQL server, separate database) and streams them to
+devices.
+
+- **`powersync/service.yaml`** — the service configuration; secrets and addresses come
+  from `PS_*` environment variables set by compose.
+- **`powersync/sync-config.yaml`** — the Sync Streams: one `auto_subscribe` stream per
+  synced table, every contract column aliased to its contract name, filtered by
+  `facility_id = auth.parameter('facility_id')` — the claim geneus-server puts in the
+  device's token. **Generated from the shared contract** by `npm run sync:config`; the
+  test suite fails if the committed file is stale.
+- Devices authenticate with the token from `POST /sync/token`, verified against this
+  server's `/.well-known/jwks.json`.
+
+What arrives on a device (PowerSync's wire types, for the client's mapping): booleans as
+`1`/`0`, `numeric` as strings, `text[]` and `jsonb` as JSON text, timestamps as
+`2026-09-12T15:45:33.570000Z`, absent columns as `null`.
 
 ## Tests
 
 ```
 npm test             # against the PostgreSQL from db:up
+npm run test:sync    # the stack: server + PowerSync + PostgreSQL over real HTTP
 ```
+
+`test:sync` needs `docker compose up -d`; it starts the server itself if :8080 is not
+already answering, registers two scratch facilities in the development database, and
+proves through PowerSync's own stream that facility A's device receives only facility
+A's rows, that an upload reaches the stream, that a forged facility is refused and the
+refusal syncs back down, and that a token signed by another key is refused.
 
 Suites that touch persistence run against real PostgreSQL, never a mock: each test file
 creates its own database, migrates it, and drops it afterwards, so files run in
@@ -86,6 +121,9 @@ verify which human typed the offline PIN — attribution rests on the device's s
 | `npm test` | The suite, against the PostgreSQL from `db:up` |
 | `npm run db:up` · `db:down` | Local PostgreSQL in Docker |
 | `npm run db:migrate` | Apply pending migrations and exit |
+| `npm run sync:up` · `sync:down` | The PowerSync service in Docker (with PostgreSQL) |
+| `npm run sync:config` | Regenerate `powersync/sync-config.yaml` from the contract |
+| `npm run test:sync` | The stack integration suite (needs the compose services) |
 | `npm run invite -- "<label>" [days]` | Mint a single-use facility registration code |
 | `node scripts/generate-signing-key.ts` | Mint the Ed25519 signing keypair (once per environment) |
 | `npm run couch:up` · `sync:design` | Legacy — CouchDB for the suites that still need it (Phase F removes both) |
@@ -96,6 +134,8 @@ verify which human typed the offline PIN — attribution rests on the device's s
 | --- | --- |
 | `POSTGRES_URL` | The source of truth. Local default points at `db:up`. |
 | `POWERSYNC_PUBLIC_URL` | Where **devices** connect PowerSync to; handed out at enrollment, so never an internal address. |
+| `POWERSYNC_DB_PASSWORD` | Password of the `powersync` PostgreSQL role (compose only). |
+| `POWERSYNC_JWKS_URI` | Where the PowerSync *container* fetches this server's JWKS (compose only). |
 | `POWERSYNC_JWT_AUDIENCE` | The `aud` claim of sync tokens (default `powersync`); the PowerSync service is configured to expect it. |
 | `SYNC_TOKEN_TTL_SECONDS` | Sync token lifetime (default 3600; PowerSync caps at 86400). |
 | `APP_ORIGINS` | Comma-separated origins allowed to call this server. |

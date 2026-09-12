@@ -12,9 +12,13 @@
     "invite": "node scripts/create-invite.ts",
     "typecheck": "tsc --noEmit",
     "test": "node --test",
+    "test:sync": "node --test tests/powersync.integration.ts",
     "db:up": "docker compose up -d postgres",
     "db:down": "docker compose down",
+    "sync:up": "docker compose up -d postgres powersync",
+    "sync:down": "docker compose stop powersync",
     "db:migrate": "node scripts/migrate.ts",
+    "sync:config": "node scripts/generate-sync-config.ts",
     "couch:up": "docker compose --profile legacy up -d couchdb",
     "sync:design": "node scripts/sync-design-docs.ts"
   },

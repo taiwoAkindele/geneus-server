@@ -1,6 +1,11 @@
-# Local development. PostgreSQL is the source of truth; the PowerSync service
-# joins this file in Phase D. CouchDB remains only until Phase F removes the
-# last CouchDB code paths and their tests — the server no longer uses it.
+# The reference deployment: PostgreSQL (source of truth), the PowerSync
+# service, and — in production — the one Node process. Locally the server
+# usually runs on the host (`npm run dev`), so PowerSync reaches its JWKS via
+# host.docker.internal; a fully containerised stack sets POWERSYNC_JWKS_URI to
+# the server service instead.
+#
+# CouchDB remains only until Phase F removes the last CouchDB code paths and
+# their tests — the server no longer uses it.
 services:
   postgres:
     image: postgres:17-alpine
@@ -10,19 +15,50 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-geneus}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-devpassword}
       POSTGRES_DB: ${POSTGRES_DB:-geneus}
-    # PowerSync reads PostgreSQL's write-ahead log (Phase D), which needs
-    # logical decoding switched on from the first start.
+      # Read by docker/postgres/01-powersync.sh on first start.
+      POWERSYNC_DB_PASSWORD: ${POWERSYNC_DB_PASSWORD:-devpassword}
+    # PowerSync reads PostgreSQL's write-ahead log, which needs logical
+    # decoding switched on from the first start.
     command: ['postgres', '-c', 'wal_level=logical']
     ports:
       # 5433 on the host: 5432 is commonly taken by another local PostgreSQL.
       - '5433:5432'
     volumes:
       - postgres-data:/var/lib/postgresql/data
+      - ./docker/postgres:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-geneus} -d ${POSTGRES_DB:-geneus}']
       interval: 5s
       timeout: 3s
       retries: 10
+
+  powersync:
+    image: journeyapps/powersync-service:1.26.0
+    container_name: geneus-powersync
+    restart: unless-stopped
+    command: ['start', '-r', 'unified']
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      POWERSYNC_CONFIG_PATH: /config/service.yaml
+      PS_SOURCE_URI: postgresql://powersync:${POWERSYNC_DB_PASSWORD:-devpassword}@postgres:5432/${POSTGRES_DB:-geneus}
+      PS_STORAGE_URI: postgresql://powersync:${POWERSYNC_DB_PASSWORD:-devpassword}@postgres:5432/powersync_storage
+      PS_SSLMODE: disable
+      PS_JWKS_URI: ${POWERSYNC_JWKS_URI:-http://host.docker.internal:8080/.well-known/jwks.json}
+      PS_PORT: '8080'
+    extra_hosts:
+      # Linux hosts do not resolve host.docker.internal on their own.
+      - 'host.docker.internal:host-gateway'
+    ports:
+      - '8090:8080'
+    volumes:
+      - ./powersync:/config:ro
+    healthcheck:
+      test: ['CMD', 'node', '-e', "fetch('http://localhost:8080/probes/liveness').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 5s
+      timeout: 2s
+      retries: 20
 
   couchdb:
     image: couchdb:3.4
