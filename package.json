@@ -10,15 +10,18 @@
     "dev": "node --watch src/server.ts",
     "start": "node src/server.ts",
     "invite": "node scripts/create-invite.ts",
-    "sync:design": "node scripts/sync-design-docs.ts",
     "typecheck": "tsc --noEmit",
     "test": "node --test",
-    "couch:up": "docker compose up -d couchdb",
-    "couch:down": "docker compose down"
+    "db:up": "docker compose up -d postgres",
+    "db:down": "docker compose down",
+    "db:migrate": "node scripts/migrate.ts",
+    "couch:up": "docker compose --profile legacy up -d couchdb",
+    "sync:design": "node scripts/sync-design-docs.ts"
   },
   "dependencies": {
     "fastify": "^5.2.0",
     "nano": "^10.1.4",
+    "postgres": "^3.4.9",
     "zod": "^4.4.3"
   },
   "devDependencies": {
