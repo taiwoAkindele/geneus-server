@@ -45,25 +45,39 @@ export const buildApp = ({ config, sql, signer }: AppDependencies, options: AppO
 
   /**
    * "Is it working?" has to be one URL, so this reports the state of each
-   * thing the process is trusted for rather than just answering 200. The
-   * signing key is here because an unset one is invisible otherwise: it signs
-   * perfectly well, and only a restart reveals that every signature it issued
-   * has become unverifiable.
+   * thing the process depends on rather than just answering 200: PostgreSQL,
+   * the PowerSync service, the signing key, and the reconcile queue — a growing
+   * number of open rejections is the first sign that devices and server
+   * disagree about something. The signing key is here because an unset one is
+   * invisible otherwise: it signs perfectly well, and only a restart reveals
+   * that every signature it issued has become unverifiable.
    */
   app.get('/health', async () => {
-    const reachable = await sql`SELECT 1`.then(
-      () => true,
-      () => false,
-    );
-    const degraded = !reachable || (config.isProduction && signer.isEphemeral);
+    const [postgres, powerSync, openRejections] = await Promise.all([
+      sql`SELECT 1`.then(
+        () => 'reachable' as const,
+        () => 'unreachable' as const,
+      ),
+      fetch(`${config.powerSyncInternalUrl}/probes/liveness`, { signal: AbortSignal.timeout(2000) }).then(
+        (response) => (response.ok ? ('reachable' as const) : ('unhealthy' as const)),
+        () => 'unreachable' as const,
+      ),
+      sql<{ n: number }[]>`SELECT count(*)::int AS n FROM sync_rejections WHERE resolved_on IS NULL`.then(
+        ([row]) => row?.n ?? 0,
+        () => undefined,
+      ),
+    ]);
+    const degraded = postgres !== 'reachable' || powerSync !== 'reachable' || (config.isProduction && signer.isEphemeral);
 
     return {
       status: degraded ? 'degraded' : 'ok',
-      postgres: reachable ? 'reachable' : 'unreachable',
+      postgres,
+      powerSync,
       signingKey: {
         source: signer.isEphemeral ? 'ephemeral' : 'configured',
         fingerprint: signer.publicKeyFingerprint,
       },
+      openRejections,
       schemaVersion: SCHEMA_VERSION,
       startedOn,
     };

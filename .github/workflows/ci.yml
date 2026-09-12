@@ -31,21 +31,8 @@ jobs:
         ports:
           - 5433:5432
 
-      # Legacy (removed in Phase F): the CouchDB suites still run until the
-      # last CouchDB code paths are deleted.
-      couchdb:
-        image: couchdb:3.4
-        env:
-          COUCHDB_USER: admin
-          COUCHDB_PASSWORD: devpassword
-        ports:
-          - 5984:5984
-
     env:
       POSTGRES_URL: postgres://geneus:devpassword@127.0.0.1:5433/geneus
-      COUCHDB_URL: http://127.0.0.1:5984
-      COUCHDB_USER: admin
-      COUCHDB_PASSWORD: devpassword
 
     steps:
       - uses: actions/checkout@v4
@@ -61,13 +48,41 @@ jobs:
           cache: npm
 
       - run: npm ci
-
-      # Polled from the runner rather than declared as a container health check,
-      # because the CouchDB image ships no curl — a health command that cannot
-      # run would gate nothing and the tests would race the database.
-      - name: Wait for CouchDB
-        run: timeout 60 bash -c 'until curl -sf http://127.0.0.1:5984/_up > /dev/null; do sleep 2; done'
-
       - run: npm run typecheck
-
       - run: npm test
+
+  # The stack as devices meet it: PostgreSQL + PowerSync from docker-compose,
+  # the server started by the suite on the runner, PowerSync fetching its JWKS
+  # through the host gateway. Proves facility isolation end to end.
+  stack:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      - name: Start PostgreSQL and apply the schema
+        run: |
+          docker compose up -d postgres
+          timeout 60 bash -c 'until docker exec geneus-postgres pg_isready -U geneus -d geneus > /dev/null; do sleep 2; done'
+          npm run db:migrate
+
+      # After the schema: PowerSync needs the `powersync` publication from
+      # migration 0003 to exist before it can start replicating.
+      - name: Start PowerSync
+        run: |
+          docker compose up -d powersync
+          timeout 90 bash -c 'until curl -sf http://127.0.0.1:8090/probes/liveness > /dev/null; do sleep 3; done'
+
+      - run: npm run test:sync
+
+      - name: Service logs on failure
+        if: failure()
+        run: docker compose logs --no-color powersync | tail -100

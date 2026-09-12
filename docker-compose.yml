@@ -1,11 +1,14 @@
 # The reference deployment: PostgreSQL (source of truth), the PowerSync
-# service, and — in production — the one Node process. Locally the server
-# usually runs on the host (`npm run dev`), so PowerSync reaches its JWKS via
-# host.docker.internal; a fully containerised stack sets POWERSYNC_JWKS_URI to
-# the server service instead.
+# service, and the one Node process.
 #
-# CouchDB remains only until Phase F removes the last CouchDB code paths and
-# their tests — the server no longer uses it.
+# Two ways to run it:
+#   development  — `npm run dev` on the host + `npm run sync:up` (postgres and
+#                  powersync only); PowerSync reaches the host server's JWKS via
+#                  host.docker.internal.
+#   full stack   — `docker compose --profile stack up -d` with, in .env,
+#                  POWERSYNC_JWKS_URI=http://server:8080/.well-known/jwks.json
+#                  and a SIGNING_PRIVATE_KEY (production refuses to start
+#                  without one). This is the shape a production host runs.
 services:
   postgres:
     image: postgres:17-alpine
@@ -60,19 +63,33 @@ services:
       timeout: 2s
       retries: 20
 
-  couchdb:
-    image: couchdb:3.4
-    container_name: geneus-couchdb
+  server:
+    build: .
+    image: geneus-server:local
+    container_name: geneus-server
     restart: unless-stopped
-    profiles: ['legacy']
+    profiles: ['stack']
+    depends_on:
+      postgres:
+        condition: service_healthy
     environment:
-      COUCHDB_USER: ${COUCHDB_USER:-admin}
-      COUCHDB_PASSWORD: ${COUCHDB_PASSWORD:-devpassword}
+      NODE_ENV: ${NODE_ENV:-production}
+      PORT: '8080'
+      POSTGRES_URL: postgres://${POSTGRES_USER:-geneus}:${POSTGRES_PASSWORD:-devpassword}@postgres:5432/${POSTGRES_DB:-geneus}
+      # Device-facing: what the PWA is told to connect PowerSync to.
+      POWERSYNC_PUBLIC_URL: ${POWERSYNC_PUBLIC_URL:-http://127.0.0.1:8090}
+      POWERSYNC_INTERNAL_URL: http://powersync:8080
+      POWERSYNC_JWT_AUDIENCE: ${POWERSYNC_JWT_AUDIENCE:-powersync}
+      APP_ORIGINS: ${APP_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
+      SIGNING_PRIVATE_KEY: ${SIGNING_PRIVATE_KEY:-}
     ports:
-      - '5984:5984'
-    volumes:
-      - couchdb-data:/opt/couchdb/data
+      # 8081 on the host so it can coexist with `npm run dev` on 8080.
+      - '${SERVER_PORT:-8081}:8080'
+    healthcheck:
+      test: ['CMD', 'node', '-e', "fetch('http://localhost:8080/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
 
 volumes:
   postgres-data:
-  couchdb-data:

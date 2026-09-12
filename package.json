@@ -18,13 +18,10 @@
     "sync:up": "docker compose up -d postgres powersync",
     "sync:down": "docker compose stop powersync",
     "db:migrate": "node scripts/migrate.ts",
-    "sync:config": "node scripts/generate-sync-config.ts",
-    "couch:up": "docker compose --profile legacy up -d couchdb",
-    "sync:design": "node scripts/sync-design-docs.ts"
+    "sync:config": "node scripts/generate-sync-config.ts"
   },
   "dependencies": {
     "fastify": "^5.2.0",
-    "nano": "^10.1.4",
     "postgres": "^3.4.9",
     "zod": "^4.4.3"
   },
