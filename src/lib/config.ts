@@ -13,6 +13,12 @@ const Config = z
      * so it must be the address devices can reach, never an internal one.
      */
     powerSyncPublicUrl: z.url(),
+    /**
+     * Where this process reaches the PowerSync service for its health probe —
+     * the internal address (compose: http://powersync:8080). Falls back to the
+     * public one when unset.
+     */
+    powerSyncInternalUrl: z.url(),
     /** The `aud` claim of sync tokens; the PowerSync service is configured to expect it. */
     powerSyncAudience: z.string().min(1),
     /**
@@ -38,6 +44,7 @@ export const loadConfig = (): Config =>
   Config.parse({
     postgresUrl: process.env.POSTGRES_URL ?? 'postgres://geneus:devpassword@127.0.0.1:5433/geneus',
     powerSyncPublicUrl: process.env.POWERSYNC_PUBLIC_URL ?? 'http://127.0.0.1:8090',
+    powerSyncInternalUrl: process.env.POWERSYNC_INTERNAL_URL ?? process.env.POWERSYNC_PUBLIC_URL ?? 'http://127.0.0.1:8090',
     powerSyncAudience: process.env.POWERSYNC_JWT_AUDIENCE ?? 'powersync',
     syncTokenTtlSeconds: process.env.SYNC_TOKEN_TTL_SECONDS ?? 3600,
     port: process.env.PORT ?? 8080,

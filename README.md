@@ -2,15 +2,10 @@
 
 The one Node process (Fastify) beside PostgreSQL and the PowerSync service. It owns
 what synchronisation must never decide for itself: facility registration, device
-enrollment and credentials, the server clock, and — as of Phase C of the migration —
-authorising every mutation a device uploads before it reaches PostgreSQL. Clinical
-reads and writes happen on the device against SQLite; PowerSync moves them.
-
-> **Migration in progress (CouchDB → PostgreSQL + PowerSync).** PostgreSQL is the source
-> of truth from Phase B onward. `src/couch/`, its tests and `render.yaml` remain only
-> until Phase F removes them; the server no longer uses CouchDB. [PLAN.md](PLAN.md) is
-> rewritten in Phase F; until then its CouchDB sections describe the previous
-> architecture.
+enrollment and credentials, the server clock, and authorising every mutation a device
+uploads before it reaches PostgreSQL. Clinical reads and writes happen on the device
+against SQLite; PowerSync moves them. Read [PLAN.md](PLAN.md) and
+[../docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md) before changing anything.
 
 ## Local development
 
@@ -22,7 +17,10 @@ npm run sync:up      # the PowerSync service on :8090 (needs the server up for i
 ```
 
 `docker-compose.yml` supplies PostgreSQL and PowerSync; `.env.example` lists every
-variable with its local default. There is no manual database setup: the first start of
+variable with its local default. The npm scripts load `.env` when it exists
+(`--env-file-if-exists`), and so does Compose — `npm test` deliberately does not, so the
+suite can never point at a real database by accident. A running `npm run dev` does not
+re-read `.env`; restart it after editing. There is no manual database setup: the first start of
 the PostgreSQL volume runs `docker/postgres/01-powersync.sh` (the `powersync` replication
 role and its bucket-storage database), and the server applies pending migrations from
 `src/db/migrations/` at every boot (`npm run db:migrate` does the same without starting
@@ -60,16 +58,16 @@ npm test             # against the PostgreSQL from db:up
 npm run test:sync    # the stack: server + PowerSync + PostgreSQL over real HTTP
 ```
 
-`test:sync` needs `docker compose up -d`; it starts the server itself if :8080 is not
-already answering, registers two scratch facilities in the development database, and
-proves through PowerSync's own stream that facility A's device receives only facility
-A's rows, that an upload reaches the stream, that a forged facility is refused and the
-refusal syncs back down, and that a token signed by another key is refused.
+`test:sync` needs `npm run sync:up`; it starts the server itself if :8080 is not
+already answering (or targets `GENEUS_URL`), registers two scratch facilities in the
+development database, and proves through PowerSync's own stream that facility A's device
+receives only facility A's rows, that an upload reaches the stream, that a forged facility
+is refused and the refusal syncs back down, and that a token signed by another key is
+refused. CI runs it against the compose services.
 
 Suites that touch persistence run against real PostgreSQL, never a mock: each test file
 creates its own database, migrates it, and drops it afterwards, so files run in
 parallel. The contract's own suites (`shared/tests`) run as part of the same command.
-The legacy CouchDB suites still run too and need `npm run couch:up`; they go in Phase F.
 
 ## Routes
 
@@ -125,8 +123,10 @@ verify which human typed the offline PIN — attribution rests on the device's s
 | `npm run sync:config` | Regenerate `powersync/sync-config.yaml` from the contract |
 | `npm run test:sync` | The stack integration suite (needs the compose services) |
 | `npm run invite -- "<label>" [days]` | Mint a single-use facility registration code |
-| `node scripts/generate-signing-key.ts` | Mint the Ed25519 signing keypair (once per environment) |
-| `npm run couch:up` · `sync:design` | Legacy — CouchDB for the suites that still need it (Phase F removes both) |
+| `npm run key:generate` | Mint the Ed25519 signing keypair (once per environment) |
+| `scripts/backup.sh [dir]` | `pg_dump` of the source of truth (custom format), prunes by `RETENTION_DAYS` |
+| `scripts/restore.sh <dump> [db] [--replace]` | Restore into a new database (default) or replace the live one |
+| `scripts/restore-drill.sh` | Backup → restore into a scratch database → compare every table's row count → drop |
 
 ## Configuration
 
@@ -136,6 +136,7 @@ verify which human typed the offline PIN — attribution rests on the device's s
 | `POWERSYNC_PUBLIC_URL` | Where **devices** connect PowerSync to; handed out at enrollment, so never an internal address. |
 | `POWERSYNC_DB_PASSWORD` | Password of the `powersync` PostgreSQL role (compose only). |
 | `POWERSYNC_JWKS_URI` | Where the PowerSync *container* fetches this server's JWKS (compose only). |
+| `POWERSYNC_INTERNAL_URL` | Where this process reaches PowerSync for `/health`'s probe; defaults to the public URL. |
 | `POWERSYNC_JWT_AUDIENCE` | The `aud` claim of sync tokens (default `powersync`); the PowerSync service is configured to expect it. |
 | `SYNC_TOKEN_TTL_SECONDS` | Sync token lifetime (default 3600; PowerSync caps at 86400). |
 | `APP_ORIGINS` | Comma-separated origins allowed to call this server. |
@@ -143,5 +144,53 @@ verify which human typed the offline PIN — attribution rests on the device's s
 | `SIGNING_PRIVATE_KEY` | Ed25519 private key (PKCS#8, base64). Optional in development (an ephemeral key is minted at boot); **required in production** — the server refuses to start without it, because an ephemeral key invalidates every signature at the next restart. |
 | `NODE_ENV` | `production` switches to JSON logs and enforces the above. |
 
-Deployment (Docker Compose as the reference, provider-agnostic in production) is
-documented in Phase F, once the PowerSync service is part of the stack.
+## Deployment
+
+`docker-compose.yml` is the reference deployment: PostgreSQL 17, the PowerSync service,
+and this server's image. Production is provider-agnostic — anything that runs two
+containers beside a PostgreSQL with logical replication; verified options and provider
+caveats are in [ARCHITECTURE.md §11](../docs/ARCHITECTURE.md).
+
+```
+# full stack, as a production host runs it
+cp .env.example .env    # then set SIGNING_PRIVATE_KEY (npm run key:generate),
+                        # POWERSYNC_JWKS_URI=http://server:8080/.well-known/jwks.json,
+                        # the public URLs devices will use, and real passwords
+docker compose --profile stack up -d
+curl -s http://127.0.0.1:8081/health
+```
+
+Ordering on a fresh host: PostgreSQL → the schema (the server migrates at boot; or
+`npm run db:migrate`) → PowerSync, which needs the `powersync` publication from migration
+0003 before it can replicate. Put TLS in front of the server and PowerSync; PostgreSQL is
+never public. The server refuses to start in production without `SIGNING_PRIVATE_KEY`.
+
+### Managed PostgreSQL (Neon and similar)
+
+Only PostgreSQL moves; the server and PowerSync run as before. Once per database, as the
+owner role: enable logical replication (Neon: project settings), `npm run db:migrate`
+against the **direct** endpoint (creates the tables and the `powersync` publication), then
+
+```sql
+CREATE ROLE powersync WITH REPLICATION LOGIN PASSWORD '<set in the console afterwards>';
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO powersync;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO powersync;
+GRANT powersync TO <owner role>;            -- needed to own the next database
+CREATE DATABASE powersync_storage OWNER powersync;
+```
+
+Then set `POSTGRES_URL`, `POWERSYNC_SOURCE_URI`, `POWERSYNC_STORAGE_URI` and
+`POWERSYNC_SSLMODE=verify-full` (see `.env.example`) and start `powersync` (and `server`)
+without the local `postgres` service. A replication connection keeps a scale-to-zero
+provider's compute awake; budget for always-on hours.
+
+## Backup and restore
+
+PostgreSQL is the only store to back up; PowerSync's bucket storage is rebuilt by
+re-replication and devices are replicas. `scripts/backup.sh` dumps it; run it from cron
+and copy dumps off the host. `scripts/restore-drill.sh` proves a dump restores with the
+same row counts — schedule it, and treat a backup as verified only once it has passed.
+Both scripts take `POSTGRES_URL` and, to use the compose container's tools,
+`PG_TOOLS="docker compose exec -T postgres"` (with the URL as seen from inside the
+container, e.g. `postgres://geneus:devpassword@localhost:5432/geneus`). Recovery:
+`scripts/restore.sh <dump> geneus --replace`, start the server, restart PowerSync.
