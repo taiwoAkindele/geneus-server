@@ -69,8 +69,8 @@ export const scratchDatabase = async (): Promise<ScratchDatabase> => {
 
 export const signer: Signer = createSigner(undefined);
 
-/** The app under test: same construction as server.ts, no port, no log noise. */
-export const testApp = (sql: Sql) => buildApp({ config, sql, signer }, { logger: false });
+/** The app under test: same construction as server.ts, no port, no log noise, no rate limit. */
+export const testApp = (sql: Sql) => buildApp({ config, sql, signer }, { logger: false, rateLimit: false });
 
 /** Uppercase and hyphenated so it satisfies the facility-code contract. */
 export const scratchFacilityCode = (): string => `TEST-${randomBytes(3).toString('hex').toUpperCase()}`;

@@ -14,7 +14,11 @@ import { createRateLimiter } from './lib/rateLimit.ts';
  * tests can drive it with `inject` against a scratch database and no port.
  */
 export type AppDependencies = { config: Config; sql: Sql; signer: Signer };
-export type AppOptions = { logger?: boolean };
+/**
+ * `rateLimit: false` is for tests that make many requests from one injected
+ * address on purpose; tests/hardening.test.ts keeps it on to prove the limit.
+ */
+export type AppOptions = { logger?: boolean; rateLimit?: boolean };
 
 /**
  * An invite token in a URL is as good as the invite until it is claimed, so it
@@ -84,18 +88,20 @@ export const buildApp = ({ config, sql, signer }: AppDependencies, options: AppO
     if (request.method === 'OPTIONS') return reply.code(204).send();
   });
 
-  const limiter = createRateLimiter(RATE_LIMIT_PER_MINUTE, 60_000);
-  app.addHook('onRequest', async (request, reply) => {
-    const route = `${request.method} ${request.routeOptions.url ?? ''}`;
-    if (!RATE_LIMITED_ROUTES.has(route)) return;
-    const retryAfter = limiter.hit(`${route} ${request.ip}`);
-    if (retryAfter === undefined) return;
-    request.log.warn({ route }, 'rate limited');
-    return reply
-      .code(429)
-      .header('retry-after', String(retryAfter))
-      .send({ error: 'rate_limited', message: `Too many attempts — try again in ${retryAfter} seconds` } satisfies ApiErrorBody);
-  });
+  if (options.rateLimit !== false) {
+    const limiter = createRateLimiter(RATE_LIMIT_PER_MINUTE, 60_000);
+    app.addHook('onRequest', async (request, reply) => {
+      const route = `${request.method} ${request.routeOptions.url ?? ''}`;
+      if (!RATE_LIMITED_ROUTES.has(route)) return;
+      const retryAfter = limiter.hit(`${route} ${request.ip}`);
+      if (retryAfter === undefined) return;
+      request.log.warn({ route }, 'rate limited');
+      return reply
+        .code(429)
+        .header('retry-after', String(retryAfter))
+        .send({ error: 'rate_limited', message: `Too many attempts — try again in ${retryAfter} seconds` } satisfies ApiErrorBody);
+    });
+  }
 
   /**
    * Every response is JSON for a device, never a page to render or frame, and
