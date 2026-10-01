@@ -28,6 +28,13 @@ const HASH_BYTES = 32;
 export const hashPinSetupCode = (code: string, saltBase64: string, iterations: number): string =>
   pbkdf2Sync(normalizePinSetupCode(code), Buffer.from(saltBase64, 'base64'), iterations, HASH_BYTES, 'sha256').toString('base64');
 
+/**
+ * Who asked for a code: an admin for someone else (from the Staff screen), a
+ * facility admin for themselves by email, or the operator from the command
+ * line as the last resort. Recorded on the audit event.
+ */
+export type PinSetupCodeChannel = 'admin' | 'email' | 'operator';
+
 export type PinSetupCodeOutcome =
   | { ok: true; code: string; record: PinSetupCode }
   | { ok: false; error: 'unknown_staff' };
@@ -38,7 +45,7 @@ export type PinSetupCodeOutcome =
  */
 export const issuePinSetupCode = async (
   sql: Sql,
-  input: { facilityId: string; staffId: string; issuedBy: string; issuedFrom: string },
+  input: { facilityId: string; staffId: string; issuedBy: string; issuedFrom: string; channel?: PinSetupCodeChannel },
 ): Promise<PinSetupCodeOutcome> =>
   sql.begin(async (tx): Promise<PinSetupCodeOutcome> => {
     const staff = await findStaffInFacility(tx, input.facilityId, input.staffId);
@@ -71,11 +78,11 @@ export const issuePinSetupCode = async (
     await recordAuditEvent(tx, {
       facilityId: input.facilityId,
       deviceId: input.issuedFrom,
-      actorStaffId: input.issuedBy,
+      actorStaffId: input.issuedBy === 'system' ? undefined : input.issuedBy,
       action: 'create',
       entityType: 'pin_setup_code',
       entityId: record.id,
-      metadata: { staffId: input.staffId },
+      metadata: { staffId: input.staffId, channel: input.channel ?? 'admin' },
     });
     return { ok: true, code, record };
   });

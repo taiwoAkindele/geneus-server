@@ -87,6 +87,8 @@ services:
       APP_ORIGINS: ${APP_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
       SIGNING_PRIVATE_KEY: ${SIGNING_PRIVATE_KEY:-}
       TRUST_PROXY: ${TRUST_PROXY:-false}
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      EMAIL_FROM: ${EMAIL_FROM:-}
     ports:
       # 8081 on the host so it can coexist with `npm run dev` on 8080.
       - '${SERVER_PORT:-8081}:8080'

@@ -11,6 +11,7 @@ import { isPostgresError, UNIQUE_VIOLATION, type Sql } from '../db/client.ts';
 import { insertRecord } from '../db/records.ts';
 import { recordAuditEvent } from '../audit/auditEvents.ts';
 import { issueCredential } from '../devices/credentials.ts';
+import { checkVerificationCode, consumeVerification, registrationSubject, saveStaffEmail } from '../email/verifications.ts';
 import { claimInvite, findInvite, rejectionFor, type InviteRejection } from './invites.ts';
 
 /**
@@ -20,12 +21,17 @@ import { claimInvite, findInvite, rejectionFor, type InviteRejection } from './i
  * carried up by sync.
  *
  * One transaction: claim the invite, create the facility, its first admin and
- * the registering device, mint that device's credential. Any failure rolls the
- * whole thing back, invite included.
+ * the registering device, mint that device's credential, and keep the admin's
+ * proven email for PIN recovery. Any failure rolls the whole thing back,
+ * invite included.
+ *
+ * The email code is checked before the transaction, because a wrong guess must
+ * count against it even when the registration then fails; it is spent inside.
  */
 export type RegistrationOutcome =
   | { ok: true; result: FacilityRegistrationResult }
   | { ok: false; error: 'invalid_invite'; rejection: InviteRejection }
+  | { ok: false; error: 'invalid_email_code' }
   | { ok: false; error: 'facility_code_taken' }
   | { ok: false; error: 'device_already_enrolled' };
 
@@ -44,11 +50,22 @@ export const registerFacility = async (
   registration: FacilityRegistration,
   syncEndpoint: string,
 ): Promise<RegistrationOutcome> => {
+  const inviteRejection = rejectionFor(await findInvite(sql, registration.inviteToken));
+  if (inviteRejection) return { ok: false, error: 'invalid_invite', rejection: inviteRejection };
+  const verificationId = await checkVerificationCode(sql, {
+    purpose: 'registration',
+    subject: registrationSubject(registration.inviteToken),
+    email: registration.adminEmail,
+    code: registration.emailCode,
+  });
+  if (!verificationId) return { ok: false, error: 'invalid_email_code' };
+
   try {
     return await sql.begin(async (tx): Promise<RegistrationOutcome> => {
       const invite = await findInvite(tx, registration.inviteToken);
       const rejection = rejectionFor(invite);
       if (rejection) return { ok: false, error: 'invalid_invite', rejection };
+      if (!(await consumeVerification(tx, verificationId))) return { ok: false, error: 'invalid_email_code' };
       if (!(await claimInvite(tx, registration.inviteToken, registration.code))) {
         return { ok: false, error: 'invalid_invite', rejection: 'already_used' };
       }
@@ -101,6 +118,7 @@ export const registerFacility = async (
       await insertRecord(tx, 'facility', facility);
       await insertRecord(tx, 'staff', admin);
       await insertRecord(tx, 'device', device);
+      await saveStaffEmail(tx, facility.id, staffId, registration.adminEmail);
       const credential = await issueCredential(tx, device.id);
 
       await recordAuditEvent(tx, {

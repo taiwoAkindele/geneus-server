@@ -10,6 +10,7 @@ import {
 } from '#shared';
 import { mintSyncToken } from '../src/auth/syncToken.ts';
 import { createSql } from '../src/db/client.ts';
+import { createVerificationCode, registrationSubject } from '../src/email/verifications.ts';
 import { createInvite } from '../src/facilities/invites.ts';
 import { createSigner } from '../src/lib/signing.ts';
 import { loadConfig } from '../src/lib/config.ts';
@@ -69,6 +70,8 @@ describe('PowerSync stack', { timeout: 120_000 }, () => {
           lga: 'Ibadan SW',
           level: 'phc',
           adminFullName: 'Stack Admin',
+          adminEmail: 'stack@example.org',
+          emailCode: (await createVerificationCode(sql, { purpose: 'registration', subject: registrationSubject(invite.token), email: 'stack@example.org' })).code,
           deviceId: `device-${code}`,
           inviteToken: invite.token,
         }),

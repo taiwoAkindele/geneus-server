@@ -10,6 +10,7 @@
     "dev": "node --env-file-if-exists=.env --watch src/server.ts",
     "start": "node --env-file-if-exists=.env src/server.ts",
     "invite": "node --env-file-if-exists=.env scripts/create-invite.ts",
+    "pin-code": "node --env-file-if-exists=.env scripts/issue-pin-code.ts",
     "key:generate": "node --env-file-if-exists=.env scripts/generate-signing-key.ts",
     "typecheck": "tsc --noEmit",
     "test": "node --test",

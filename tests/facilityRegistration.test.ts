@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import type { FastifyInstance, InjectOptions } from 'fastify';
 import { FacilityRegistrationResult } from '#shared';
 import { createInvite } from '../src/facilities/invites.ts';
-import { scratchDatabase, scratchFacilityCode, testApp, type ScratchDatabase } from './postgres.ts';
+import { lastCodeSentTo, scratchDatabase, scratchFacilityCode, testApp, verifiedEmailFor, type ScratchDatabase } from './postgres.ts';
 
 /**
  * Registration through the HTTP contract, the way the PWA does it. What comes
@@ -23,6 +23,7 @@ describe('POST /facilities', () => {
       lga: 'Ibadan SW',
       level: 'phc',
       adminFullName: 'Amaka Okoro',
+      ...(await verifiedEmailFor(db.sql, invite.token, 'amaka@example.org')),
       deviceId: `device-${Math.random().toString(36).slice(2)}`,
       inviteToken: invite.token,
       ...overrides,
@@ -149,5 +150,59 @@ describe('POST /facilities', () => {
 
     assert.equal(response.json().postgres, 'reachable');
     assert.equal(response.json().schemaVersion, 3);
+  });
+
+  describe('admin email', () => {
+    it('emails a code to prove the address, only for a valid invite', async () => {
+      const invite = await createInvite(db.sql, 'Test PHC', 1);
+
+      const sent = await app.inject({ method: 'POST', url: '/email-verifications', payload: { email: ' Ngozi@Example.ORG ', inviteToken: invite.token } });
+      const refused = await app.inject({ method: 'POST', url: '/email-verifications', payload: { email: 'ngozi@example.org', inviteToken: 'NOTANINVITE' } });
+
+      assert.equal(sent.statusCode, 202, sent.body);
+      assert.equal(sent.json().sentTo, 'n•••@example.org');
+      assert.match(lastCodeSentTo('ngozi@example.org'), /^\d{6}$/);
+      assert.equal(refused.statusCode, 404);
+    });
+
+    it('registers with the code that was emailed', async () => {
+      const body = { ...(await registration()), adminEmail: 'ngozi@example.org' };
+      await app.inject({ method: 'POST', url: '/email-verifications', payload: { email: 'ngozi@example.org', inviteToken: body.inviteToken } });
+
+      const response = await post({ ...body, emailCode: lastCodeSentTo('ngozi@example.org') });
+
+      assert.equal(response.statusCode, 201, response.body);
+    });
+
+    it('refuses a wrong email code without spending the invite', async () => {
+      const body = await registration();
+      const wrong = body.emailCode === '000000' ? '000001' : '000000';
+
+      const response = await post({ ...body, emailCode: wrong });
+      const invite = await app.inject({ method: 'GET', url: `/invites/${body.inviteToken}` });
+
+      assert.equal(response.statusCode, 403);
+      assert.equal(response.json().error, 'invalid_email_code');
+      assert.equal(invite.statusCode, 200);
+    });
+
+    it('stops accepting a code after five wrong guesses, even the right one', async () => {
+      const body = await registration();
+      const wrong = body.emailCode === '000000' ? '000001' : '000000';
+      for (let attempt = 0; attempt < 5; attempt += 1) await post({ ...body, emailCode: wrong });
+
+      assert.equal((await post(body)).statusCode, 403);
+    });
+
+    it('keeps the admin email on the server only — not in the synced staff record', async () => {
+      const body = await registration();
+      const result = FacilityRegistrationResult.parse((await post(body)).json());
+
+      const [contact] = await db.sql<{ email: string }[]>`SELECT email FROM staff_contacts WHERE staff_id = ${result.admin.id}`;
+      assert.equal(contact?.email, 'amaka@example.org');
+      assert.equal(JSON.stringify(result.admin).includes('@'), false);
+      const published = await db.sql`SELECT 1 FROM pg_publication_tables WHERE tablename = 'staff_contacts'`;
+      assert.equal(published.length, 0);
+    });
   });
 });

@@ -16,6 +16,8 @@ import { createSigner, type Signer } from '../src/lib/signing.ts';
 import { buildApp } from '../src/app.ts';
 import { createInvite } from '../src/facilities/invites.ts';
 import { registerFacility } from '../src/facilities/registration.ts';
+import { createVerificationCode, registrationSubject } from '../src/email/verifications.ts';
+import type { EmailMessage, Mailer } from '../src/lib/email.ts';
 
 /**
  * Tests that touch persistence run against real PostgreSQL in Docker, never a
@@ -69,8 +71,26 @@ export const scratchDatabase = async (): Promise<ScratchDatabase> => {
 
 export const signer: Signer = createSigner(undefined);
 
-/** The app under test: same construction as server.ts, no port, no log noise, no rate limit. */
-export const testApp = (sql: Sql) => buildApp({ config, sql, signer }, { logger: false, rateLimit: false });
+/** Every email the app under test sent, newest last — the inbox tests read codes from. */
+export const mailbox: EmailMessage[] = [];
+const recordingMailer: Mailer = { configured: true, send: async (message) => void mailbox.push(message) };
+
+/** The code in the newest email to `to` ("...code is 482193.") — what a person would read out of their inbox. */
+export const lastCodeSentTo = (to: string, pattern = /code is (\w+)\./): string => {
+  const message = [...mailbox].reverse().find((candidate) => candidate.to === to);
+  const code = message?.text.match(pattern)?.[1];
+  if (!code) throw new Error(`no code was emailed to ${to}`);
+  return code;
+};
+
+/** The app under test: same construction as server.ts, no port, no log noise, no rate limit, mail kept in `mailbox`. */
+export const testApp = (sql: Sql) => buildApp({ config, sql, signer, mailer: recordingMailer }, { logger: false, rateLimit: false });
+
+/** A proven admin email for a registration, without the round trip through mail. */
+export const verifiedEmailFor = async (sql: Sql, inviteToken: string, email = 'admin@example.org') => ({
+  adminEmail: email,
+  emailCode: (await createVerificationCode(sql, { purpose: 'registration', subject: registrationSubject(inviteToken), email })).code,
+});
 
 /** Uppercase and hyphenated so it satisfies the facility-code contract. */
 export const scratchFacilityCode = (): string => `TEST-${randomBytes(3).toString('hex').toUpperCase()}`;
@@ -97,6 +117,7 @@ export const registerScratchFacility = async (
       lga: 'Ibadan SW',
       level: 'phc',
       adminFullName: 'Test Admin',
+      ...(await verifiedEmailFor(sql, invite.token)),
       deviceId: overrides.deviceId ?? `device-${randomBytes(4).toString('hex')}`,
       inviteToken: invite.token,
     },
