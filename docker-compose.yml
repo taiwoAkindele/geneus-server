@@ -52,6 +52,7 @@ services:
       PS_STORAGE_URI: ${POWERSYNC_STORAGE_URI:-postgresql://powersync:${POWERSYNC_DB_PASSWORD:-devpassword}@postgres:5432/powersync_storage}
       PS_SSLMODE: ${POWERSYNC_SSLMODE:-disable}
       PS_JWKS_URI: ${POWERSYNC_JWKS_URI:-http://host.docker.internal:8080/.well-known/jwks.json}
+      PS_JWT_AUDIENCE: ${POWERSYNC_JWT_AUDIENCE:-powersync}
       PS_PORT: '8080'
     extra_hosts:
       # Linux hosts do not resolve host.docker.internal on their own.
@@ -85,6 +86,7 @@ services:
       POWERSYNC_JWT_AUDIENCE: ${POWERSYNC_JWT_AUDIENCE:-powersync}
       APP_ORIGINS: ${APP_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
       SIGNING_PRIVATE_KEY: ${SIGNING_PRIVATE_KEY:-}
+      TRUST_PROXY: ${TRUST_PROXY:-false}
     ports:
       # 8081 on the host so it can coexist with `npm run dev` on 8080.
       - '${SERVER_PORT:-8081}:8080'

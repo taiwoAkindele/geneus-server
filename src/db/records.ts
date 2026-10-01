@@ -24,6 +24,7 @@ export const TABLE_FOR: Record<DocType, string> = {
   device: 'devices',
   audit_event: 'audit_events',
   sync_rejection: 'sync_rejections',
+  pin_setup_code: 'pin_setup_codes',
 };
 
 /**

@@ -40,4 +40,17 @@ psql_admin -c "CREATE DATABASE \"$target\""
 # shellcheck disable=SC2086
 $PG_TOOLS pg_restore --no-owner --no-privileges --exit-on-error --dbname="$target_url" < "$dump"
 
+# --no-privileges also dropped the PowerSync role's read access, and default
+# privileges belong to the old database, so they are granted again here —
+# without this, PowerSync cannot replicate the restored tables. Skipped where
+# the role does not exist (a restore onto a server with no PowerSync).
+# shellcheck disable=SC2086
+$PG_TOOLS psql --quiet --no-psqlrc -v ON_ERROR_STOP=1 --dbname="$target_url" -c "
+  DO \$\$ BEGIN
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'powersync') THEN
+      GRANT SELECT ON ALL TABLES IN SCHEMA public TO powersync;
+      ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO powersync;
+    END IF;
+  END \$\$;"
+
 echo "$target"

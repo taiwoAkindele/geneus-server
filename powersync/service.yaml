@@ -28,7 +28,9 @@ sync_config:
 # `facility_id` claim in that token is what every stream filters on.
 client_auth:
   jwks_uri: !env PS_JWKS_URI
-  audience: ['powersync']
+  # The same value as the server's POWERSYNC_JWT_AUDIENCE; compose passes one
+  # setting to both, so the two cannot drift apart.
+  audience: [!env PS_JWT_AUDIENCE]
   # PowerSync refuses JWKS URLs on private networks by default. Inside compose
   # the server *is* on a private network, so the refusal is switched off here;
   # a public deployment can leave the default in place.
