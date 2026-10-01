@@ -50,6 +50,10 @@ $PG_TOOLS psql --quiet --no-psqlrc -v ON_ERROR_STOP=1 --dbname="$target_url" -c 
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'powersync') THEN
       GRANT SELECT ON ALL TABLES IN SCHEMA public TO powersync;
       ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO powersync;
+      -- ...except admin emails and their codes, which PowerSync never needs (migration 0005).
+      IF to_regclass('public.staff_contacts') IS NOT NULL THEN
+        REVOKE ALL ON staff_contacts, email_verifications FROM powersync;
+      END IF;
     END IF;
   END \$\$;"
 

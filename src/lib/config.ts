@@ -38,7 +38,15 @@ const Config = z
      */
     trustProxy: z.boolean(),
     signingPrivateKey: z.string().optional(),
+    /** Resend API key; without it, development logs emails instead of sending them (src/lib/email.ts). */
+    resendApiKey: z.string().min(1).optional(),
+    /** The sender, e.g. `Geneus <no-reply@example.org>` — on a domain verified with Resend. */
+    emailFrom: z.string().min(1).optional(),
     isProduction: z.boolean(),
+  })
+  .refine((config) => !config.resendApiKey || Boolean(config.emailFrom), {
+    message: 'EMAIL_FROM is required when RESEND_API_KEY is set: Resend refuses a message with no sender',
+    path: ['emailFrom'],
   })
   .refine((config) => !config.isProduction || Boolean(config.signingPrivateKey), {
     message:
@@ -61,5 +69,7 @@ export const loadConfig = (): Config =>
       .map((origin) => origin.trim()),
     trustProxy: process.env.TRUST_PROXY === 'true',
     signingPrivateKey: process.env.SIGNING_PRIVATE_KEY,
+    resendApiKey: process.env.RESEND_API_KEY || undefined,
+    emailFrom: process.env.EMAIL_FROM || undefined,
     isProduction: process.env.NODE_ENV === 'production',
   });

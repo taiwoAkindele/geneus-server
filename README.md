@@ -80,6 +80,9 @@ parallel. The contract's own suites (`shared/tests`) run as part of the same com
 | `POST /devices/codes` | *(device credential)* An enrolled device asks for a 15-minute, single-use enrollment code; `issuedBy` must hold `device:enroll` |
 | `POST /devices` | The joining device spends the code and receives its own credential; the code decides the facility |
 | `POST /devices/:id/revoke` | *(device credential)* De-enrol a device of the caller's facility; `revokedBy` must hold `device:revoke`; optional wipe |
+| `POST /email-verifications` | Email a 6-digit code to the would-be admin, proving their address before `POST /facilities` (needs a valid invite) |
+| `POST /staff/:staffId/email/code` · `POST /staff/:staffId/email` | *(device credential)* A facility admin adds or replaces their own recovery email: a code to the new address, and to the one on file when replacing it |
+| `POST /staff/:staffId/pin-codes/email` | *(device credential)* A facility admin who forgot their PIN gets a PIN setup code at their recovery email |
 | `POST /staff/:staffId/pin-codes` | *(device credential)* A 24-hour, one-time code that lets that staff member set their PIN on a facility device; `issuedBy` must hold `staff:manage`; revokes their earlier codes. Only the hash is stored and synced |
 | `GET /.well-known/jwks.json` | The Ed25519 public key as a JWK — PowerSync's `jwks_uri` |
 | `POST /sync/token` | *(device credential)* A ≤1-hour EdDSA JWT: `sub` = device, `facility_id` claim drives the Sync Streams |
@@ -137,6 +140,7 @@ verify which human typed the offline PIN — attribution rests on the device's s
 | `npm run sync:config` | Regenerate `powersync/sync-config.yaml` from the contract |
 | `npm run test:sync` | The stack integration suite (needs the compose services) |
 | `npm run invite -- "<label>" [days]` | Mint a single-use facility registration code |
+| `npm run pin-code -- <FACILITY> [staffId]` | Last resort for a locked-out facility admin: lists the admins, or issues one a PIN setup code. Confirm who is asking first |
 | `npm run key:generate` | Mint the Ed25519 signing keypair (once per environment) |
 | `scripts/backup.sh [dir]` | `pg_dump` of the source of truth (custom format), prunes by `RETENTION_DAYS` |
 | `scripts/restore.sh <dump> [db] [--replace]` | Restore into a new database (default) or replace the live one |
@@ -155,6 +159,7 @@ verify which human typed the offline PIN — attribution rests on the device's s
 | `SYNC_TOKEN_TTL_SECONDS` | Sync token lifetime (default 3600; PowerSync caps at 86400). |
 | `APP_ORIGINS` | Comma-separated origins allowed to call this server. |
 | `PORT` | Listening port. |
+| `RESEND_API_KEY` · `EMAIL_FROM` | Resend API key and sender for admin email verification and PIN recovery. Unset in development: emails are written to the log instead. |
 | `TRUST_PROXY` | `true` only behind a TLS proxy that sets `X-Forwarded-For`; it decides which address the rate limits count. |
 | `SIGNING_PRIVATE_KEY` | Ed25519 private key (PKCS#8, base64). Optional in development (an ephemeral key is minted at boot); **required in production** — the server refuses to start without it, because an ephemeral key invalidates every signature at the next restart. |
 | `NODE_ENV` | `production` switches to JSON logs and enforces the above. |

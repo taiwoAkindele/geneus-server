@@ -8,12 +8,14 @@ import { registerFacilityRoutes } from './routes/facilities.ts';
 import { registerStaffRoutes } from './routes/staff.ts';
 import { registerSyncRoutes } from './routes/sync.ts';
 import { createRateLimiter } from './lib/rateLimit.ts';
+import { createMailer, EmailNotSent, type Mailer } from './lib/email.ts';
 
 /**
  * The HTTP application, separate from the process that listens (server.ts) so
  * tests can drive it with `inject` against a scratch database and no port.
  */
-export type AppDependencies = { config: Config; sql: Sql; signer: Signer };
+/** `mailer` defaults to one built from the config; tests pass one that records what was sent. */
+export type AppDependencies = { config: Config; sql: Sql; signer: Signer; mailer?: Mailer };
 /**
  * `rateLimit: false` is for tests that make many requests from one injected
  * address on purpose; tests/hardening.test.ts keeps it on to prove the limit.
@@ -40,10 +42,19 @@ const serializers = {
  * token is the only secret: a guesser gets a handful of tries a minute per
  * address, a real person mistyping gets plenty.
  */
-const RATE_LIMITED_ROUTES = new Set(['GET /invites/:token', 'POST /facilities', 'POST /devices']);
+const RATE_LIMITED_ROUTES = new Set([
+  'GET /invites/:token',
+  'POST /facilities',
+  'POST /devices',
+  // Each sends an email, or checks a 6-digit code.
+  'POST /email-verifications',
+  'POST /staff/:staffId/email/code',
+  'POST /staff/:staffId/email',
+  'POST /staff/:staffId/pin-codes/email',
+]);
 const RATE_LIMIT_PER_MINUTE = 10;
 
-export const buildApp = ({ config, sql, signer }: AppDependencies, options: AppOptions = {}): FastifyInstance => {
+export const buildApp = ({ config, sql, signer, mailer: givenMailer }: AppDependencies, options: AppOptions = {}): FastifyInstance => {
   /**
    * Pretty printing is a terminal convenience, and `pino-pretty` is a dev
    * dependency the production image does not install — asking for it there
@@ -57,6 +68,7 @@ export const buildApp = ({ config, sql, signer }: AppDependencies, options: AppO
         ? { serializers }
         : { serializers, transport: { target: 'pino-pretty' } };
   const app = Fastify({ logger, trustProxy: config.trustProxy });
+  const mailer = givenMailer ?? createMailer(config, app.log);
 
   /**
    * A POST with `content-type: application/json` and no body (a token request
@@ -122,6 +134,11 @@ export const buildApp = ({ config, sql, signer }: AppDependencies, options: AppO
    * body, an oversized one) is the caller's to fix, so its message is kept.
    */
   app.setErrorHandler((error: Error & { statusCode?: number; code?: string }, request, reply) => {
+    // The mail provider refused or could not be reached: the caller can try again.
+    if (error instanceof EmailNotSent) {
+      request.log.error({ err: error }, 'email not sent');
+      return reply.code(502).send({ error: 'email_not_sent', message: 'The email could not be sent — try again in a minute' } satisfies ApiErrorBody);
+    }
     const status = error.statusCode && error.statusCode >= 400 ? error.statusCode : 500;
     if (status >= 500) {
       request.log.error({ err: error }, 'request failed');
@@ -168,6 +185,8 @@ export const buildApp = ({ config, sql, signer }: AppDependencies, options: AppO
         fingerprint: signer.publicKeyFingerprint,
       },
       openRejections,
+      // Not part of `degraded`: without email, only admin PIN recovery and new registrations are affected.
+      email: mailer.configured ? 'configured' : 'not configured',
       schemaVersion: SCHEMA_VERSION,
       startedOn,
     });
@@ -182,9 +201,9 @@ export const buildApp = ({ config, sql, signer }: AppDependencies, options: AppO
     return { ...payload, signature: signer.sign(payload), publicKey: signer.publicKeyBase64 };
   });
 
-  registerFacilityRoutes(app, sql, config);
+  registerFacilityRoutes(app, sql, config, mailer);
   registerDeviceRoutes(app, sql, config);
-  registerStaffRoutes(app, sql);
+  registerStaffRoutes(app, sql, mailer);
   registerSyncRoutes(app, sql, config, signer);
 
   return app;
