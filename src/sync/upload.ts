@@ -4,10 +4,13 @@ import {
   IMMUTABLE_ENVELOPE_FIELDS,
   OFFLINE_AUTHORIZATION_POLICY,
   parseDocument,
+  PIN_SETUP_CODE_CLAIM_FIELDS,
+  ROSTER_SIGNED_FIELDS,
   type AnyDocument,
   type ConflictingColumn,
   type DocType,
   type Permission,
+  type PinSetupCode,
   type RejectionCategory,
   type UploadMutation,
   type UploadRejection,
@@ -49,7 +52,9 @@ import { claimMutation, recordRejection } from './ledger.ts';
  */
 
 /** Written by the server; a device may never insert them. */
-const SERVER_WRITTEN: readonly DocType[] = ['facility', 'device', 'sync_rejection'];
+const SERVER_WRITTEN: readonly DocType[] = ['facility', 'device', 'sync_rejection', 'pin_setup_code'];
+/** Server-written, but a device may patch the few columns that record what it did with them. */
+const DEVICE_MARKABLE: readonly DocType[] = ['sync_rejection', 'pin_setup_code'];
 /** Never patched: the record is the event. */
 const APPEND_ONLY: readonly DocType[] = ['register_entry', 'stock_movement', 'audit_event'];
 /** Never patched: a change is a new version (SCHEMA.md §11.2). */
@@ -116,6 +121,10 @@ const patchPermissions = (table: DocType, changes: Record<string, unknown>): Per
       return columns.every((column) => column === 'extendedUntil') ? ['roster:extend'] : ['roster:assign'];
     case 'sync_rejection':
       return columns.every((column) => RESOLUTION_COLUMNS.has(column)) ? ['sync_rejection:resolve'] : undefined;
+    case 'pin_setup_code':
+      return columns.every((column) => (PIN_SETUP_CODE_CLAIM_FIELDS as readonly string[]).includes(column))
+        ? ['pin_setup_code:claim']
+        : undefined;
     default:
       return undefined;
   }
@@ -165,6 +174,22 @@ const isStale = (permissions: Permission[], performedOn: string | undefined, upl
 
 type Context = { tx: Tx; identity: DeviceIdentity; uploadedAt: number };
 
+/**
+ * Claiming a PIN setup code is granted by no role (SCHEMA.md §10): it belongs
+ * to the one person the code was issued for, who has no PIN yet to sign in
+ * with. By the time this arrives the PIN is already set on that device, so a
+ * refusal here is a record for the facility to look at, not a way to undo it.
+ */
+const claimRefusal = (code: PinSetupCode, updatedBy: string, changes: Record<string, unknown>): Refusal | undefined => {
+  if (updatedBy !== code.staffId) return refuse('authorization', 'a PIN setup code can only be used by the person it was issued for');
+  if (code.usedOn) return refuse('conflict', 'this PIN setup code was already used on another device');
+  const usedOn = typeof changes.usedOn === 'string' ? Date.parse(changes.usedOn) : Number.NaN;
+  if (Number.isNaN(usedOn)) return refuse('validation', 'a used PIN setup code must say when it was used');
+  if (code.revokedOn && usedOn > Date.parse(code.revokedOn)) return refuse('validation', 'this PIN setup code had been replaced by a newer one');
+  if (usedOn > Date.parse(code.expiresOn)) return refuse('validation', 'this PIN setup code had expired');
+  return undefined;
+};
+
 const evaluatePut = async ({ tx, identity, uploadedAt }: Context, mutation: UploadMutation): Promise<Refusal | undefined> => {
   const table = mutation.table;
   if (SERVER_WRITTEN.includes(table)) return refuse('authorization', `${table} records are written by the server`);
@@ -201,7 +226,7 @@ const evaluatePatch = async ({ tx, identity, uploadedAt }: Context, mutation: Up
   const table = mutation.table;
   if (APPEND_ONLY.includes(table)) return refuse('validation', `${table} records are append-only`);
   if (IMMUTABLE_PER_VERSION.includes(table)) return refuse('validation', `${table} records are immutable; publish a new version`);
-  if (SERVER_WRITTEN.includes(table) && table !== 'sync_rejection') return refuse('authorization', `${table} records are written by the server`);
+  if (SERVER_WRITTEN.includes(table) && !DEVICE_MARKABLE.includes(table)) return refuse('authorization', `${table} records are written by the server`);
 
   const changes: Record<string, unknown> = { ...mutation.data, id: mutation.id };
   const owned = SERVER_OWNED_COLUMNS[table] ?? [];
@@ -226,9 +251,14 @@ const evaluatePatch = async ({ tx, identity, uploadedAt }: Context, mutation: Up
   const staff = await findStaffInFacility(tx, identity.facilityId, updatedBy);
   if (!staff) return refuse('identity', describeDenial({ kind: 'not_member', staffId: updatedBy }));
   if (!staff.active) return refuse('authorization', describeDenial({ kind: 'deactivated', staffId: updatedBy }));
-  for (const permission of permissions) {
-    const denial = staffDenial(staff, updatedBy, permission);
-    if (denial) return refuse('authorization', describeDenial(denial));
+  if (table === 'pin_setup_code') {
+    const refusal = claimRefusal(current as PinSetupCode, updatedBy, changes);
+    if (refusal) return refusal;
+  } else {
+    for (const permission of permissions) {
+      const denial = staffDenial(staff, updatedBy, permission);
+      if (denial) return refuse('authorization', describeDenial(denial));
+    }
   }
   const performedOn = typeof changes.updatedOn === 'string' ? changes.updatedOn : undefined;
   if (isStale(permissions, performedOn, uploadedAt)) {
@@ -259,6 +289,11 @@ const evaluatePatch = async ({ tx, identity, uploadedAt }: Context, mutation: Up
       ([column]) => column !== 'id' && (lastWriteWins || !conflicts.some((conflict) => conflict.column === column)),
     ),
   );
+  // A signature covers the values it was made over; once one of them changes it
+  // is cleared, and the signing sweep signs the shift again (SCHEMA.md §10).
+  if (table === 'roster_shift' && (ROSTER_SIGNED_FIELDS as readonly string[]).some((field) => field in applied)) {
+    applied.signature = null;
+  }
   const nothingLeft = Object.keys(applied).every((column) => PATCH_METADATA.has(column));
 
   if (!nothingLeft) {

@@ -29,6 +29,14 @@ const Config = z
     syncTokenTtlSeconds: z.coerce.number().int().positive().max(86_400),
     port: z.coerce.number().int().positive(),
     corsOrigins: z.array(z.url()).min(1),
+    /**
+     * Whether to take the client address from X-Forwarded-For. Only true behind
+     * a TLS proxy that sets it: otherwise every request appears to come from
+     * the proxy, and one rate limit would lock out everyone at once — and
+     * without a proxy, trusting the header would let a caller pick their own
+     * address and walk past the limit.
+     */
+    trustProxy: z.boolean(),
     signingPrivateKey: z.string().optional(),
     isProduction: z.boolean(),
   })
@@ -51,6 +59,7 @@ export const loadConfig = (): Config =>
     corsOrigins: (process.env.APP_ORIGINS ?? 'http://localhost:5173,http://127.0.0.1:5173')
       .split(',')
       .map((origin) => origin.trim()),
+    trustProxy: process.env.TRUST_PROXY === 'true',
     signingPrivateKey: process.env.SIGNING_PRIVATE_KEY,
     isProduction: process.env.NODE_ENV === 'production',
   });

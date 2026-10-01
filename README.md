@@ -73,13 +73,14 @@ parallel. The contract's own suites (`shared/tests`) run as part of the same com
 
 | Route | Purpose |
 | --- | --- |
-| `GET /health` | PostgreSQL reachability, signing-key source and fingerprint, schema version |
+| `GET /health` | PostgreSQL and PowerSync reachability, signing-key source and fingerprint, open rejections, schema version; **503** when degraded |
 | `GET /time` | Ed25519-signed server clock — the anchor of the 7-day offline window |
 | `GET /invites/:token` | Check a facility invite before the admin fills anything in |
 | `POST /facilities` | Register a facility, its first admin, and enrol the registering device (returns the device credential, once) |
 | `POST /devices/codes` | *(device credential)* An enrolled device asks for a 15-minute, single-use enrollment code; `issuedBy` must hold `device:enroll` |
 | `POST /devices` | The joining device spends the code and receives its own credential; the code decides the facility |
 | `POST /devices/:id/revoke` | *(device credential)* De-enrol a device of the caller's facility; `revokedBy` must hold `device:revoke`; optional wipe |
+| `POST /staff/:staffId/pin-codes` | *(device credential)* A 24-hour, one-time code that lets that staff member set their PIN on a facility device; `issuedBy` must hold `staff:manage`; revokes their earlier codes. Only the hash is stored and synced |
 | `GET /.well-known/jwks.json` | The Ed25519 public key as a JWK — PowerSync's `jwks_uri` |
 | `POST /sync/token` | *(device credential)* A ≤1-hour EdDSA JWT: `sub` = device, `facility_id` claim drives the Sync Streams |
 | `POST /sync/upload` | *(device credential)* The PowerSync connector's write-back; every mutation authorised server-side (below) |
@@ -88,12 +89,25 @@ Every shape is in the shared contract (`shared/src/api.ts`). Device-facing route
 `Authorization: Bearer <deviceId>.<secret>`; a refused credential is a bare 401 and the
 reason (wrong secret, revoked, wipe requested) goes to the log.
 
+The routes a caller reaches without a device credential (`GET /invites/:token`,
+`POST /facilities`, `POST /devices`) allow 10 attempts a minute per address, then answer
+429 with `Retry-After`. Every response carries `no-store` and security headers; a 5xx
+answers with a plain sentence and logs the error, so database text never reaches a caller.
+On SIGTERM the server finishes requests in flight and the signing pass, then closes.
+
+### Roster signing
+
+Every 60 seconds the server signs each unsigned roster shift (`src/roster/rosterSigning.ts`)
+over `rosterSignaturePayload` — staff, facility, start, end and any extension — and devices
+verify it offline. An upload that changes any of those fields clears the signature, and the
+next pass signs the new values.
+
 ### What `/sync/upload` enforces
 
 Per mutation, in one PostgreSQL transaction (`src/sync/upload.ts`):
 
 1. **Ledger** — `(device, clientId)` claimed first; a retry is acknowledged as a duplicate and applies nothing.
-2. **Table and operation** — only contract types; `facility`, `device` and `sync_rejection` are server-written; deletes are never accepted.
+2. **Table and operation** — only contract types; `facility`, `device`, `sync_rejection` and `pin_setup_code` are server-written (a device may only resolve a rejection, or mark a PIN setup code used as the person it was issued for); deletes are never accepted.
 3. **Identity** — `facilityId` and `deviceId` in the payload must equal the *authenticated* device's; the client never chooses them.
 4. **Attribution** — `createdBy` (put) / `updatedBy` (patch) must be an **active** member of staff of that facility.
 5. **Permission** — from the server's `staff` row and the shared matrix; high-risk actions (`staff:*`, `device:*`) must arrive within 24 h of being performed.
@@ -137,10 +151,11 @@ verify which human typed the offline PIN — attribution rests on the device's s
 | `POWERSYNC_DB_PASSWORD` | Password of the `powersync` PostgreSQL role (compose only). |
 | `POWERSYNC_JWKS_URI` | Where the PowerSync *container* fetches this server's JWKS (compose only). |
 | `POWERSYNC_INTERNAL_URL` | Where this process reaches PowerSync for `/health`'s probe; defaults to the public URL. |
-| `POWERSYNC_JWT_AUDIENCE` | The `aud` claim of sync tokens (default `powersync`); the PowerSync service is configured to expect it. |
+| `POWERSYNC_JWT_AUDIENCE` | The `aud` claim of sync tokens (default `powersync`); compose passes the same value to the PowerSync service. |
 | `SYNC_TOKEN_TTL_SECONDS` | Sync token lifetime (default 3600; PowerSync caps at 86400). |
 | `APP_ORIGINS` | Comma-separated origins allowed to call this server. |
 | `PORT` | Listening port. |
+| `TRUST_PROXY` | `true` only behind a TLS proxy that sets `X-Forwarded-For`; it decides which address the rate limits count. |
 | `SIGNING_PRIVATE_KEY` | Ed25519 private key (PKCS#8, base64). Optional in development (an ephemeral key is minted at boot); **required in production** — the server refuses to start without it, because an ephemeral key invalidates every signature at the next restart. |
 | `NODE_ENV` | `production` switches to JSON logs and enforces the above. |
 
