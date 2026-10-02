@@ -1,0 +1,88 @@
+name: CI
+
+# Pull requests are where review happens; main and dev are what deploys. A push
+# to a feature branch with an open PR would otherwise run the same job twice.
+on:
+  pull_request:
+  push:
+    branches: [main, dev]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+
+    services:
+      # The suite talks to real PostgreSQL by design: the constraints under test
+      # are enforced by PostgreSQL, so running them anywhere else would prove
+      # nothing. Each test file creates and drops its own database, which is
+      # why the user is the superuser. These credentials are throwaway — the
+      # container lives for one job and is reachable only from inside it.
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: geneus
+          POSTGRES_PASSWORD: devpassword
+          POSTGRES_DB: geneus
+        options: >-
+          --health-cmd "pg_isready -U geneus -d geneus"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+        ports:
+          - 5433:5432
+
+    env:
+      POSTGRES_URL: postgres://geneus:devpassword@127.0.0.1:5433/geneus
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The shared contract is a submodule; without it nothing resolves.
+          submodules: recursive
+
+      - uses: actions/setup-node@v4
+        with:
+          # Matches the Dockerfile: Node runs the TypeScript sources directly,
+          # so the runtime version is the build.
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+
+  # The stack as devices meet it: PostgreSQL + PowerSync from docker-compose,
+  # the server started by the suite on the runner, PowerSync fetching its JWKS
+  # through the host gateway. Proves facility isolation end to end.
+  stack:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      - name: Start PostgreSQL and apply the schema
+        run: |
+          docker compose up -d postgres
+          timeout 60 bash -c 'until docker exec geneus-postgres pg_isready -U geneus -d geneus > /dev/null; do sleep 2; done'
+          npm run db:migrate
+
+      # After the schema: PowerSync needs the `powersync` publication from
+      # migration 0003 to exist before it can start replicating.
+      - name: Start PowerSync
+        run: |
+          docker compose up -d powersync
+          timeout 90 bash -c 'until curl -sf http://127.0.0.1:8090/probes/liveness > /dev/null; do sleep 3; done'
+
+      - run: npm run test:sync
+
+      - name: Service logs on failure
+        if: failure()
+        run: docker compose logs --no-color powersync | tail -100

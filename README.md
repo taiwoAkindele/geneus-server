@@ -1,1 +1,334 @@
 # geneus-server
+
+The one Node process (Fastify) beside PostgreSQL and the PowerSync service. It owns
+what synchronisation must never decide for itself: facility registration, device
+enrollment and credentials, the server clock, and authorising every mutation a device
+uploads before it reaches PostgreSQL. Clinical reads and writes happen on the device
+against SQLite; PowerSync moves them. Read [PLAN.md](PLAN.md) and
+[../docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md) before changing anything.
+
+## Local development
+
+```
+npm install
+npm run db:up        # PostgreSQL 17 in Docker on :5433 (wal_level=logical)
+npm run dev          # the server on :8080, watching sources; migrates at boot
+npm run sync:up      # the PowerSync service on :8090 (needs the server up for its JWKS)
+```
+
+`docker-compose.yml` supplies PostgreSQL and PowerSync; `.env.example` lists every
+variable with its local default. The npm scripts load `.env` when it exists
+(`--env-file-if-exists`), and so does Compose — `npm test` deliberately does not, so the
+suite can never point at a real database by accident. A running `npm run dev` does not
+re-read `.env`; restart it after editing. There is no manual database setup: the first start of
+the PostgreSQL volume runs `docker/postgres/01-powersync.sh` (the `powersync` replication
+role and its bucket-storage database), and the server applies pending migrations from
+`src/db/migrations/` at every boot (`npm run db:migrate` does the same without starting
+the process). Migration `0003` creates the `powersync` publication over the synced
+tables only.
+
+> **Existing database (created before Phase D)?** Run the statements in
+> `docker/postgres/01-powersync.sh` once by hand, then `npm run db:migrate`.
+
+## PowerSync
+
+The PowerSync service (`journeyapps/powersync-service`, pinned in `powersync/Dockerfile`,
+which bakes this folder's configuration into the image; compose builds it and mounts the
+folder over it, so local edits apply without a rebuild)
+replicates the tables in the `powersync` publication into its own bucket storage
+(`powersync_storage`, same PostgreSQL server, separate database) and streams them to
+devices.
+
+- **`powersync/service.yaml`** — the service configuration; secrets and addresses come
+  from `PS_*` environment variables set by compose.
+- **`powersync/sync-config.yaml`** — the Sync Streams: one `auto_subscribe` stream per
+  synced table, every contract column aliased to its contract name, filtered by
+  `facility_id = auth.parameter('facility_id')` — the claim geneus-server puts in the
+  device's token. **Generated from the shared contract** by `npm run sync:config`; the
+  test suite fails if the committed file is stale.
+- Devices authenticate with the token from `POST /sync/token`, verified against this
+  server's `/.well-known/jwks.json`.
+
+What arrives on a device (PowerSync's wire types, for the client's mapping): booleans as
+`1`/`0`, `numeric` as strings, `text[]` and `jsonb` as JSON text, timestamps as
+`2026-09-12T15:45:33.570000Z`, absent columns as `null`.
+
+## Tests
+
+```
+npm test             # against the PostgreSQL from db:up
+npm run test:sync    # the stack: server + PowerSync + PostgreSQL over real HTTP
+```
+
+`test:sync` needs `npm run sync:up`; it starts the server itself if :8080 is not
+already answering (or targets `GENEUS_URL`), registers two scratch facilities in the
+development database, and proves through PowerSync's own stream that facility A's device
+receives only facility A's rows, that an upload reaches the stream, that a forged facility
+is refused and the refusal syncs back down, and that a token signed by another key is
+refused. CI runs it against the compose services.
+
+Suites that touch persistence run against real PostgreSQL, never a mock: each test file
+creates its own database, migrates it, and drops it afterwards, so files run in
+parallel. The contract's own suites (`shared/tests`) run as part of the same command.
+
+## Routes
+
+| Route | Purpose |
+| --- | --- |
+| `GET /health` | PostgreSQL and PowerSync reachability, signing-key source and fingerprint, open rejections, schema version; **503** when degraded |
+| `GET /time` | Ed25519-signed server clock — the anchor of the 7-day offline window |
+| `GET /invites/:token` | Check a facility invite before the admin fills anything in |
+| `POST /facilities` | Register a facility, its first admin, and enrol the registering device (returns the device credential, once) |
+| `POST /devices/codes` | *(device credential)* An enrolled device asks for a 15-minute, single-use enrollment code; `issuedBy` must hold `device:enroll` |
+| `POST /devices` | The joining device spends the code and receives its own credential; the code decides the facility |
+| `POST /devices/:id/revoke` | *(device credential)* De-enrol a device of the caller's facility; `revokedBy` must hold `device:revoke`; optional wipe |
+| `POST /email-verifications` | Email a 6-digit code to the would-be admin, proving their address before `POST /facilities` (needs a valid invite) |
+| `POST /staff/:staffId/email/code` · `POST /staff/:staffId/email` | *(device credential)* A facility admin adds or replaces their own recovery email: a code to the new address, and to the one on file when replacing it |
+| `POST /staff/:staffId/pin-codes/email` | *(device credential)* A facility admin who forgot their PIN gets a PIN setup code at their recovery email |
+| `POST /staff/:staffId/pin-codes` | *(device credential)* A 24-hour, one-time code that lets that staff member set their PIN on a facility device; `issuedBy` must hold `staff:manage`; revokes their earlier codes. Only the hash is stored and synced |
+| `GET /.well-known/jwks.json` | The Ed25519 public key as a JWK — PowerSync's `jwks_uri` |
+| `POST /sync/token` | *(device credential)* A ≤1-hour EdDSA JWT: `sub` = device, `facility_id` claim drives the Sync Streams |
+| `POST /sync/upload` | *(device credential)* The PowerSync connector's write-back; every mutation authorised server-side (below) |
+
+Every shape is in the shared contract (`shared/src/api.ts`). Device-facing routes take
+`Authorization: Bearer <deviceId>.<secret>`; a refused credential is a bare 401 and the
+reason (wrong secret, revoked, wipe requested) goes to the log.
+
+The routes a caller reaches without a device credential (`GET /invites/:token`,
+`POST /facilities`, `POST /devices`) allow 10 attempts a minute per address, then answer
+429 with `Retry-After`. Every response carries `no-store` and security headers; a 5xx
+answers with a plain sentence and logs the error, so database text never reaches a caller.
+On SIGTERM the server finishes requests in flight and the signing pass, then closes.
+
+### Roster signing
+
+Every 60 seconds the server signs each unsigned roster shift (`src/roster/rosterSigning.ts`)
+over `rosterSignaturePayload` — staff, facility, start, end and any extension — and devices
+verify it offline. An upload that changes any of those fields clears the signature, and the
+next pass signs the new values.
+
+### What `/sync/upload` enforces
+
+Per mutation, in one PostgreSQL transaction (`src/sync/upload.ts`):
+
+1. **Ledger** — `(device, clientId)` claimed first; a retry is acknowledged as a duplicate and applies nothing.
+2. **Table and operation** — only contract types; `facility`, `device`, `sync_rejection` and `pin_setup_code` are server-written (a device may only resolve a rejection, or mark a PIN setup code used as the person it was issued for); deletes are never accepted.
+3. **Identity** — `facilityId` and `deviceId` in the payload must equal the *authenticated* device's; the client never chooses them.
+4. **Attribution** — `createdBy` (put) / `updatedBy` (patch) must be an **active** member of staff of that facility.
+5. **Permission** — from the server's `staff` row and the shared matrix; high-risk actions (`staff:*`, `device:*`) must arrive within 24 h of being performed.
+6. **Contract** — Zod validation of the record (put) or the merged record (patch); `id, facilityId, createdBy, createdOn, deviceId` cannot move; `roster_shift.signature` is server-owned.
+7. **Conflict policy** — append-only tables refuse patches; register definitions are immutable per version; patients and other clinical tables merge changed columns and queue a same-column race as a `conflict` with both values; `staff`/`roster_shift`/`unit` let the later change win and audit it.
+
+A refusal becomes a `sync_rejection` row (synced back to the facility) and a `reject`
+audit event; the mutation is acknowledged so the queue behind it keeps moving. Only an
+unenrolled device (401) or a request our own client could never produce (400) is an HTTP
+error.
+
+What the server verifies, honestly: the **device**, its **facility**, that the attributed
+staff member is an **active member** with a **role** that grants the action. It cannot
+verify which human typed the offline PIN — attribution rests on the device's shift session
+(root PLAN §4.3a).
+
+## Scripts
+
+| Command | What it does |
+| --- | --- |
+| `npm run dev` · `npm start` | The server, watching sources · plain |
+| `npm run typecheck` | `tsc --noEmit` |
+| `npm test` | The suite, against the PostgreSQL from `db:up` |
+| `npm run db:up` · `db:down` | Local PostgreSQL in Docker |
+| `npm run db:migrate` | Apply pending migrations and exit |
+| `npm run sync:up` · `sync:down` | The PowerSync service in Docker (with PostgreSQL) |
+| `npm run sync:config` | Regenerate `powersync/sync-config.yaml` from the contract |
+| `npm run test:sync` | The stack integration suite (needs the compose services) |
+| `npm run invite -- "<label>" [days]` | Mint a single-use facility registration code |
+| `npm run pin-code -- <FACILITY> [staffId]` | Last resort for a locked-out facility admin: lists the admins, or issues one a PIN setup code. Confirm who is asking first |
+| `npm run key:generate` | Mint the Ed25519 signing keypair (once per environment) |
+| `scripts/backup.sh [dir]` | `pg_dump` of the source of truth (custom format), prunes by `RETENTION_DAYS` |
+| `scripts/restore.sh <dump> [db] [--replace]` | Restore into a new database (default) or replace the live one |
+| `scripts/restore-drill.sh` | Backup → restore into a scratch database → compare every table's row count → drop |
+
+## Configuration
+
+| Variable | Meaning |
+| --- | --- |
+| `POSTGRES_URL` | The source of truth. Local default points at `db:up`. |
+| `POWERSYNC_PUBLIC_URL` | Where **devices** connect PowerSync to; handed out at enrollment, so never an internal address. |
+| `POWERSYNC_DB_PASSWORD` | Password of the `powersync` PostgreSQL role (compose only). |
+| `POWERSYNC_JWKS_URI` | Where the PowerSync *container* fetches this server's JWKS (compose only). |
+| `POWERSYNC_INTERNAL_URL` | Where this process reaches PowerSync for `/health`'s probe; defaults to the public URL. |
+| `POWERSYNC_JWT_AUDIENCE` | The `aud` claim of sync tokens (default `powersync`); compose passes the same value to the PowerSync service. |
+| `SYNC_TOKEN_TTL_SECONDS` | Sync token lifetime (default 3600; PowerSync caps at 86400). |
+| `APP_ORIGINS` | Comma-separated origins allowed to call this server. |
+| `PORT` | Listening port. |
+| `RESEND_API_KEY` · `EMAIL_FROM` | Resend API key and sender for admin email verification and PIN recovery. Unset in development: emails are written to the log instead. |
+| `TRUST_PROXY` | `true` only behind a TLS proxy that sets `X-Forwarded-For`; it decides which address the rate limits count. |
+| `SIGNING_PRIVATE_KEY` | Ed25519 private key (PKCS#8, base64). Optional in development (an ephemeral key is minted at boot); **required in production** — the server refuses to start without it, because an ephemeral key invalidates every signature at the next restart. |
+| `NODE_ENV` | `production` switches to JSON logs and enforces the above. |
+
+## Deployment
+
+`docker-compose.yml` is the reference deployment: PostgreSQL 17, the PowerSync service,
+and this server's image. Production is provider-agnostic — anything that runs two
+containers beside a PostgreSQL with logical replication; verified options and provider
+caveats are in [ARCHITECTURE.md §11](../docs/ARCHITECTURE.md).
+
+```
+# full stack, as a production host runs it
+cp .env.example .env    # then set SIGNING_PRIVATE_KEY (npm run key:generate),
+                        # POWERSYNC_JWKS_URI=http://server:8080/.well-known/jwks.json,
+                        # the public URLs devices will use, and real passwords
+docker compose --profile stack up -d
+curl -s http://127.0.0.1:8081/health
+```
+
+Ordering on a fresh host: PostgreSQL → the schema (the server migrates at boot; or
+`npm run db:migrate`) → PowerSync, which needs the `powersync` publication from migration
+0003 before it can replicate. Put TLS in front of the server and PowerSync; PostgreSQL is
+never public. The server refuses to start in production without `SIGNING_PRIVATE_KEY`.
+
+### Managed PostgreSQL (Neon and similar)
+
+Only PostgreSQL moves; the server and PowerSync run as before. Once per database, as the
+owner role: enable logical replication (Neon: project settings), `npm run db:migrate`
+against the **direct** endpoint (creates the tables and the `powersync` publication), then
+
+```sql
+CREATE ROLE powersync WITH REPLICATION LOGIN PASSWORD '<set in the console afterwards>';
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO powersync;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO powersync;
+GRANT powersync TO <owner role>;            -- needed to own the next database
+CREATE DATABASE powersync_storage OWNER powersync;
+```
+
+Then set `POSTGRES_URL`, `POWERSYNC_SOURCE_URI`, `POWERSYNC_STORAGE_URI` and
+`POWERSYNC_SSLMODE=verify-full` (see `.env.example`) and start `powersync` (and `server`)
+without the local `postgres` service. A replication connection keeps a scale-to-zero
+provider's compute awake; budget for always-on hours.
+
+### Production: Render beside Neon
+
+The current production shape: a dedicated Neon project in Frankfurt and the two services
+from `render.yaml` (a Render Blueprint) in Render's Frankfurt region. Render clones the
+`shared` submodule itself and deploys a commit to `main` once its CI checks pass.
+
+- **`geneus-server` on the Free plan**, kept awake by an external uptime check. Free
+  services spin down after 15 idle minutes, and a workspace gets 750 free hours a month:
+  enough for **one** always-on service, so keep no other Free service in that workspace,
+  or every Free service is suspended for the rest of the month once the hours run out.
+- **`geneus-powersync` on Starter**, because it replicates around the clock. If its
+  memory graph sits near the 512 MB ceiling, move it to Standard.
+- Free services accept no private-network traffic, so PowerSync fetches the server's JWKS
+  by its **public** address; the server reaches PowerSync privately.
+
+In order:
+
+1. **Neon** — as in *Managed PostgreSQL* above (migrations first, then the `powersync`
+   role and the `powersync_storage` database). Neon's compute never suspends while
+   PowerSync holds its replication connection: check the plan's compute-hour allowance
+   covers a month of the smallest compute running continuously, or the database stops
+   mid-month.
+2. **Signing key** — `npm run key:generate` once for production. The private key goes in
+   Render; the public key is the web build's `VITE_SIGNING_PUBLIC_KEY`. Keep both in a
+   password manager: a new key invalidates every roster signature on every phone.
+3. **Blueprint** — Render dashboard → *New* → *Blueprint* → this repository, branch
+   `main`. Render asks for every `sync: false` value:
+
+   | Service | Variable | Value |
+   | --- | --- | --- |
+   | geneus-server | `POSTGRES_URL` | Neon direct endpoint, owner role, `?sslmode=require` |
+   | | `POWERSYNC_PUBLIC_URL` | `https://sync.<domain>` |
+   | | `APP_ORIGINS` | the web app's origin(s) |
+   | | `SIGNING_PRIVATE_KEY` | from step 2 |
+   | | `RESEND_API_KEY`, `EMAIL_FROM` | Resend; may stay empty until email is set up |
+   | geneus-powersync | `PS_SOURCE_URI` | `postgresql://powersync:<password>@<direct host>/neondb` |
+   | | `PS_STORAGE_URI` | the same with `/powersync_storage` |
+   | | `PS_JWKS_URI` | `https://api.<domain>/.well-known/jwks.json` |
+
+   The server's `POWERSYNC_INTERNAL_URL` assumes PowerSync's internal hostname is
+   `geneus-powersync`; Render shows the real one on the service's *Connect* tab — if it
+   carries a suffix, change the variable to match.
+4. **Domains** — on each service, *Settings* → *Custom Domains*: `api.<domain>` on
+   geneus-server, `sync.<domain>` on geneus-powersync. Add the CNAME records Render shows;
+   on Cloudflare, set them to **DNS only** so Render can issue the certificates. Until
+   `api.<domain>` resolves, PowerSync cannot fetch the JWKS and refuses every device.
+5. **Keep-awake check** — a free uptime monitor (UptimeRobot, cron-job.org) requesting
+   `https://api.<domain>/health` every 5 minutes, alerting you by email. It keeps the Free
+   server awake and is the outage alarm too: `/health` answers 503 when PostgreSQL or
+   PowerSync is unreachable.
+6. **Check** — `curl -s https://api.<domain>/health`: `postgres` and `powerSync` both
+   `reachable`, `status` `ok`. Logs are on each service's *Logs* tab.
+7. **Web app** — build it with `VITE_API_URL=https://api.<domain>` and the public key
+   (geneus-web README, *Deployment*); its origin must be in `APP_ORIGINS`.
+8. **First facility** — the server's *Shell* tab is not available on the Free plan, so
+   mint the invite from your machine against the production database:
+   `POSTGRES_URL=<direct URL> npm run invite -- "<label>"` (PowerShell: set
+   `$env:POSTGRES_URL` for that one command, then remove it).
+
+**Moving the server to Starter** ($7/month, no spin-down, *Shell* available): when real
+facilities depend on it, or when a missed keep-awake check (about a minute of wake-up
+for the next phone) starts to matter.
+
+### Alternative: one VM beside Neon
+
+Not the current deployment; kept as the fixed-price option. A Neon project for
+PostgreSQL and one small Linux VM in the **same region** running `server`, `powersync` and Caddy (TLS) from
+`docker-compose.prod.yml`, an overlay on the reference compose file. The overlay
+publishes nothing but Caddy's 80/443, never starts the local `postgres` service, and
+refuses to start without the Neon URIs and both domain names. Production is its own Neon
+project, never a branch of the development one: it starts empty and shares no settings,
+access or fate with development. In order:
+
+1. **Neon** — create the production project, enable logical replication, run
+   `npm run db:migrate` from your machine with `POSTGRES_URL` set to the project's
+   **direct** endpoint for that one command, then run the SQL in *Managed PostgreSQL*
+   above. Migrations first: the grants and PowerSync both need the tables and the
+   publication to exist.
+2. **Signing key** — `npm run key:generate` once for production. The private key goes in
+   the VM's `.env`; the public key is the web build's `VITE_SIGNING_PUBLIC_KEY`. Keep both
+   in a password manager: a new key invalidates every roster signature on every phone.
+3. **VM** — Ubuntu LTS in Neon's region, with the **provider's** firewall allowing only
+   22, 80 and 443 (Docker's published ports bypass a host firewall such as `ufw`). Install
+   Docker Engine with the Compose plugin.
+4. **DNS** — `A` records for `api.<domain>` and `sync.<domain>` to the VM's address. Caddy
+   obtains certificates only once both resolve.
+5. **Configure** — on the VM:
+   ```
+   git clone --recurse-submodules <geneus-server repository> && cd geneus-server
+   cp .env.example .env
+   ```
+   then set `POSTGRES_URL`, `POWERSYNC_SOURCE_URI`, `POWERSYNC_STORAGE_URI` (Neon, direct
+   endpoint), `SIGNING_PRIVATE_KEY`, `API_DOMAIN`, `SYNC_DOMAIN`, `APP_ORIGINS` (the web
+   app's origin), and `RESEND_API_KEY` / `EMAIL_FROM`. `POWERSYNC_SSLMODE` defaults to
+   `verify-full`; `POWERSYNC_PUBLIC_URL` is derived from `SYNC_DOMAIN`.
+6. **Start and check**:
+   ```
+   docker compose -f docker-compose.yml -f docker-compose.prod.yml --profile stack up -d --build server powersync caddy
+   curl -s https://api.<domain>/health
+   ```
+   `postgres` and `powerSync` must both report healthy. Logs:
+   `docker compose -f docker-compose.yml -f docker-compose.prod.yml logs -f server`
+   (or `powersync`, `caddy`).
+7. **Web app** — build it with `VITE_API_URL=https://api.<domain>` and the public key
+   (geneus-web README, *Deployment*); its origin must be in `APP_ORIGINS` — change it in
+   `.env` and rerun the `up` command.
+8. **First facility** — mint an invite inside the running container:
+   `docker compose -f docker-compose.yml -f docker-compose.prod.yml exec server node scripts/create-invite.ts "<label>"`.
+
+**Updating:** `git pull --recurse-submodules`, then the `up` command from step 6; the
+server migrates at boot. **Backups**, from the first real patient record (PLAN §6): the VM
+has no PostgreSQL tools, so run them from the image —
+`PG_TOOLS="docker run --rm -i postgres:17-alpine" POSTGRES_URL=<direct URL> scripts/backup.sh /var/backups/geneus`
+from cron, plus the drill, with dumps copied off the VM. `pg_dump` must be at least the
+server's major version.
+
+## Backup and restore
+
+PostgreSQL is the only store to back up; PowerSync's bucket storage is rebuilt by
+re-replication and devices are replicas. `scripts/backup.sh` dumps it; run it from cron
+and copy dumps off the host. `scripts/restore-drill.sh` proves a dump restores with the
+same row counts — schedule it, and treat a backup as verified only once it has passed.
+Both scripts take `POSTGRES_URL` and, to use the compose container's tools,
+`PG_TOOLS="docker compose exec -T postgres"` (with the URL as seen from inside the
+container, e.g. `postgres://geneus:devpassword@localhost:5432/geneus`). Recovery:
+`scripts/restore.sh <dump> geneus --replace`, start the server, restart PowerSync.

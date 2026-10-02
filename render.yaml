@@ -1,0 +1,92 @@
+# Render Blueprint: the server and the PowerSync service, beside a Neon
+# PostgreSQL in the same region. README "Production: Render beside Neon".
+#
+# REGION: Frankfurt, next to the Neon project; West African cables land in
+# Europe. The region is a deployment choice, not an architectural constraint.
+#
+# The server runs on the Free plan, kept awake by an external uptime check on
+# /health every 5 minutes (Free services spin down after 15 idle minutes). Only
+# one service fits Render's 750 free hours a month, so PowerSync, which
+# replicates around the clock, is on Starter. Free services accept no
+# private-network traffic: PowerSync reaches the server's JWKS by its public
+# address, while the server reaches PowerSync privately.
+#
+# Secrets are `sync: false`: entered once in the dashboard, never in this file.
+# Deploys wait for CI to pass on the commit (autoDeployTrigger: checksPass).
+
+services:
+  - name: geneus-server
+    type: web
+    runtime: docker
+    region: frankfurt
+    plan: free
+    branch: main
+    dockerfilePath: ./Dockerfile
+    # Render clones the shared contract submodule itself (.gitmodules).
+    dockerContext: .
+    # Liveness only. /health turns 503 while PowerSync is unreachable, which
+    # would make Render restart a healthy server during a PowerSync deploy.
+    healthCheckPath: /time
+    autoDeployTrigger: checksPass
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # Render's proxy sets X-Forwarded-For; the rate limits must count the phone.
+      - key: TRUST_PROXY
+        value: 'true'
+      - key: POWERSYNC_JWT_AUDIENCE
+        value: powersync
+      # Private address, so /health probes PowerSync without leaving Render.
+      - key: POWERSYNC_INTERNAL_URL
+        value: http://geneus-powersync:8080
+      # Neon, direct endpoint, owner role, ?sslmode=require.
+      - key: POSTGRES_URL
+        sync: false
+      # https://sync.<domain>. Written into every device at enrollment, so it is
+      # the permanent public name, never a *.onrender.com address.
+      - key: POWERSYNC_PUBLIC_URL
+        sync: false
+      # The web app's origin(s), comma-separated.
+      - key: APP_ORIGINS
+        sync: false
+      # npm run key:generate, once per environment.
+      - key: SIGNING_PRIVATE_KEY
+        sync: false
+      - key: RESEND_API_KEY
+        sync: false
+      - key: EMAIL_FROM
+        sync: false
+
+  - name: geneus-powersync
+    type: web
+    runtime: docker
+    region: frankfurt
+    plan: starter
+    branch: main
+    dockerfilePath: ./powersync/Dockerfile
+    dockerContext: ./powersync
+    healthCheckPath: /probes/liveness
+    autoDeployTrigger: checksPass
+    # Only a change to its own configuration or image redeploys it.
+    buildFilter:
+      paths:
+        - powersync/**
+    envVars:
+      # PowerSync listens on PS_PORT and ignores Render's injected PORT, so the
+      # port is declared rather than detected.
+      - key: PORT
+        value: '8080'
+      - key: PS_PORT
+        value: '8080'
+      - key: PS_JWT_AUDIENCE
+        value: powersync
+      - key: PS_SSLMODE
+        value: verify-full
+      # Neon, direct endpoint, as the `powersync` role, no query parameters.
+      - key: PS_SOURCE_URI
+        sync: false
+      - key: PS_STORAGE_URI
+        sync: false
+      # https://api.<domain>/.well-known/jwks.json (public: see the header).
+      - key: PS_JWKS_URI
+        sync: false
