@@ -79,6 +79,14 @@ Render behind a support request) are in ARCHITECTURE.md §11. Ordering on a fres
 PostgreSQL → migrations → PowerSync. TLS terminates in front of the two public services;
 PostgreSQL is never public.
 
+**Chosen (October 2026):** a dedicated production Neon project in Frankfurt plus Render
+in Frankfurt (`render.yaml`): the server on the Free plan kept awake by an uptime check,
+PowerSync on Starter with its configuration baked into `powersync/Dockerfile` (which
+compose builds too, so the version is pinned once). Runbook: README, *Production: Render
+beside Neon*. Trigger to move the server to a paid plan: real facilities depending on it,
+or a missed keep-awake check starting to matter. The fixed-price fallback — one VM with
+`docker-compose.prod.yml` and Caddy — is kept in the README.
+
 ## 3. Stack (decided — keep it small)
 
 | Concern | Choice | Why |

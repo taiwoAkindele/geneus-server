@@ -40,7 +40,9 @@ services:
       retries: 10
 
   powersync:
-    image: journeyapps/powersync-service:1.26.0
+    # The pinned image lives in powersync/Dockerfile, which Render deploys too.
+    build: ./powersync
+    image: geneus-powersync:local
     container_name: geneus-powersync
     restart: unless-stopped
     command: ['start', '-r', 'unified']

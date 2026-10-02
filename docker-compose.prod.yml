@@ -1,0 +1,55 @@
+# Production overlay for a single VM beside a managed PostgreSQL (Neon):
+#
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml --profile stack up -d --build server powersync caddy
+#
+# Naming the three services keeps the local postgres service from starting.
+#
+# It changes only what production needs; every service is still defined once,
+# in docker-compose.yml, which the stack suite proves. README "Production".
+services:
+  server:
+    # PostgreSQL is Neon (POSTGRES_URL in .env); the local postgres service
+    # must never start on a public host.
+    depends_on: !reset {}
+    # Docker publishes ports past a host firewall: only Caddy may be reachable.
+    ports: !reset []
+    environment:
+      NODE_ENV: production
+      POSTGRES_URL: ${POSTGRES_URL:?set POSTGRES_URL in .env}
+      # Caddy sets X-Forwarded-For; the rate limits must count the phone, not Caddy.
+      TRUST_PROXY: 'true'
+      # Devices store this at enrollment, so it is the public HTTPS name, never an internal one.
+      POWERSYNC_PUBLIC_URL: https://${SYNC_DOMAIN:?set SYNC_DOMAIN in .env}
+
+  powersync:
+    ports: !reset []
+    environment:
+      # The base file falls back to the local postgres service, which a
+      # production host must never use silently.
+      PS_SOURCE_URI: ${POWERSYNC_SOURCE_URI:?set POWERSYNC_SOURCE_URI in .env}
+      PS_STORAGE_URI: ${POWERSYNC_STORAGE_URI:?set POWERSYNC_STORAGE_URI in .env}
+      PS_SSLMODE: ${POWERSYNC_SSLMODE:-verify-full}
+      PS_JWKS_URI: http://server:8080/.well-known/jwks.json
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: geneus-caddy
+    restart: unless-stopped
+    profiles: ['stack']
+    depends_on: [server, powersync]
+    environment:
+      API_DOMAIN: ${API_DOMAIN:?set API_DOMAIN in .env}
+      SYNC_DOMAIN: ${SYNC_DOMAIN:?set SYNC_DOMAIN in .env}
+    ports:
+      - '80:80'
+      - '443:443'
+    volumes:
+      - ./docker/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      # The TLS certificates; losing them only means Caddy requests new ones,
+      # but Let's Encrypt rate-limits a host that does that repeatedly.
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  caddy-data:
+  caddy-config:

@@ -32,7 +32,9 @@ tables only.
 
 ## PowerSync
 
-The PowerSync service (`journeyapps/powersync-service`, pinned in `docker-compose.yml`)
+The PowerSync service (`journeyapps/powersync-service`, pinned in `powersync/Dockerfile`,
+which bakes this folder's configuration into the image; compose builds it and mounts the
+folder over it, so local edits apply without a rebuild)
 replicates the tables in the `powersync` publication into its own bucket storage
 (`powersync_storage`, same PostgreSQL server, separate database) and streams them to
 devices.
@@ -203,6 +205,122 @@ Then set `POSTGRES_URL`, `POWERSYNC_SOURCE_URI`, `POWERSYNC_STORAGE_URI` and
 `POWERSYNC_SSLMODE=verify-full` (see `.env.example`) and start `powersync` (and `server`)
 without the local `postgres` service. A replication connection keeps a scale-to-zero
 provider's compute awake; budget for always-on hours.
+
+### Production: Render beside Neon
+
+The current production shape: a dedicated Neon project in Frankfurt and the two services
+from `render.yaml` (a Render Blueprint) in Render's Frankfurt region. Render clones the
+`shared` submodule itself and deploys a commit to `main` once its CI checks pass.
+
+- **`geneus-server` on the Free plan**, kept awake by an external uptime check. Free
+  services spin down after 15 idle minutes, and a workspace gets 750 free hours a month:
+  enough for **one** always-on service, so keep no other Free service in that workspace,
+  or every Free service is suspended for the rest of the month once the hours run out.
+- **`geneus-powersync` on Starter**, because it replicates around the clock. If its
+  memory graph sits near the 512 MB ceiling, move it to Standard.
+- Free services accept no private-network traffic, so PowerSync fetches the server's JWKS
+  by its **public** address; the server reaches PowerSync privately.
+
+In order:
+
+1. **Neon** — as in *Managed PostgreSQL* above (migrations first, then the `powersync`
+   role and the `powersync_storage` database). Neon's compute never suspends while
+   PowerSync holds its replication connection: check the plan's compute-hour allowance
+   covers a month of the smallest compute running continuously, or the database stops
+   mid-month.
+2. **Signing key** — `npm run key:generate` once for production. The private key goes in
+   Render; the public key is the web build's `VITE_SIGNING_PUBLIC_KEY`. Keep both in a
+   password manager: a new key invalidates every roster signature on every phone.
+3. **Blueprint** — Render dashboard → *New* → *Blueprint* → this repository, branch
+   `main`. Render asks for every `sync: false` value:
+
+   | Service | Variable | Value |
+   | --- | --- | --- |
+   | geneus-server | `POSTGRES_URL` | Neon direct endpoint, owner role, `?sslmode=require` |
+   | | `POWERSYNC_PUBLIC_URL` | `https://sync.<domain>` |
+   | | `APP_ORIGINS` | the web app's origin(s) |
+   | | `SIGNING_PRIVATE_KEY` | from step 2 |
+   | | `RESEND_API_KEY`, `EMAIL_FROM` | Resend; may stay empty until email is set up |
+   | geneus-powersync | `PS_SOURCE_URI` | `postgresql://powersync:<password>@<direct host>/neondb` |
+   | | `PS_STORAGE_URI` | the same with `/powersync_storage` |
+   | | `PS_JWKS_URI` | `https://api.<domain>/.well-known/jwks.json` |
+
+   The server's `POWERSYNC_INTERNAL_URL` assumes PowerSync's internal hostname is
+   `geneus-powersync`; Render shows the real one on the service's *Connect* tab — if it
+   carries a suffix, change the variable to match.
+4. **Domains** — on each service, *Settings* → *Custom Domains*: `api.<domain>` on
+   geneus-server, `sync.<domain>` on geneus-powersync. Add the CNAME records Render shows;
+   on Cloudflare, set them to **DNS only** so Render can issue the certificates. Until
+   `api.<domain>` resolves, PowerSync cannot fetch the JWKS and refuses every device.
+5. **Keep-awake check** — a free uptime monitor (UptimeRobot, cron-job.org) requesting
+   `https://api.<domain>/health` every 5 minutes, alerting you by email. It keeps the Free
+   server awake and is the outage alarm too: `/health` answers 503 when PostgreSQL or
+   PowerSync is unreachable.
+6. **Check** — `curl -s https://api.<domain>/health`: `postgres` and `powerSync` both
+   `reachable`, `status` `ok`. Logs are on each service's *Logs* tab.
+7. **Web app** — build it with `VITE_API_URL=https://api.<domain>` and the public key
+   (geneus-web README, *Deployment*); its origin must be in `APP_ORIGINS`.
+8. **First facility** — the server's *Shell* tab is not available on the Free plan, so
+   mint the invite from your machine against the production database:
+   `POSTGRES_URL=<direct URL> npm run invite -- "<label>"` (PowerShell: set
+   `$env:POSTGRES_URL` for that one command, then remove it).
+
+**Moving the server to Starter** ($7/month, no spin-down, *Shell* available): when real
+facilities depend on it, or when a missed keep-awake check (about a minute of wake-up
+for the next phone) starts to matter.
+
+### Alternative: one VM beside Neon
+
+Not the current deployment; kept as the fixed-price option. A Neon project for
+PostgreSQL and one small Linux VM in the **same region** running `server`, `powersync` and Caddy (TLS) from
+`docker-compose.prod.yml`, an overlay on the reference compose file. The overlay
+publishes nothing but Caddy's 80/443, never starts the local `postgres` service, and
+refuses to start without the Neon URIs and both domain names. Production is its own Neon
+project, never a branch of the development one: it starts empty and shares no settings,
+access or fate with development. In order:
+
+1. **Neon** — create the production project, enable logical replication, run
+   `npm run db:migrate` from your machine with `POSTGRES_URL` set to the project's
+   **direct** endpoint for that one command, then run the SQL in *Managed PostgreSQL*
+   above. Migrations first: the grants and PowerSync both need the tables and the
+   publication to exist.
+2. **Signing key** — `npm run key:generate` once for production. The private key goes in
+   the VM's `.env`; the public key is the web build's `VITE_SIGNING_PUBLIC_KEY`. Keep both
+   in a password manager: a new key invalidates every roster signature on every phone.
+3. **VM** — Ubuntu LTS in Neon's region, with the **provider's** firewall allowing only
+   22, 80 and 443 (Docker's published ports bypass a host firewall such as `ufw`). Install
+   Docker Engine with the Compose plugin.
+4. **DNS** — `A` records for `api.<domain>` and `sync.<domain>` to the VM's address. Caddy
+   obtains certificates only once both resolve.
+5. **Configure** — on the VM:
+   ```
+   git clone --recurse-submodules <geneus-server repository> && cd geneus-server
+   cp .env.example .env
+   ```
+   then set `POSTGRES_URL`, `POWERSYNC_SOURCE_URI`, `POWERSYNC_STORAGE_URI` (Neon, direct
+   endpoint), `SIGNING_PRIVATE_KEY`, `API_DOMAIN`, `SYNC_DOMAIN`, `APP_ORIGINS` (the web
+   app's origin), and `RESEND_API_KEY` / `EMAIL_FROM`. `POWERSYNC_SSLMODE` defaults to
+   `verify-full`; `POWERSYNC_PUBLIC_URL` is derived from `SYNC_DOMAIN`.
+6. **Start and check**:
+   ```
+   docker compose -f docker-compose.yml -f docker-compose.prod.yml --profile stack up -d --build server powersync caddy
+   curl -s https://api.<domain>/health
+   ```
+   `postgres` and `powerSync` must both report healthy. Logs:
+   `docker compose -f docker-compose.yml -f docker-compose.prod.yml logs -f server`
+   (or `powersync`, `caddy`).
+7. **Web app** — build it with `VITE_API_URL=https://api.<domain>` and the public key
+   (geneus-web README, *Deployment*); its origin must be in `APP_ORIGINS` — change it in
+   `.env` and rerun the `up` command.
+8. **First facility** — mint an invite inside the running container:
+   `docker compose -f docker-compose.yml -f docker-compose.prod.yml exec server node scripts/create-invite.ts "<label>"`.
+
+**Updating:** `git pull --recurse-submodules`, then the `up` command from step 6; the
+server migrates at boot. **Backups**, from the first real patient record (PLAN §6): the VM
+has no PostgreSQL tools, so run them from the image —
+`PG_TOOLS="docker run --rm -i postgres:17-alpine" POSTGRES_URL=<direct URL> scripts/backup.sh /var/backups/geneus`
+from cron, plus the drill, with dumps copied off the VM. `pg_dump` must be at least the
+server's major version.
 
 ## Backup and restore
 
