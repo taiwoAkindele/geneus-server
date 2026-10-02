@@ -1,0 +1,14 @@
+# TLS in front of the two public services (docker-compose.prod.yml). Caddy
+# obtains and renews the certificates itself once both names resolve to this host.
+
+{$API_DOMAIN} {
+	reverse_proxy server:8080
+}
+
+{$SYNC_DOMAIN} {
+	reverse_proxy powersync:8080 {
+		# PowerSync streams sync data as it is produced; buffering it would
+		# hold a phone's download until the buffer filled.
+		flush_interval -1
+	}
+}
