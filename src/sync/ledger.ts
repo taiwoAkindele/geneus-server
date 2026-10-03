@@ -62,6 +62,8 @@ export type Rejection = {
   /** The device's clock for the mutation, when the payload carried one. */
   occurredOn?: string;
   conflicts?: SyncRejection['conflicts'];
+  /** The record a refused `put` carried, so it can be recovered (SCHEMA.md §7). */
+  refusedRecord?: SyncRejection['refusedRecord'];
 };
 
 /** Files a rejection in the reconcile queue. The record syncs back to the facility. */
@@ -83,6 +85,7 @@ export const recordRejection = async (sql: Sql | Tx, rejection: Rejection): Prom
     attributedTo: rejection.attributedTo,
     occurredOn: rejection.occurredOn,
     conflicts: rejection.conflicts,
+    refusedRecord: rejection.refusedRecord,
   });
   await insertRecord(sql, 'sync_rejection', record);
   return record;
