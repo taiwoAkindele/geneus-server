@@ -117,7 +117,9 @@ Per mutation, in one PostgreSQL transaction (`src/sync/upload.ts`):
 4. **Attribution** — `createdBy` (put) / `updatedBy` (patch) must be an **active** member of staff of that facility.
 5. **Permission** — from the server's `staff` row and the shared matrix; high-risk actions (`staff:*`, `device:*`) must arrive within 24 h of being performed.
 6. **Contract** — Zod validation of the record (put) or the merged record (patch); `id, facilityId, createdBy, createdOn, deviceId` cannot move; `roster_shift.signature` is server-owned.
-7. **Conflict policy** — append-only tables refuse patches; register definitions are immutable per version; patients and other clinical tables merge changed columns and queue a same-column race as a `conflict` with both values; `staff`/`roster_shift`/`unit` let the later change win and audit it.
+7. **Conflict policy** — append-only tables (including `encounter` and `encounter_entry`) refuse patches; register definitions are immutable per version; patients and other clinical tables merge changed columns and queue a same-column race as a `conflict` with both values; `staff`/`roster_shift`/`unit` let the later change win and audit it.
+8. **Encounter rules** — an entry's `actorRole` must be the role the server knows the person holds; once a closing step (`admission`, `follow_up`) is saved only amendments are accepted; PostgreSQL refuses any UPDATE or DELETE of either table and any amendment that crosses encounters.
+9. **Patient ID clash** — a refused `put` keeps the record it carried (`refused_record`). While this device's registration of a patient is refused and unresolved, its later records naming that patient (and its edits to that patient) are held in the queue too, never attached to the patient who took the id first.
 
 A refusal becomes a `sync_rejection` row (synced back to the facility) and a `reject`
 audit event; the mutation is acknowledged so the queue behind it keeps moving. Only an

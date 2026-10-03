@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from 'node:util';
 import {
+  CLOSING_STEPS,
   HIGH_RISK_PERMISSIONS,
   IMMUTABLE_ENVELOPE_FIELDS,
   OFFLINE_AUTHORIZATION_POLICY,
@@ -9,6 +10,7 @@ import {
   type AnyDocument,
   type ConflictingColumn,
   type DocType,
+  type EncounterEntry,
   type Permission,
   type PinSetupCode,
   type RejectionCategory,
@@ -55,8 +57,8 @@ import { claimMutation, recordRejection } from './ledger.ts';
 const SERVER_WRITTEN: readonly DocType[] = ['facility', 'device', 'sync_rejection', 'pin_setup_code'];
 /** Server-written, but a device may patch the few columns that record what it did with them. */
 const DEVICE_MARKABLE: readonly DocType[] = ['sync_rejection', 'pin_setup_code'];
-/** Never patched: the record is the event. */
-const APPEND_ONLY: readonly DocType[] = ['register_entry', 'stock_movement', 'audit_event'];
+/** Never patched: the record is the event. An encounter is closed by a step, not an edit (SCHEMA.md §13). */
+const APPEND_ONLY: readonly DocType[] = ['register_entry', 'stock_movement', 'audit_event', 'encounter', 'encounter_entry'];
 /** Never patched: a change is a new version (SCHEMA.md §11.2). */
 const IMMUTABLE_PER_VERSION: readonly DocType[] = ['register_definition'];
 /** Administrative: a same-column race applies the later upload, audited (SCHEMA.md §7). */
@@ -76,6 +78,8 @@ const PATCH_METADATA = new Set(['id', 'updatedBy', 'updatedOn']);
 const PUT_PERMISSION: Partial<Record<DocType, Permission>> = {
   patient: 'patient:create',
   visit: 'visit:create',
+  encounter: 'encounter:record',
+  encounter_entry: 'encounter:record',
   handoff: 'handoff:create',
   appointment: 'appointment:create',
   register_definition: 'register_definition:publish',
@@ -190,6 +194,38 @@ const claimRefusal = (code: PinSetupCode, updatedBy: string, changes: Record<str
   return undefined;
 };
 
+/**
+ * Whether this device's own registration of `patientId` was refused and is
+ * still unresolved — most likely an offline-minted Patient ID another device
+ * took first (PRD §10.1). The id on the server then names someone else, so
+ * anything this device recorded against it is held in the reconcile queue
+ * with the patient rather than attached to the wrong person (SCHEMA.md §7).
+ */
+const heldForPatient = async (tx: Tx, identity: DeviceIdentity, patientId: string): Promise<Refusal | undefined> => {
+  const [held] = await tx`
+    SELECT 1 FROM sync_rejections
+    WHERE facility_id = ${identity.facilityId} AND device_id = ${identity.deviceId}
+      AND entity_type = 'patient' AND entity_id = ${patientId} AND operation = 'put'
+      AND resolved_on IS NULL
+    LIMIT 1`;
+  return held
+    ? refuse('conflict', `held: this device's registration of patient ${patientId} was refused and is waiting in the reconcile queue`)
+    : undefined;
+};
+
+/** Once an encounter is closed only amendments may be added to it (SCHEMA.md §13). */
+const closedEncounterRefusal = async (tx: Tx, entry: EncounterEntry): Promise<Refusal | undefined> => {
+  if (entry.step === 'amendment') return undefined;
+  const [closing] = await tx<{ step: string }[]>`
+    SELECT step FROM encounter_entries
+    WHERE facility_id = ${entry.facilityId} AND encounter_id = ${entry.encounterId}
+      AND step = ANY(${[...CLOSING_STEPS]})
+    LIMIT 1`;
+  return closing
+    ? refuse('conflict', `encounter ${entry.encounterId} was already closed (${closing.step}); only an amendment can be added`)
+    : undefined;
+};
+
 const evaluatePut = async ({ tx, identity, uploadedAt }: Context, mutation: UploadMutation): Promise<Refusal | undefined> => {
   const table = mutation.table;
   if (SERVER_WRITTEN.includes(table)) return refuse('authorization', `${table} records are written by the server`);
@@ -205,6 +241,11 @@ const evaluatePut = async ({ tx, identity, uploadedAt }: Context, mutation: Uplo
   if (record.facilityId !== identity.facilityId) return refuse('identity', `facilityId ${record.facilityId} is not this device's facility`);
   if (record.deviceId !== identity.deviceId) return refuse('identity', `deviceId ${record.deviceId} is not this device`);
 
+  if ('patientId' in record && typeof record.patientId === 'string' && table !== 'patient') {
+    const held = await heldForPatient(tx, identity, record.patientId);
+    if (held) return held;
+  }
+
   const staff = await findStaffInFacility(tx, identity.facilityId, record.createdBy);
   const permission = PUT_PERMISSION[table];
   if (!staff) return refuse('identity', describeDenial({ kind: 'not_member', staffId: record.createdBy }));
@@ -215,6 +256,15 @@ const evaluatePut = async ({ tx, identity, uploadedAt }: Context, mutation: Uplo
     if (isStale([permission], record.createdOn, uploadedAt)) {
       return refuse('authorization', `${permission} was performed more than 24 hours before reaching the server`);
     }
+  }
+
+  if (record.type === 'encounter_entry') {
+    // The stamp names the role the server knows, never one the device asserts (PRD §9.8.5).
+    if (record.actorRole !== staff.role) {
+      return refuse('authorization', `saved as ${record.actorRole}, but ${record.createdBy} is ${staff.role}`);
+    }
+    const closed = await closedEncounterRefusal(tx, record);
+    if (closed) return closed;
   }
 
   // Server clock on audit events the device recorded offline.
@@ -239,6 +289,10 @@ const evaluatePatch = async ({ tx, identity, uploadedAt }: Context, mutation: Up
   const current = await findRecord<AnyDocument>(tx, table, mutation.id);
   if (!current) return refuse('validation', `no ${table} ${mutation.id} exists to change`);
   if (current.facilityId !== identity.facilityId) return refuse('identity', `${table} ${mutation.id} belongs to another facility`);
+  if (table === 'patient') {
+    const held = await heldForPatient(tx, identity, mutation.id);
+    if (held) return held;
+  }
 
   const moved = IMMUTABLE_ENVELOPE_FIELDS.find(
     (field) => changes[field] !== undefined && !isDeepStrictEqual(changes[field], current[field]),
@@ -354,8 +408,8 @@ const processMutation = async (
 
     if (!refusal) return { outcome: 'applied' };
 
-    // A conflict on a merge table applied the other columns; everything else applied nothing.
-    const partial = refusal.category === 'conflict' && mutation.op === 'patch';
+    // A column conflict on a merge table applied the other columns; everything else applied nothing.
+    const partial = refusal.conflicts !== undefined && mutation.op === 'patch';
     if (!partial) {
       await tx`UPDATE applied_mutations SET outcome = 'rejected' WHERE device_id = ${identity.deviceId} AND client_id = ${mutation.clientId}`;
     }
@@ -370,6 +424,7 @@ const processMutation = async (
       attributedTo: attributionOf(mutation),
       occurredOn: occurredOnOf(mutation),
       conflicts: refusal.conflicts,
+      refusedRecord: mutation.op === 'put' ? { ...mutation.data, id: mutation.id, type: mutation.table } : undefined,
     });
     await recordAuditEvent(tx, {
       facilityId: identity.facilityId,

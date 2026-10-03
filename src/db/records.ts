@@ -10,6 +10,8 @@ import type { Sql, Tx } from './client.ts';
 export const TABLE_FOR: Record<DocType, string> = {
   patient: 'patients',
   visit: 'visits',
+  encounter: 'encounters',
+  encounter_entry: 'encounter_entries',
   handoff: 'handoffs',
   appointment: 'appointments',
   register_definition: 'register_definitions',
@@ -35,9 +37,10 @@ export const TABLE_FOR: Record<DocType, string> = {
 const JSONB_COLUMNS: Partial<Record<DocType, readonly string[]>> = {
   register_definition: ['fields'],
   register_entry: ['values'],
+  encounter_entry: ['values'],
   referral: ['tier1'],
   audit_event: ['metadata'],
-  sync_rejection: ['conflicts'],
+  sync_rejection: ['conflicts', 'refused_record'],
 };
 
 export const snakeCase = (key: string): string => key.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`);
