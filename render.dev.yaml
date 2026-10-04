@@ -1,0 +1,85 @@
+# Render Blueprint for the DEVELOPMENT environment: the same two services as
+# render.yaml, deployed from the `dev` branch beside the development Neon
+# project. README "Development environment".
+#
+# Create it in its OWN Render workspace. Free instance hours (750 a month) are
+# counted per workspace, and production's always-awake Free server uses
+# nearly all of them; a dev service sharing that workspace would push it over
+# and Render would suspend production's server until the next month.
+#
+# REGION: Ohio, next to the development Neon project (US East 2).
+#
+# Both services are Free and nothing keeps them awake: each spins down after
+# 15 idle minutes and takes about a minute to wake. PowerSync resumes from its
+# replication slot, which Neon holds while it sleeps. Free services accept no
+# private-network traffic, so each reaches the other by its public address.
+
+services:
+  - name: geneus-server-dev
+    type: web
+    runtime: docker
+    region: ohio
+    plan: free
+    branch: dev
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    # Liveness only; /health turns 503 while PowerSync is asleep or deploying.
+    healthCheckPath: /time
+    autoDeployTrigger: checksPass
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: TRUST_PROXY
+        value: 'true'
+      - key: POWERSYNC_JWT_AUDIENCE
+        value: powersync
+      # Development Neon, direct endpoint, owner role, ?sslmode=require.
+      - key: POSTGRES_URL
+        sync: false
+      # https://sync.api-dev.geneush.com. /health probes it here too, since the
+      # Free PowerSync accepts no private traffic.
+      - key: POWERSYNC_PUBLIC_URL
+        sync: false
+      # The dev web app's origin and http://localhost:5173, comma-separated.
+      - key: APP_ORIGINS
+        sync: false
+      # A development keypair (npm run key:generate), never production's.
+      - key: SIGNING_PRIVATE_KEY
+        sync: false
+      - key: RESEND_API_KEY
+        sync: false
+      - key: EMAIL_FROM
+        sync: false
+
+  - name: geneus-powersync-dev
+    type: web
+    runtime: docker
+    region: ohio
+    plan: free
+    branch: dev
+    dockerfilePath: ./powersync/Dockerfile
+    dockerContext: ./powersync
+    healthCheckPath: /probes/liveness
+    autoDeployTrigger: checksPass
+    buildFilter:
+      paths:
+        - powersync/**
+    envVars:
+      - key: PORT
+        value: '8080'
+      - key: PS_PORT
+        value: '8080'
+      - key: PS_JWT_AUDIENCE
+        value: powersync
+      - key: PS_SSLMODE
+        value: verify-full
+      # Development Neon, direct endpoint, as the `powersync` role.
+      - key: PS_SOURCE_URI
+        sync: false
+      # .../powersync_storage_dev: never the powersync_storage a local
+      # PowerSync uses. Two instances must not share one bucket storage.
+      - key: PS_STORAGE_URI
+        sync: false
+      # https://api-dev.geneush.com/.well-known/jwks.json
+      - key: PS_JWKS_URI
+        sync: false
