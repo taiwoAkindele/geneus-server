@@ -377,6 +377,12 @@ const evaluatePatch = async ({ tx, identity, uploadedAt }: Context, mutation: Up
   };
 };
 
+/** The fields a patch set, without the bookkeeping every patch carries. */
+const refusedChangesOf = (mutation: UploadMutation): Record<string, unknown> | undefined => {
+  const changes = Object.fromEntries(Object.entries(mutation.data).filter(([column]) => !PATCH_METADATA.has(column)));
+  return Object.keys(changes).length > 0 ? changes : undefined;
+};
+
 const attributionOf = (mutation: UploadMutation): string | undefined => {
   const value = mutation.op === 'put' ? mutation.data.createdBy : mutation.data.updatedBy;
   return typeof value === 'string' ? value : undefined;
@@ -425,6 +431,8 @@ const processMutation = async (
       occurredOn: occurredOnOf(mutation),
       conflicts: refusal.conflicts,
       refusedRecord: mutation.op === 'put' ? { ...mutation.data, id: mutation.id, type: mutation.table } : undefined,
+      // A patch that applied nothing keeps what it tried to set; a partly applied one keeps its clash in `conflicts`.
+      refusedChanges: mutation.op === 'patch' && !partial ? refusedChangesOf(mutation) : undefined,
     });
     await recordAuditEvent(tx, {
       facilityId: identity.facilityId,

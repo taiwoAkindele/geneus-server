@@ -40,7 +40,7 @@ const JSONB_COLUMNS: Partial<Record<DocType, readonly string[]>> = {
   encounter_entry: ['values'],
   referral: ['tier1'],
   audit_event: ['metadata'],
-  sync_rejection: ['conflicts', 'refused_record'],
+  sync_rejection: ['conflicts', 'refused_record', 'refused_changes'],
 };
 
 export const snakeCase = (key: string): string => key.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`);

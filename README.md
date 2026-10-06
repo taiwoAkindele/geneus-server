@@ -275,7 +275,7 @@ for the next phone) starts to matter.
 
 A deployed copy of the backend for development, from `render.dev.yaml`:
 `geneus-server-dev` at `https://api-dev.geneush.com` and `geneus-powersync-dev` at
-`https://sync.api-dev.geneush.com`, in Render's **Ohio** region beside the development
+`https://sync-dev.geneush.com`, in Render's **Ohio** region beside the development
 Neon project (US East 2), deploying the `dev` branch once its CI passes. Both are Free
 with nothing keeping them awake: the first request after 15 idle minutes waits about a
 minute while they wake. The web app's Vercel preview builds point at it
@@ -298,7 +298,7 @@ geneus-web's `.env`).
    | Service | Variable | Value |
    | --- | --- | --- |
    | geneus-server-dev | `POSTGRES_URL` | dev Neon direct endpoint, owner role, `?sslmode=require` |
-   | | `POWERSYNC_PUBLIC_URL` | `https://sync.api-dev.geneush.com` |
+   | | `POWERSYNC_PUBLIC_URL` | `https://sync-dev.geneush.com` |
    | | `APP_ORIGINS` | the dev web origin(s) and `http://localhost:5173` |
    | | `SIGNING_PRIVATE_KEY` | from step 3 |
    | | `RESEND_API_KEY`, `EMAIL_FROM` | a dev Resend key (registration verifies the admin's email) |
@@ -309,7 +309,7 @@ geneus-web's `.env`).
    Type or paste each value with **no trailing newline**: a pasted line break becomes
    part of the URL (`database "neondb%0A" does not exist`).
 5. **Domains** — CNAME `api-dev` → geneus-server-dev's `onrender.com` address and
-   `sync.api-dev` → geneus-powersync-dev's, both **DNS only**; then add each as a custom
+   `sync-dev` → geneus-powersync-dev's, both **DNS only**; then add each as a custom
    domain on its service.
 6. **Check** — `curl -s https://api-dev.geneush.com/health` (the first call may take a
    minute while both wake): `status` `ok`. An invite for the dev database:
