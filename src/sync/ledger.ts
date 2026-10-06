@@ -64,6 +64,8 @@ export type Rejection = {
   conflicts?: SyncRejection['conflicts'];
   /** The record a refused `put` carried, so it can be recovered (SCHEMA.md §7). */
   refusedRecord?: SyncRejection['refusedRecord'];
+  /** The fields a wholly refused `patch` tried to set (SCHEMA.md §7). */
+  refusedChanges?: SyncRejection['refusedChanges'];
 };
 
 /** Files a rejection in the reconcile queue. The record syncs back to the facility. */
@@ -86,6 +88,7 @@ export const recordRejection = async (sql: Sql | Tx, rejection: Rejection): Prom
     occurredOn: rejection.occurredOn,
     conflicts: rejection.conflicts,
     refusedRecord: rejection.refusedRecord,
+    refusedChanges: rejection.refusedChanges,
   });
   await insertRecord(sql, 'sync_rejection', record);
   return record;

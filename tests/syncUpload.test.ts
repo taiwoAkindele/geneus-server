@@ -461,6 +461,32 @@ describe('POST /sync/upload', () => {
       assert.ok(!before[0].last_seen_on || after[0].last_seen_on! >= before[0].last_seen_on);
     });
 
+    /** No refused write is lost (SCHEMA.md §7): a change refused outright keeps what it tried to set. */
+    it('keeps the fields of a change refused outright, and only those', async () => {
+      const id = patientId(a, '000052');
+      await send(a.device.credential, patientPut(a, nurse, '000052'));
+
+      const refused = patch('patient', id, deactivatedChew, { phone: '0809' });
+      await send(a.device.credential, refused);
+
+      const [row] = await db.sql<{ refused_changes: Record<string, unknown> | null }[]>`
+        SELECT refused_changes FROM sync_rejections WHERE entity_id = ${id}`;
+      assert.deepEqual(row.refused_changes, { phone: '0809' });
+    });
+
+    it('keeps a partly applied clash in its conflicts, not as refused changes', async () => {
+      const id = patientId(a, '000053');
+      await send(a.device.credential, patientPut(a, nurse, '000053'));
+      await send(a.device.credential, patch('patient', id, nurse, { phone: '0802' }, { phone: '0801' }));
+
+      await send(aSecond.credential, patch('patient', id, nurse, { phone: '0803', address: 'Ring Road' }, { phone: '0801', address: 'Odo-Ona' }));
+
+      const [row] = await db.sql<{ refused_changes: unknown; conflicts: unknown[] }[]>`
+        SELECT refused_changes, conflicts FROM sync_rejections WHERE entity_id = ${id}`;
+      assert.equal(row.refused_changes, null);
+      assert.equal(row.conflicts.length, 1);
+    });
+
     it('stamps the server clock on audit events the device recorded offline', async () => {
       const id = 'audit_event:offline-login';
       const response = await send(a.device.credential, {

@@ -36,7 +36,7 @@ services:
       # Development Neon, direct endpoint, owner role, ?sslmode=require.
       - key: POSTGRES_URL
         sync: false
-      # https://sync.api-dev.geneush.com. /health probes it here too, since the
+      # https://sync-dev.geneush.com. /health probes it here too, since the
       # Free PowerSync accepts no private traffic.
       - key: POWERSYNC_PUBLIC_URL
         sync: false
