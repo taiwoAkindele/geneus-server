@@ -1,5 +1,7 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import {
+  hasRole,
+  mayApprovePin,
   PinSetupCodeRequest,
   StaffEmailConfirmation,
   StaffEmailRequest,
@@ -53,7 +55,7 @@ export const registerStaffRoutes = (app: FastifyInstance, sql: Sql, mailer: Mail
   /** Only an active facility admin of the device's facility has a recovery email. */
   const findAdmin = async (facilityId: string, staffId: string) => {
     const staff = await findStaffInFacility(sql, facilityId, staffId);
-    return staff?.active && staff.role === 'facility_admin' ? staff : undefined;
+    return staff?.active && hasRole(staff, 'facility_admin') ? staff : undefined;
   };
 
   app.post<{ Params: { staffId: string } }>('/staff/:staffId/pin-codes', async (request, reply) => {
@@ -69,6 +71,12 @@ export const registerStaffRoutes = (app: FastifyInstance, sql: Sql, mailer: Mail
     if ('denial' in authorized) {
       request.log.warn({ deviceId: identity.deviceId, denial: authorized.denial }, 'PIN setup code refused');
       return reply.code(403).send({ error: 'forbidden', message: describeDenial(authorized.denial) } satisfies ApiErrorBody);
+    }
+
+    const target = await findStaffInFacility(sql, identity.facilityId, request.params.staffId);
+    if (!target?.active) return refuse(reply, 404, 'unknown_staff', 'No active member of staff with that id at this facility');
+    if (!mayApprovePin(authorized.staff, target)) {
+      return refuse(reply, 403, 'forbidden', 'You cannot reset a PIN for someone with access you do not hold');
     }
 
     const outcome = await issuePinSetupCode(sql, {

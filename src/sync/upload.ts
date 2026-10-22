@@ -6,6 +6,7 @@ import {
   OFFLINE_AUTHORIZATION_POLICY,
   parseDocument,
   paymentPermission,
+  rolesFor,
   PIN_SETUP_CODE_CLAIM_FIELDS,
   ROSTER_SIGNED_FIELDS,
   type AnyDocument,
@@ -16,6 +17,7 @@ import {
   type Permission,
   type PinSetupCode,
   type RejectionCategory,
+  type Staff,
   type UploadMutation,
   type UploadRejection,
   type UploadRequest,
@@ -33,6 +35,7 @@ import { findRecord, insertRecord, TABLE_FOR, toRow } from '../db/records.ts';
 import { recordAuditEvent } from '../audit/auditEvents.ts';
 import type { DeviceIdentity } from '../devices/credentials.ts';
 import { describeDenial, findStaffInFacility, staffDenial } from '../auth/staffAuthorization.ts';
+import { keepsAdministrator } from '../staff/access.ts';
 import { claimMutation, recordRejection } from './ledger.ts';
 
 /**
@@ -133,7 +136,7 @@ const patchPermissions = (table: DocType, changes: Record<string, unknown>): Per
       return [
         ...new Set(
           columns.map((column): Permission => {
-            if (column === 'permission') return 'staff:permission';
+            if (['permission', 'role', 'additionalRoles', 'additionalPermissions'].includes(column)) return 'staff:permission';
             if (column === 'active' && changes.active === false) return 'staff:deactivate';
             return 'staff:manage';
           }),
@@ -308,6 +311,7 @@ const evaluatePut = async ({ tx, identity, uploadedAt }: Context, mutation: Uplo
     if (held) return held;
   }
 
+  if (table === 'staff') await tx`SELECT id FROM facilities WHERE id = ${identity.facilityId} FOR UPDATE`;
   const staff = await findStaffInFacility(tx, identity.facilityId, record.createdBy);
   const permission = record.type === 'payment' ? paymentPermission(record) : PUT_PERMISSION[table];
   if (!staff) return refuse('identity', describeDenial({ kind: 'not_member', staffId: record.createdBy }));
@@ -320,9 +324,14 @@ const evaluatePut = async ({ tx, identity, uploadedAt }: Context, mutation: Uplo
     }
   }
 
+  if (record.type === 'staff') {
+    const denial = staffDenial(staff, record.createdBy, 'staff:permission');
+    if (denial) return refuse('authorization', describeDenial(denial));
+  }
+
   if (record.type === 'encounter_entry') {
     // The stamp names the role the server knows, never one the device asserts (PRD §9.8.5).
-    if (record.actorRole !== staff.role) {
+    if (!rolesFor(staff).includes(record.actorRole)) {
       return refuse('authorization', `saved as ${record.actorRole}, but ${record.createdBy} is ${staff.role}`);
     }
     const closed = await closedEncounterRefusal(tx, record);
@@ -336,7 +345,13 @@ const evaluatePut = async ({ tx, identity, uploadedAt }: Context, mutation: Uplo
 
   // Server clock on audit events the device recorded offline.
   const toWrite = table === 'audit_event' ? { ...record, receivedOn: new Date(uploadedAt).toISOString() } : record;
-  return attempt(tx, (sp) => insertRecord(sp, table, toWrite));
+  const failure = await attempt(tx, (sp) => insertRecord(sp, table, toWrite));
+  if (!failure && table === 'staff') await recordAuditEvent(tx, {
+    facilityId: identity.facilityId, deviceId: identity.deviceId, actorStaffId: record.createdBy,
+    action: 'create', entityType: 'staff', entityId: record.id,
+    metadata: { columns: 'fullName,role,additionalRoles,additionalPermissions,permission' },
+  });
+  return failure;
 };
 
 const evaluatePatch = async ({ tx, identity, uploadedAt }: Context, mutation: UploadMutation): Promise<Refusal | undefined> => {
@@ -353,6 +368,7 @@ const evaluatePatch = async ({ tx, identity, uploadedAt }: Context, mutation: Up
   const updatedBy = changes.updatedBy;
   if (typeof updatedBy !== 'string' || !updatedBy) return refuse('validation', 'a change must say who made it (updatedBy)');
 
+  if (table === 'staff') await tx`SELECT id FROM facilities WHERE id = ${identity.facilityId} FOR UPDATE`;
   const current = await findRecord<AnyDocument>(tx, table, mutation.id);
   if (!current) return refuse('validation', `no ${table} ${mutation.id} exists to change`);
   if (current.facilityId !== identity.facilityId) return refuse('identity', `${table} ${mutation.id} belongs to another facility`);
@@ -389,6 +405,11 @@ const evaluatePatch = async ({ tx, identity, uploadedAt }: Context, mutation: Up
   const merged = parseDocument({ ...current, ...changes, type: table });
   if (!merged.success) return refuse('validation', `does not match the contract: ${merged.error.issues.map((issue) => issue.path.join('.') + ' ' + issue.message).join('; ')}`);
 
+  if (current.type === 'staff' && merged.data.type === 'staff'
+      && !(await keepsAdministrator(tx, current, merged.data as Staff))) {
+    return refuse('authorization', 'Keep at least one active facility administrator with write access');
+  }
+
   // Conflict policy: which of the changed columns has the server moved since
   // the device's base? With `previous` the answer is exact per column; without
   // it, a server row edited after this change was made is treated as wholly
@@ -423,6 +444,12 @@ const evaluatePatch = async ({ tx, identity, uploadedAt }: Context, mutation: Up
     });
     if (failure) return failure;
   }
+
+  if (table === 'staff' && !nothingLeft && conflicts.length === 0) await recordAuditEvent(tx, {
+    facilityId: identity.facilityId, deviceId: identity.deviceId, actorStaffId: updatedBy,
+    action: 'update', entityType: 'staff', entityId: mutation.id,
+    metadata: { columns: changedColumns.join(',') },
+  });
 
   if (conflicts.length === 0) return undefined;
   if (lastWriteWins) {

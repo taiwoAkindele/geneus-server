@@ -158,7 +158,7 @@ export const refusal = async (attempt: Promise<unknown>): Promise<PostgresError>
 export const addStaff = async (
   sql: Sql,
   facility: FacilityRegistrationResult,
-  staff: { role: Role; permission?: StaffPermission; active?: boolean; name?: string },
+  staff: { role: Role; permission?: StaffPermission; active?: boolean; name?: string; additionalRoles?: Role[]; additionalPermissions?: Staff['additionalPermissions'] },
 ): Promise<Staff> => {
   const id = `staff:${randomBytes(4).toString('hex')}`;
   const record = Staff.parse({
@@ -168,6 +168,8 @@ export const addStaff = async (
     staffId: id,
     fullName: staff.name ?? `${staff.role} ${id}`,
     role: staff.role,
+    additionalRoles: staff.additionalRoles,
+    additionalPermissions: staff.additionalPermissions,
     permission: staff.permission ?? 'read_write',
     active: staff.active ?? true,
   });

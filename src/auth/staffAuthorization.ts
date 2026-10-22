@@ -1,4 +1,4 @@
-import { permissionsFor, type Permission, type Role, type StaffPermission } from '#shared';
+import { staffPermissions, type Permission, type Staff } from '#shared';
 import type { Sql, Tx } from '../db/client.ts';
 
 /**
@@ -7,7 +7,7 @@ import type { Sql, Tx } from '../db/client.ts';
  * applies is the shared one, so the answer matches what the device decided
  * offline; the difference is that this copy of the facts is the one that counts.
  */
-export type StaffRecord = { id: string; role: Role; permission: StaffPermission; active: boolean };
+export type StaffRecord = Pick<Staff, 'id' | 'role' | 'additionalRoles' | 'additionalPermissions' | 'permission' | 'active'>;
 
 export type StaffDenial =
   | { kind: 'not_member'; staffId: string }
@@ -21,7 +21,8 @@ export const findStaffInFacility = async (
   staffId: string,
 ): Promise<StaffRecord | undefined> => {
   const [row] = await sql<StaffRecord[]>`
-    SELECT id, role, permission, active FROM staff WHERE facility_id = ${facilityId} AND id = ${staffId}`;
+    SELECT id, role, additional_roles AS "additionalRoles", additional_permissions AS "additionalPermissions", permission, active
+    FROM staff WHERE facility_id = ${facilityId} AND id = ${staffId}`;
   return row;
 };
 
@@ -32,7 +33,7 @@ export const staffDenial = (
 ): StaffDenial | undefined => {
   if (!staff) return { kind: 'not_member', staffId };
   if (!staff.active) return { kind: 'deactivated', staffId };
-  if (!permissionsFor(staff.role, staff.permission).includes(permission)) return { kind: 'not_granted', staffId, permission };
+  if (!staffPermissions(staff).includes(permission)) return { kind: 'not_granted', staffId, permission };
   return undefined;
 };
 
