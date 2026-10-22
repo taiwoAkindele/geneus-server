@@ -5,12 +5,14 @@ import {
   IMMUTABLE_ENVELOPE_FIELDS,
   OFFLINE_AUTHORIZATION_POLICY,
   parseDocument,
+  paymentPermission,
   PIN_SETUP_CODE_CLAIM_FIELDS,
   ROSTER_SIGNED_FIELDS,
   type AnyDocument,
   type ConflictingColumn,
   type DocType,
   type EncounterEntry,
+  type Payment,
   type Permission,
   type PinSetupCode,
   type RejectionCategory,
@@ -57,8 +59,19 @@ import { claimMutation, recordRejection } from './ledger.ts';
 const SERVER_WRITTEN: readonly DocType[] = ['facility', 'device', 'sync_rejection', 'pin_setup_code'];
 /** Server-written, but a device may patch the few columns that record what it did with them. */
 const DEVICE_MARKABLE: readonly DocType[] = ['sync_rejection', 'pin_setup_code'];
-/** Never patched: the record is the event. An encounter is closed by a step, not an edit (SCHEMA.md §13). */
-const APPEND_ONLY: readonly DocType[] = ['register_entry', 'stock_movement', 'audit_event', 'encounter', 'encounter_entry'];
+/**
+ * Never patched: the record is the event. An encounter is closed by a step, not
+ * an edit (SCHEMA.md §13); a payment is cancelled by a reversal (SCHEMA.md §14).
+ */
+const APPEND_ONLY: readonly DocType[] = [
+  'register_entry',
+  'stock_movement',
+  'audit_event',
+  'encounter',
+  'encounter_entry',
+  'charge',
+  'payment',
+];
 /** Never patched: a change is a new version (SCHEMA.md §11.2). */
 const IMMUTABLE_PER_VERSION: readonly DocType[] = ['register_definition'];
 /** Administrative: a same-column race applies the later upload, audited (SCHEMA.md §7). */
@@ -90,6 +103,9 @@ const PUT_PERMISSION: Partial<Record<DocType, Permission>> = {
   unit: 'unit:manage',
   staff: 'staff:manage',
   roster_shift: 'roster:assign',
+  fee_item: 'fee_item:manage',
+  charge: 'charge:create',
+  // A payment's permission depends on what it does — see paymentPermission.
 };
 
 /**
@@ -109,6 +125,8 @@ const patchPermissions = (table: DocType, changes: Record<string, unknown>): Per
       return ['referral:update'];
     case 'stock_item':
       return ['stock_item:manage'];
+    case 'fee_item':
+      return ['fee_item:manage'];
     case 'unit':
       return ['unit:manage'];
     case 'staff':
@@ -226,6 +244,50 @@ const closedEncounterRefusal = async (tx: Tx, entry: EncounterEntry): Promise<Re
     : undefined;
 };
 
+const allocationsByCharge = (payment: Payment): Record<string, number> =>
+  Object.fromEntries(payment.allocations.map((allocation) => [allocation.chargeId, allocation.amountMinor]));
+
+/**
+ * What a payment's shape cannot say about other records (SCHEMA.md §14): each
+ * allocation names a charge of this patient, in this currency, and a reversal
+ * cancels a payment — once — by repeating it exactly. Paying a charge more than
+ * it owes is deliberately *not* refused: two cashiers offline can both take
+ * money for the same fee, and money that changed hands must be on record. The
+ * overpayment shows in the balances for a supervisor to settle (PRD §9.13.7).
+ */
+const paymentRefusal = async (tx: Tx, payment: Payment): Promise<Refusal | undefined> => {
+  const chargeIds = payment.allocations.map((allocation) => allocation.chargeId);
+  const charges = await tx<{ id: string; patient_id: string; currency: string }[]>`
+    SELECT id, patient_id, currency FROM charges
+    WHERE facility_id = ${payment.facilityId} AND id = ANY(${chargeIds})`;
+  for (const chargeId of chargeIds) {
+    const charge = charges.find((candidate) => candidate.id === chargeId);
+    if (!charge) return refuse('validation', `charge ${chargeId} does not exist in this facility`);
+    if (charge.patient_id !== payment.patientId) return refuse('validation', `charge ${chargeId} belongs to another patient`);
+    if (charge.currency !== payment.currency) {
+      return refuse('validation', `charge ${chargeId} is in ${charge.currency}, not ${payment.currency}`);
+    }
+  }
+
+  if (!payment.reverses) return undefined;
+  const original = await findRecord<Payment>(tx, 'payment', payment.reverses);
+  if (!original || original.facilityId !== payment.facilityId) {
+    return refuse('validation', `no payment ${payment.reverses} exists to reverse`);
+  }
+  if (original.reverses) return refuse('validation', `payment ${original.id} is itself a reversal and cannot be reversed`);
+  const [reversed] = await tx`
+    SELECT 1 FROM payments WHERE facility_id = ${payment.facilityId} AND reverses = ${original.id} LIMIT 1`;
+  if (reversed) return refuse('conflict', `payment ${original.id} was already reversed`);
+  const repeatsOriginal =
+    original.patientId === payment.patientId &&
+    original.amountMinor === payment.amountMinor &&
+    original.currency === payment.currency &&
+    isDeepStrictEqual(allocationsByCharge(original), allocationsByCharge(payment));
+  return repeatsOriginal
+    ? undefined
+    : refuse('validation', `a reversal must repeat payment ${original.id}'s patient, amount and allocations exactly`);
+};
+
 const evaluatePut = async ({ tx, identity, uploadedAt }: Context, mutation: UploadMutation): Promise<Refusal | undefined> => {
   const table = mutation.table;
   if (SERVER_WRITTEN.includes(table)) return refuse('authorization', `${table} records are written by the server`);
@@ -247,7 +309,7 @@ const evaluatePut = async ({ tx, identity, uploadedAt }: Context, mutation: Uplo
   }
 
   const staff = await findStaffInFacility(tx, identity.facilityId, record.createdBy);
-  const permission = PUT_PERMISSION[table];
+  const permission = record.type === 'payment' ? paymentPermission(record) : PUT_PERMISSION[table];
   if (!staff) return refuse('identity', describeDenial({ kind: 'not_member', staffId: record.createdBy }));
   if (!staff.active) return refuse('authorization', describeDenial({ kind: 'deactivated', staffId: record.createdBy }));
   if (permission) {
@@ -265,6 +327,11 @@ const evaluatePut = async ({ tx, identity, uploadedAt }: Context, mutation: Uplo
     }
     const closed = await closedEncounterRefusal(tx, record);
     if (closed) return closed;
+  }
+
+  if (record.type === 'payment') {
+    const refusal = await paymentRefusal(tx, record);
+    if (refusal) return refusal;
   }
 
   // Server clock on audit events the device recorded offline.

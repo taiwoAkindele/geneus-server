@@ -21,7 +21,7 @@ streams:
   encounters:
     auto_subscribe: true
     query: |
-      SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", patient_id AS "patientId", opened_on AS "openedOn", setting
+      SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", patient_id AS "patientId", opened_on AS "openedOn", setting, appointment_id AS "appointmentId", collect_later_reason AS "collectLaterReason"
       FROM encounters
       WHERE facility_id = auth.parameter('facility_id')
   encounter_entries:
@@ -39,7 +39,7 @@ streams:
   appointments:
     auto_subscribe: true
     query: |
-      SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", patient_id AS "patientId", reason, scheduled_for AS "scheduledFor", status
+      SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", patient_id AS "patientId", reason, scheduled_for AS "scheduledFor", status, visit_type AS "visitType"
       FROM appointments
       WHERE facility_id = auth.parameter('facility_id')
   register_definitions:
@@ -119,4 +119,22 @@ streams:
     query: |
       SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", staff_id AS "staffId", code_hash AS "codeHash", code_salt AS "codeSalt", code_iterations AS "codeIterations", expires_on AS "expiresOn", revoked_on AS "revokedOn", used_on AS "usedOn", used_on_device AS "usedOnDevice"
       FROM pin_setup_codes
+      WHERE facility_id = auth.parameter('facility_id')
+  fee_items:
+    auto_subscribe: true
+    query: |
+      SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", name, category, amount_minor AS "amountMinor", currency, charge_when AS "chargeWhen", exemptions, active
+      FROM fee_items
+      WHERE facility_id = auth.parameter('facility_id')
+  charges:
+    auto_subscribe: true
+    query: |
+      SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", patient_id AS "patientId", fee_item_id AS "feeItemId", description, category, list_price_minor AS "listPriceMinor", amount_minor AS "amountMinor", currency, exemption_reason AS "exemptionReason", appointment_id AS "appointmentId", encounter_id AS "encounterId"
+      FROM charges
+      WHERE facility_id = auth.parameter('facility_id')
+  payments:
+    auto_subscribe: true
+    query: |
+      SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", patient_id AS "patientId", receipt_number AS "receiptNumber", method, amount_minor AS "amountMinor", currency, allocations, reference, reason, reverses
+      FROM payments
       WHERE facility_id = auth.parameter('facility_id')
