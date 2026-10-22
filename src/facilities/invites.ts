@@ -47,7 +47,7 @@ const normalise = (token: string) => token.trim().toUpperCase();
 
 export const createInvite = async (sql: Sql, label: string, validForDays: number): Promise<Invite> => {
   const token = Array.from({ length: TOKEN_LENGTH }, () => ALPHABET[randomInt(ALPHABET.length)]).join('');
-  const expiresOn = new Date(Date.now() + validForDays * DAY_MS).toISOString();
+  const expiresOn = new Date(Date.now() + validForDays * DAY_MS)?.toISOString();
   const [row] = await sql<InviteRow[]>`
     INSERT INTO facility_invites (token, label, expires_on)
     VALUES (${token}, ${label}, ${expiresOn})
