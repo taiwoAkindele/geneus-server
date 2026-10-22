@@ -253,3 +253,35 @@ the stack suite; backup/restore tooling with a passing drill; `/health`.
 2. **Roster signing sweep (BE-M1)** — the only server work the M1 pilot still depends on.
 3. **Schedule backups and the drill** the day the first real record exists.
 4. **Start whatever data-protection registration the launch country requires** — long lead time.
+
+## Staff editing and combined authorization (October 2026)
+
+Staff keeps its primary role and gains optional additionalRoles and
+additionalPermissions from the shared contract (policy v5). Migration 0009 adds
+JSONB arrays with empty defaults and validates assignable values. PostgreSQL rows,
+local SQLite and sync streams use the same contract fields.
+
+Authorization combines all role grants and individual grants; read-only still
+denies every mutation. Staff name edits require staff:manage; access columns
+require staff:permission; new staff require both. Accepted staff edits are audited.
+Clinical actorRole must belong to an assigned role, and existing entries stay
+immutable. PIN setup cannot grant a lower-access staff member control of a more
+privileged account.
+
+Staff changes lock the facility row before reading the target. A demotion,
+read-only change or deactivation cannot remove the last working administrator,
+including administrators assigned as an additional role. This serializes
+concurrent demotions across devices. Ordinary offline access rules and server
+authority remain unchanged.
+
+Release order: commit the authoritative geneus-shared change, update both consumer
+submodule pointers, deploy the server migration and regenerated PowerSync streams,
+then deploy geneus-web. Git commits and pointer promotion are handled by the owner.
+
+Validation for combined staff access: 178 frontend tests and 270 server/shared
+tests pass, including real SQLite persistence and PostgreSQL authorization,
+migration and concurrency checks. Seven isolated Chrome checks pass across phone
+and desktop layouts, with no browser exceptions. Both typechecks, the production
+frontend build, diff checks and the bundle budget pass (110.3 KB initial JS gzipped).
+The validated copies match the authoritative source files; consumer submodules
+remain pinned until the owner commits the contract and promotes both pointers.

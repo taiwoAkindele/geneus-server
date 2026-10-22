@@ -429,7 +429,8 @@ describe('POST /sync/upload', () => {
       assert.equal((await findRecord<Staff>(db.sql, 'staff', target.id))?.permission, 'read_write');
       const audits = await db.sql<{ metadata: Record<string, unknown> }[]>`
         SELECT metadata FROM audit_events WHERE entity_id = ${target.id} AND action = 'update'`;
-      assert.equal(audits[0]?.metadata.lastWriteWins, true);
+      assert.equal(audits.length, 2);
+      assert.ok(audits.some((event) => event.metadata.lastWriteWins === true));
     });
   });
 

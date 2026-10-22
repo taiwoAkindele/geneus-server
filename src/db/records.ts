@@ -38,6 +38,7 @@ export const TABLE_FOR: Record<DocType, string> = {
  * JSON explicitly — and these are the only places JSONB is used (SCHEMA.md §11).
  */
 const JSONB_COLUMNS: Partial<Record<DocType, readonly string[]>> = {
+  staff: ['additional_roles', 'additional_permissions'],
   register_definition: ['fields'],
   register_entry: ['values'],
   encounter_entry: ['values'],

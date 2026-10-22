@@ -379,3 +379,19 @@ Both scripts take `POSTGRES_URL` and, to use the compose container's tools,
 `PG_TOOLS="docker compose exec -T postgres"` (with the URL as seen from inside the
 container, e.g. `postgres://geneus:devpassword@localhost:5432/geneus`). Recovery:
 `scripts/restore.sh <dump> geneus --replace`, start the server, restart PowerSync.
+
+## Multiple staff roles and individually assigned actions
+
+The shared staff contract retains role as the primary attribution and adds
+additionalRoles and additionalPermissions. Effective permissions combine every
+assigned role and the individual grants, unless permission is read_only.
+
+Migration 0009 adds the two JSONB columns, and the generated staff stream includes
+both. Access edits are authorized with staff:permission, name edits with
+staff:manage, and creating staff requires both. Staff edits are audited. PIN setup
+cannot transfer higher access to a lower-access caller. A facility row lock
+protects the last administrator during concurrent staff edits.
+
+Commit geneus-shared and update both consumers' shared submodule pointers before
+building/deploying. Apply the server migration and updated streams before releasing
+the matching frontend; existing single-role records remain valid.
