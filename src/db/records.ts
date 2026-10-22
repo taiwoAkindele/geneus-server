@@ -27,6 +27,9 @@ export const TABLE_FOR: Record<DocType, string> = {
   audit_event: 'audit_events',
   sync_rejection: 'sync_rejections',
   pin_setup_code: 'pin_setup_codes',
+  fee_item: 'fee_items',
+  charge: 'charges',
+  payment: 'payments',
 };
 
 /**
@@ -41,6 +44,8 @@ const JSONB_COLUMNS: Partial<Record<DocType, readonly string[]>> = {
   referral: ['tier1'],
   audit_event: ['metadata'],
   sync_rejection: ['conflicts', 'refused_record', 'refused_changes'],
+  fee_item: ['exemptions'],
+  payment: ['allocations'],
 };
 
 export const snakeCase = (key: string): string => key.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`);
