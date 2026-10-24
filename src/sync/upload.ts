@@ -136,7 +136,7 @@ const patchPermissions = (table: DocType, changes: Record<string, unknown>): Per
       return [
         ...new Set(
           columns.map((column): Permission => {
-            if (['permission', 'role', 'additionalRoles', 'additionalPermissions'].includes(column)) return 'staff:permission';
+            if (['permission', 'role', 'additionalRoles', 'additionalPermissions', 'loginAccess'].includes(column)) return 'staff:permission';
             if (column === 'active' && changes.active === false) return 'staff:deactivate';
             return 'staff:manage';
           }),

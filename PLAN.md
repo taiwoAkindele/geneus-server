@@ -285,3 +285,13 @@ and desktop layouts, with no browser exceptions. Both typechecks, the production
 frontend build, diff checks and the bundle budget pass (110.3 KB initial JS gzipped).
 The validated copies match the authoritative source files; consumer submodules
 remain pinned until the owner commits the contract and promotes both pointers.
+
+## Flexible staff sign-in (October 2026)
+
+Shared policy v6 adds optional staff.loginAccess (shift or always). Migration 0010
+persists the field with a value constraint; missing values retain scheduled sign-in.
+The generated staff stream includes loginAccess. Editing it requires
+staff:permission and retains the high-risk freshness rule; 24-hour access grants
+no extra mutation permissions. Fresh sign-in and session lifetime are enforced
+locally; server upload authorization still derives active membership and effective
+permissions from PostgreSQL. Deploy migration/streams before the matching client.

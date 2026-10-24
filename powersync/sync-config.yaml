@@ -87,7 +87,7 @@ streams:
   staff:
     auto_subscribe: true
     query: |
-      SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", staff_id AS "staffId", full_name AS "fullName", role, additional_roles AS "additionalRoles", additional_permissions AS "additionalPermissions", permission, active
+      SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", staff_id AS "staffId", full_name AS "fullName", role, additional_roles AS "additionalRoles", additional_permissions AS "additionalPermissions", permission, login_access AS "loginAccess", active
       FROM staff
       WHERE facility_id = auth.parameter('facility_id')
   roster_shifts:
