@@ -128,4 +128,34 @@ describe('staff editing and combined authorization', () => {
       put('encounter_entry', 'entry:combined-role', { ...envelopeFor(facility), createdBy: staff.id, patientId: patientMutation.id, encounterId, actorRole: 'nurse', step: 'vitals', values: { temperatureC: 37 } }));
     assert.equal(response.applied, 3);
   });
+  it('persists 24-hour login access as an access change without granting administrator privileges', async () => {
+    const target = await addStaff(db.sql, facility, { role: 'cashier' });
+    const result = await send(facility, patch(target.id, facility.admin, { loginAccess: 'always' }));
+    assert.equal(result.applied, 1);
+    const saved = await findRecord<Staff>(db.sql, 'staff', target.id);
+    assert.equal(saved?.loginAccess, 'always');
+    assert.equal(saved?.role, 'cashier');
+    assert.deepEqual(saved && staffPermissions(saved), ['payment:receive']);
+  });
+  it('requires access-assignment permission rather than name management to grant 24-hour access', async () => {
+    const target = await addStaff(db.sql, facility, { role: 'nurse' });
+    const delegate = await addStaff(db.sql, facility, { role: 'nurse', additionalPermissions: ['staff:manage', 'roster:assign'] });
+    const denied = await send(facility, patch(target.id, delegate, { loginAccess: 'always' }));
+    assert.equal(denied.rejected[0]?.category, 'authorization');
+    assert.equal((await findRecord<Staff>(db.sql, 'staff', target.id))?.loginAccess, undefined);
+    const invalid = await send(facility, patch(target.id, facility.admin, { loginAccess: 'admin' }));
+    assert.equal(invalid.rejected[0]?.category, 'validation');
+    await assert.rejects(db.sql`UPDATE staff SET login_access = 'admin' WHERE id = ${target.id}`, (cause: unknown) => (cause as { code?: string }).code === '23514');
+  });
+  it('stores an overnight 24-hour roster with its real next-day end instant', async () => {
+    const target = await addStaff(db.sql, facility, { role: 'nurse' });
+    const id = 'roster_shift:full-day';
+    const result = await send(facility, put('roster_shift', id, {
+      ...envelopeFor(facility), staffId: target.id, startsAt: '2026-10-24T08:00:00Z', endsAt: '2026-10-25T08:00:00Z',
+    }));
+    assert.equal(result.applied, 1);
+    const saved = await findRecord<import('#shared').RosterShift>(db.sql, 'roster_shift', id);
+    assert.equal(saved && Date.parse(saved.endsAt) - Date.parse(saved.startsAt), 24 * 60 * 60_000);
+  });
+
 });
