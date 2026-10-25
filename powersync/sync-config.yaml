@@ -9,8 +9,14 @@ streams:
   patients:
     auto_subscribe: true
     query: |
-      SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", patient_id AS "patientId", full_name AS "fullName", address, sex, date_of_birth AS "dateOfBirth", dob_estimated AS "dobEstimated", age_years AS "ageYears", occupation, religion, allergies, phone, nin, legacy_paper_ref AS "legacyPaperRef"
+      SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", patient_id AS "patientId", full_name AS "fullName", address, sex, date_of_birth AS "dateOfBirth", dob_estimated AS "dobEstimated", age_years AS "ageYears", age_observed_on AS "ageObservedOn", occupation, religion, allergies, phone, nin, identity_evidence AS "identityEvidence", identity_evidence_note AS "identityEvidenceNote", legacy_paper_ref AS "legacyPaperRef"
       FROM patients
+      WHERE facility_id = auth.parameter('facility_id')
+  patient_identity_events:
+    auto_subscribe: true
+    query: |
+      SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", patient_id AS "patientId", other_patient_id AS "otherPatientId", outcome, reason, revision
+      FROM patient_identity_events
       WHERE facility_id = auth.parameter('facility_id')
   visits:
     auto_subscribe: true

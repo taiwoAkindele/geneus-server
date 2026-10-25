@@ -7,6 +7,7 @@ import { registerDeviceRoutes } from './routes/devices.ts';
 import { registerFacilityRoutes } from './routes/facilities.ts';
 import { registerStaffRoutes } from './routes/staff.ts';
 import { registerSyncRoutes } from './routes/sync.ts';
+import { registerPatientRoutes } from './routes/patients.ts';
 import { billingRawBodies, registerBillingRoutes } from './routes/billing.ts';
 import type { PaystackFetch } from './billing/paystack.ts';
 import { createRateLimiter } from './lib/rateLimit.ts';
@@ -150,6 +151,7 @@ export const buildApp = ({ config, sql, signer, mailer: givenMailer, paystackFet
     return reply.code(status).send({ error: error.code ?? 'bad_request', message: error.message || 'The request was not valid' } satisfies ApiErrorBody);
   });
 
+  registerPatientRoutes(app, sql);
   const startedOn = new Date().toISOString();
 
   /**

@@ -76,6 +76,7 @@ const APPEND_ONLY: readonly DocType[] = [
   'charge',
   'payment',
   'billing_adjustment',
+  'patient_identity_event',
 ];
 /** Never patched: a change is a new version (SCHEMA.md §11.2). */
 const IMMUTABLE_PER_VERSION: readonly DocType[] = ['register_definition'];
@@ -86,6 +87,7 @@ const ADMIN_LAST_WRITE_WINS: readonly DocType[] = ['staff', 'roster_shift', 'uni
 const SERVER_OWNED_COLUMNS: Partial<Record<DocType, readonly string[]>> = {
   roster_shift: ['signature'],
   payment: ['incomingTransferId'],
+  patient_identity_event: ['revision'],
 };
 
 /** The only columns a device may patch on a rejection: marking it resolved. */
@@ -96,6 +98,7 @@ const PATCH_METADATA = new Set(['id', 'updatedBy', 'updatedOn']);
 
 const PUT_PERMISSION: Partial<Record<DocType, Permission>> = {
   patient: 'patient:create',
+  patient_identity_event: 'patient_identity:review',
   visit: 'visit:create',
   encounter: 'encounter:record',
   encounter_entry: 'encounter:record',
@@ -309,6 +312,13 @@ const evaluatePut = async ({ tx, identity, uploadedAt }: Context, mutation: Uplo
   if (!parsed.success) return refuse('validation', `does not match the contract: ${parsed.error.issues.map((issue) => issue.path.join('.') + ' ' + issue.message).join('; ')}`);
   const record = parsed.data;
 
+  if (record.type === 'patient_identity_event' && ['linked', 'distinct', 'unlinked'].includes(record.outcome)) return refuse('authorization', 'Final patient identity decisions require an online server preview and confirmation');
+  if (record.type === 'patient_identity_event' && record.otherPatientId) {
+    const held = await heldForPatient(tx, identity, record.otherPatientId);
+    if (held) return held;
+  }
+  if (record.type === 'patient' && record.nin && !/^\d{11}$/.test(record.nin)) return refuse('validation', 'NIN must contain 11 digits');
+
   if (record.facilityId !== identity.facilityId) return refuse('identity', `facilityId ${record.facilityId} is not this device's facility`);
   if (record.deviceId !== identity.deviceId) return refuse('identity', `deviceId ${record.deviceId} is not this device`);
 
@@ -419,6 +429,7 @@ const evaluatePatch = async ({ tx, identity, uploadedAt }: Context, mutation: Up
 
   const merged = parseDocument({ ...current, ...changes, type: table });
   if (!merged.success) return refuse('validation', `does not match the contract: ${merged.error.issues.map((issue) => issue.path.join('.') + ' ' + issue.message).join('; ')}`);
+  if (table === 'patient' && typeof changes.nin === 'string' && changes.nin && !/^\d{11}$/.test(changes.nin)) return refuse('validation', 'NIN must contain 11 digits');
 
   if (current.type === 'staff' && merged.data.type === 'staff'
       && !(await keepsAdministrator(tx, current, merged.data as Staff))) {
@@ -435,10 +446,21 @@ const evaluatePatch = async ({ tx, identity, uploadedAt }: Context, mutation: Up
   const conflicts: ConflictingColumn[] = changedColumns
     .filter((column) => {
       const record = current as Record<string, unknown>;
-      if (mutation.previous && column in mutation.previous) return !isDeepStrictEqual(record[column], mutation.previous[column]);
+      if (mutation.previous && column in mutation.previous) return !isDeepStrictEqual(record[column] ?? null, mutation.previous[column] ?? null);
       return serverMovedSince;
     })
     .map((column) => ({ column, deviceValue: changes[column], serverValue: (current as Record<string, unknown>)[column] }));
+
+  // Age and its observation date describe one fact. A partial merge of those
+  // columns could make a patient's age jump even when both edits were valid.
+  if (table === 'patient') {
+    const grouped = ['ageYears', 'ageObservedOn', 'dateOfBirth', 'dobEstimated'];
+    if (conflicts.some((conflict) => grouped.includes(conflict.column))) {
+      for (const column of changedColumns.filter((field) => grouped.includes(field))) {
+        if (!conflicts.some((conflict) => conflict.column === column)) conflicts.push({ column, deviceValue: changes[column], serverValue: (current as Record<string, unknown>)[column] });
+      }
+    }
+  }
 
   const lastWriteWins = ADMIN_LAST_WRITE_WINS.includes(table);
   const applied = Object.fromEntries(
@@ -460,9 +482,9 @@ const evaluatePatch = async ({ tx, identity, uploadedAt }: Context, mutation: Up
     if (failure) return failure;
   }
 
-  if (table === 'staff' && !nothingLeft && conflicts.length === 0) await recordAuditEvent(tx, {
+  if ((table === 'staff' || table === 'patient') && !nothingLeft && conflicts.length === 0) await recordAuditEvent(tx, {
     facilityId: identity.facilityId, deviceId: identity.deviceId, actorStaffId: updatedBy,
-    action: 'update', entityType: 'staff', entityId: mutation.id,
+    action: 'update', entityType: table, entityId: mutation.id,
     metadata: { columns: changedColumns.join(',') },
   });
 

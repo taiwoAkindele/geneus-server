@@ -9,6 +9,7 @@ import type { Sql, Tx } from './client.ts';
  */
 export const TABLE_FOR: Record<DocType, string> = {
   patient: 'patients',
+  patient_identity_event: 'patient_identity_events',
   visit: 'visits',
   encounter: 'encounters',
   encounter_entry: 'encounter_entries',
