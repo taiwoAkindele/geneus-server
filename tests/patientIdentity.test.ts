@@ -83,4 +83,11 @@ describe('patient registration corrections and identity resolution', () => {
     const failure = await refusal(db.sql`UPDATE patient_identity_events SET reason = 'Overwrite' WHERE id = ${response.json().id}`);
     assert.equal(failure.code, '42501');
   });
+
+  it('keeps exact patient-ID collisions in reconciliation before demographic linking', async () => {
+    const response = await upload(app, facility.device.credential, { transactionId: 1, mutations: [{ clientId: clientId(), op: 'put', table: 'patient', id: id(8), data: { ...envelopeFor(facility), createdBy: records.id, patientId: id(8), fullName: 'Different patient with collided ID', address: 'Test', sex: 'female', ageYears: 21 } }] });
+    assert.equal(response.rejected[0].category, 'conflict');
+    const preview = await post('preview', action(8, 9));
+    assert.equal(preview.statusCode, 409); assert.match(preview.json().message, /collision/);
+  });
 });
