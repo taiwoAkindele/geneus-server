@@ -15,6 +15,10 @@ export const previewIdentity = async (sql: Sql | Tx, facilityId: string, action:
   const ids = [...new Set([...linkedPatientIds(action.patientId, events), ...linkedPatientIds(action.otherPatientId, events)])].sort();
   const patients = (await sql`SELECT * FROM patients WHERE facility_id = ${facilityId} AND id IN ${sql(ids)} ORDER BY id`).map((row) => fromRow<Patient>('patient', row));
   if (patients.length !== ids.length) throw conflict('Both patients and their linked records must have synchronised to this facility first');
+  const [held] = await sql`SELECT id FROM sync_rejections WHERE facility_id = ${facilityId}
+    AND entity_type = 'patient' AND entity_id IN ${sql(ids)} AND operation = 'put'
+    AND category = 'conflict' AND resolved_on IS NULL LIMIT 1`;
+  if (held) throw conflict('A patient-ID collision is awaiting reconciliation. Resolve that collision in Sync before linking these identities');
   const canonical = canonicalPatientId(action.patientId, events);
   const other = canonicalPatientId(action.otherPatientId, events);
   if (action.patientId === action.otherPatientId) throw conflict('Choose two different patient records');

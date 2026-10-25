@@ -425,3 +425,18 @@ Paystack setup and transfer matching require connectivity. Keys are encrypted pe
 hospital with facility-bound AES-GCM and are never published by PowerSync. Repeated
 notifications and allocation retries are idempotent; row locks prevent spending one
 transfer twice. Tests use mocked Paystack responses and disposable PostgreSQL databases.
+
+
+## Patient identity review
+
+Migration 0012 adds patient age/evidence fields and the append-only, published
+patient_identity_events table. Deploy the matching generated PowerSync streams and
+shared policy v8 with the frontend. Existing patient IDs and original records remain.
+
+POST /patients/identity/preview and /patients/identity/confirm require the enrolled
+device credential, an active acting staff member with patient_identity:resolve,
+and two same-facility patient IDs. Confirmation requires the preview revision,
+an attributed reason and a stable UUID requestId. Retry the identical request after
+an uncertain network response. Stale previews require review again; exact-ID sync
+collisions must be reconciled first. No production migration was applied during
+local validation. Cross-facility identity and patient portal access are later work.
