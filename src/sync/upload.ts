@@ -1,6 +1,8 @@
 import { isDeepStrictEqual } from 'node:util';
 import {
   CLOSING_STEPS,
+  ENCOUNTER_STEP_VALUES,
+  REPEATABLE_STEPS,
   HIGH_RISK_PERMISSIONS,
   IMMUTABLE_ENVELOPE_FIELDS,
   OFFLINE_AUTHORIZATION_POLICY,
@@ -73,6 +75,7 @@ const APPEND_ONLY: readonly DocType[] = [
   'audit_event',
   'encounter',
   'encounter_entry',
+  'clinical_event',
   'charge',
   'payment',
   'billing_adjustment',
@@ -102,6 +105,7 @@ const PUT_PERMISSION: Partial<Record<DocType, Permission>> = {
   visit: 'visit:create',
   encounter: 'encounter:record',
   encounter_entry: 'encounter:record',
+  clinical_event: 'encounter:record',
   handoff: 'handoff:create',
   appointment: 'appointment:create',
   register_definition: 'register_definition:publish',
@@ -346,12 +350,54 @@ const evaluatePut = async ({ tx, identity, uploadedAt }: Context, mutation: Uplo
   }
 
   if (record.type === 'encounter_entry') {
+    // Serialise repeat saves, closure and corrections for the same encounter.
+    await tx`SELECT id FROM encounters WHERE facility_id = ${identity.facilityId} AND id = ${record.encounterId} FOR UPDATE`;
     // The stamp names the role the server knows, never one the device asserts (PRD §9.8.5).
     if (!rolesFor(staff).includes(record.actorRole)) {
       return refuse('authorization', `saved as ${record.actorRole}, but ${record.createdBy} is ${staff.role}`);
     }
     const closed = await closedEncounterRefusal(tx, record);
     if (closed) return closed;
+    if (record.step !== 'amendment' && !(REPEATABLE_STEPS as readonly string[]).includes(record.step)) {
+      const [saved] = await tx`SELECT id FROM encounter_entries WHERE facility_id = ${record.facilityId} AND encounter_id = ${record.encounterId} AND step = ${record.step} LIMIT 1`;
+      if (saved) return refuse('conflict', 'This section is already saved. Add an amendment instead');
+    }
+    if (record.step === 'amendment') {
+      const target = await findRecord<EncounterEntry>(tx, 'encounter_entry', record.amends!);
+      if (!target || target.facilityId !== record.facilityId || target.encounterId !== record.encounterId || target.patientId !== record.patientId || target.step === 'amendment') return refuse('validation', 'An amendment must name an original entry of this encounter and patient');
+      if (record.values.correctedValues) {
+        if (!['vitals', 'complaint', 'lab_results', 'diagnosis', 'injection'].includes(target.step)) return refuse('validation', 'This step supports explanatory amendments only');
+        const corrected = ENCOUNTER_STEP_VALUES[target.step].safeParse(record.values.correctedValues);
+        if (!corrected.success) return refuse('validation', `Corrected values do not match ${target.step}`);
+        const [latest] = await tx<{ id: string; values: Record<string, unknown> }[]>`SELECT e.id, e."values" FROM encounter_entries e WHERE e.facility_id = ${record.facilityId} AND e.amends = ${target.id} AND e."values" ? 'correctedValues' AND NOT EXISTS (SELECT 1 FROM encounter_entries n WHERE n.amends = e.amends AND n."values"->>'previousAmendmentId' = e.id) LIMIT 1`;
+        if ((latest?.id ?? undefined) !== record.values.previousAmendmentId) return refuse('conflict', 'This entry has a newer correction. Review it before correcting again');
+        if (target.step === 'diagnosis') {
+          const values = corrected.data as Record<string, unknown>;
+          if (Boolean(values.admit) !== Boolean(target.values.admit) || Boolean(values.giveInjection) !== Boolean(target.values.giveInjection)) return refuse('validation', 'Correcting a diagnosis cannot change the saved disposition');
+          const [dispensed] = await tx`SELECT id FROM encounter_entries WHERE facility_id = ${record.facilityId} AND encounter_id = ${record.encounterId} AND step = 'dispense' LIMIT 1`;
+          const current = ENCOUNTER_STEP_VALUES.diagnosis.parse(latest?.values.correctedValues ?? target.values);
+          if (dispensed && !isDeepStrictEqual(values.prescription, current.prescription)) return refuse('validation', 'Medication has been dispensed. Record the medication change in the longitudinal medication list');
+        }
+      }
+    }
+  }
+
+  if (record.type === 'clinical_event') {
+    if (!rolesFor(staff).includes(record.actorRole)) return refuse('authorization', 'The recorded clinical role is not held by this staff member');
+    await tx`SELECT id FROM patients WHERE facility_id = ${identity.facilityId} AND id = ${record.patientId} FOR UPDATE`;
+    const versions = await tx<{ id: string; patient_id: string; kind: string }[]>`SELECT id, patient_id, kind FROM clinical_events WHERE facility_id = ${record.facilityId} AND record_id = ${record.recordId}`;
+    if (!record.previousId && versions.length) return refuse('conflict', 'This clinical record already exists. Review its current version');
+    if (record.previousId) {
+      const previous = versions.find((version) => version.id === record.previousId);
+      if (!previous || previous.patient_id !== record.patientId || previous.kind !== record.kind) return refuse('validation', 'A clinical revision must continue the same patient, kind and record');
+      const [successor] = await tx`SELECT id FROM clinical_events WHERE previous_id = ${record.previousId} LIMIT 1`;
+      if (successor) return refuse('conflict', 'This clinical record has a newer version. Review it before saving again');
+    }
+    const problemId = record.values.problemId;
+    if (problemId) {
+      const [problem] = await tx`SELECT id FROM clinical_events WHERE facility_id = ${record.facilityId} AND patient_id = ${record.patientId} AND record_id = ${String(problemId)} AND kind = 'problem' LIMIT 1`;
+      if (!problem) return refuse('validation', 'The linked problem must belong to this patient');
+    }
   }
 
   if (record.type === 'payment') {

@@ -36,6 +36,12 @@ streams:
       SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", encounter_id AS "encounterId", patient_id AS "patientId", step, actor_role AS "actorRole", amends, values
       FROM encounter_entries
       WHERE facility_id = auth.parameter('facility_id')
+  clinical_events:
+    auto_subscribe: true
+    query: |
+      SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", patient_id AS "patientId", encounter_id AS "encounterId", record_id AS "recordId", previous_id AS "previousId", kind, actor_role AS "actorRole", values
+      FROM clinical_events
+      WHERE facility_id = auth.parameter('facility_id')
   handoffs:
     auto_subscribe: true
     query: |
