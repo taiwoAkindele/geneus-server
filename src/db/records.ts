@@ -30,6 +30,9 @@ export const TABLE_FOR: Record<DocType, string> = {
   fee_item: 'fee_items',
   charge: 'charges',
   payment: 'payments',
+  billing_adjustment: 'billing_adjustments',
+  incoming_transfer: 'incoming_transfers',
+  billing_department: 'billing_departments',
 };
 
 /**
@@ -38,6 +41,7 @@ export const TABLE_FOR: Record<DocType, string> = {
  * JSON explicitly — and these are the only places JSONB is used (SCHEMA.md §11).
  */
 const JSONB_COLUMNS: Partial<Record<DocType, readonly string[]>> = {
+  appointment: ['charge_ids'],
   staff: ['additional_roles', 'additional_permissions'],
   register_definition: ['fields'],
   register_entry: ['values'],

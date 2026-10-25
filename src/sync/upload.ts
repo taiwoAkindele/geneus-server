@@ -36,6 +36,7 @@ import { recordAuditEvent } from '../audit/auditEvents.ts';
 import type { DeviceIdentity } from '../devices/credentials.ts';
 import { describeDenial, findStaffInFacility, staffDenial } from '../auth/staffAuthorization.ts';
 import { keepsAdministrator } from '../staff/access.ts';
+import { availableOnCharge } from '../billing/ledger.ts';
 import { claimMutation, recordRejection } from './ledger.ts';
 
 /**
@@ -59,7 +60,7 @@ import { claimMutation, recordRejection } from './ledger.ts';
  */
 
 /** Written by the server; a device may never insert them. */
-const SERVER_WRITTEN: readonly DocType[] = ['facility', 'device', 'sync_rejection', 'pin_setup_code'];
+const SERVER_WRITTEN: readonly DocType[] = ['facility', 'device', 'sync_rejection', 'pin_setup_code', 'incoming_transfer'];
 /** Server-written, but a device may patch the few columns that record what it did with them. */
 const DEVICE_MARKABLE: readonly DocType[] = ['sync_rejection', 'pin_setup_code'];
 /**
@@ -74,6 +75,7 @@ const APPEND_ONLY: readonly DocType[] = [
   'encounter_entry',
   'charge',
   'payment',
+  'billing_adjustment',
 ];
 /** Never patched: a change is a new version (SCHEMA.md §11.2). */
 const IMMUTABLE_PER_VERSION: readonly DocType[] = ['register_definition'];
@@ -83,6 +85,7 @@ const ADMIN_LAST_WRITE_WINS: readonly DocType[] = ['staff', 'roster_shift', 'uni
 /** Columns only the server may set. */
 const SERVER_OWNED_COLUMNS: Partial<Record<DocType, readonly string[]>> = {
   roster_shift: ['signature'],
+  payment: ['incomingTransferId'],
 };
 
 /** The only columns a device may patch on a rejection: marking it resolved. */
@@ -108,6 +111,8 @@ const PUT_PERMISSION: Partial<Record<DocType, Permission>> = {
   roster_shift: 'roster:assign',
   fee_item: 'fee_item:manage',
   charge: 'charge:create',
+  billing_adjustment: 'payment:waive',
+  billing_department: 'fee_item:manage',
   // A payment's permission depends on what it does — see paymentPermission.
 };
 
@@ -129,6 +134,7 @@ const patchPermissions = (table: DocType, changes: Record<string, unknown>): Per
     case 'stock_item':
       return ['stock_item:manage'];
     case 'fee_item':
+    case 'billing_department':
       return ['fee_item:manage'];
     case 'unit':
       return ['unit:manage'];
@@ -262,7 +268,7 @@ const paymentRefusal = async (tx: Tx, payment: Payment): Promise<Refusal | undef
   const chargeIds = payment.allocations.map((allocation) => allocation.chargeId);
   const charges = await tx<{ id: string; patient_id: string; currency: string }[]>`
     SELECT id, patient_id, currency FROM charges
-    WHERE facility_id = ${payment.facilityId} AND id = ANY(${chargeIds})`;
+    WHERE facility_id = ${payment.facilityId} AND id = ANY(${chargeIds}) ORDER BY id FOR UPDATE`;
   for (const chargeId of chargeIds) {
     const charge = charges.find((candidate) => candidate.id === chargeId);
     if (!charge) return refuse('validation', `charge ${chargeId} does not exist in this facility`);
@@ -341,6 +347,15 @@ const evaluatePut = async ({ tx, identity, uploadedAt }: Context, mutation: Uplo
   if (record.type === 'payment') {
     const refusal = await paymentRefusal(tx, record);
     if (refusal) return refusal;
+  }
+
+  if (record.type === 'billing_adjustment') {
+    const [charge] = await tx<{ patient_id: string }[]>`SELECT patient_id FROM charges
+      WHERE facility_id = ${record.facilityId} AND id = ${record.chargeId} FOR UPDATE`;
+    if (!charge || charge.patient_id !== record.patientId) return refuse('validation', 'The adjustment must name this patient\'s charge');
+    if (record.amountMinor > await availableOnCharge(tx, record.facilityId, record.chargeId)) {
+      return refuse('conflict', 'The reduction exceeds the unpaid balance; refresh this patient\'s account');
+    }
   }
 
   // Server clock on audit events the device recorded offline.

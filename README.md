@@ -395,3 +395,33 @@ protects the last administrator during concurrent staff edits.
 Commit geneus-shared and update both consumers' shared submodule pointers before
 building/deploying. Apply the server migration and updated streams before releasing
 the matching frontend; existing single-role records remain valid.
+
+## Hospital billing: Paystack department accounts
+
+1. Promote the updated geneus-shared contract in both consumers. Deploy migration
+   0011_hospital_billing.sql and the generated PowerSync configuration before the client.
+2. Configure BILLING_ENCRYPTION_KEY in the backend secret manager: a random 32-byte
+   key encoded as 64 hex characters. Keep it stable and backed up; changing it requires
+   reconnecting each hospital or re-encrypting existing connection records. Never put
+   this key or a Paystack secret in VITE variables or a synced record.
+3. In Billing -> Departments & accounts, add departments and connect the hospital's
+   own Paystack secret key. Start with a test key. Append the displayed webhook path to
+   your public backend URL and configure it in the matching Paystack environment.
+4. Create a department Virtual Terminal using its WhatsApp notification contact, or
+   link an existing terminal code or dedicated receiving account. Paystack must have
+   enabled the relevant features and supplied active NGN bank details. Existing account
+   ownership is retained for historical reconciliation. Department setup must sync
+   before an account can be linked.
+5. Assign fees to receiving departments under Billing -> Manage fees. Cashiers can
+   show department bank details from patient accounts, receive cash offline, and match
+   verified live transfers to synced bills. Pharmacy transfers only settle pharmacy
+   bills. Unallocated funds remain visible in the department dashboard.
+6. Test notifications and reference import before switching to a live key. Test receipts
+   are labelled and cannot settle patient bills. The backend verifies transactions
+   through Paystack before storing immutable receipts. Unlinked-account receipts remain
+   visible under Hospital / general for reconciliation.
+
+Paystack setup and transfer matching require connectivity. Keys are encrypted per
+hospital with facility-bound AES-GCM and are never published by PowerSync. Repeated
+notifications and allocation retries are idempotent; row locks prevent spending one
+transfer twice. Tests use mocked Paystack responses and disposable PostgreSQL databases.

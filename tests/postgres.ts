@@ -55,7 +55,14 @@ export const scratchDatabase = async (): Promise<ScratchDatabase> => {
   const url = new URL(config.postgresUrl);
   url.pathname = `/${name}`;
   const sql = createSql(url.toString());
-  await migrate(sql);
+  try { await migrate(sql); }
+  catch (error) {
+    await sql.end();
+    const cleaner = createSql(config.postgresUrl);
+    await cleaner.unsafe(`DROP DATABASE IF EXISTS ${name} WITH (FORCE)`);
+    await cleaner.end();
+    throw error;
+  }
 
   return {
     sql,
