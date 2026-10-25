@@ -7,6 +7,8 @@ import { registerDeviceRoutes } from './routes/devices.ts';
 import { registerFacilityRoutes } from './routes/facilities.ts';
 import { registerStaffRoutes } from './routes/staff.ts';
 import { registerSyncRoutes } from './routes/sync.ts';
+import { billingRawBodies, registerBillingRoutes } from './routes/billing.ts';
+import type { PaystackFetch } from './billing/paystack.ts';
 import { createRateLimiter } from './lib/rateLimit.ts';
 import { createMailer, EmailNotSent, type Mailer } from './lib/email.ts';
 
@@ -15,7 +17,7 @@ import { createMailer, EmailNotSent, type Mailer } from './lib/email.ts';
  * tests can drive it with `inject` against a scratch database and no port.
  */
 /** `mailer` defaults to one built from the config; tests pass one that records what was sent. */
-export type AppDependencies = { config: Config; sql: Sql; signer: Signer; mailer?: Mailer };
+export type AppDependencies = { config: Config; sql: Sql; signer: Signer; mailer?: Mailer; paystackFetch?: PaystackFetch };
 /**
  * `rateLimit: false` is for tests that make many requests from one injected
  * address on purpose; tests/hardening.test.ts keeps it on to prove the limit.
@@ -54,7 +56,7 @@ const RATE_LIMITED_ROUTES = new Set([
 ]);
 const RATE_LIMIT_PER_MINUTE = 10;
 
-export const buildApp = ({ config, sql, signer, mailer: givenMailer }: AppDependencies, options: AppOptions = {}): FastifyInstance => {
+export const buildApp = ({ config, sql, signer, mailer: givenMailer, paystackFetch }: AppDependencies, options: AppOptions = {}): FastifyInstance => {
   /**
    * Pretty printing is a terminal convenience, and `pino-pretty` is a dev
    * dependency the production image does not install — asking for it there
@@ -75,7 +77,8 @@ export const buildApp = ({ config, sql, signer, mailer: givenMailer }: AppDepend
    * carries its credential in a header) is a 400 in Fastify's default parser,
    * before the route sees it. Treat an empty body as "no body" instead.
    */
-  app.addContentTypeParser('application/json', { parseAs: 'string' }, (_request, body, done) => {
+  app.addContentTypeParser('application/json', { parseAs: 'string' }, (request, body, done) => {
+    if (request.url.startsWith('/billing/paystack/')) billingRawBodies.set(request, body as string);
     if (body === '') return done(null, undefined);
     try {
       done(null, JSON.parse(body as string));
@@ -205,6 +208,7 @@ export const buildApp = ({ config, sql, signer, mailer: givenMailer }: AppDepend
   registerDeviceRoutes(app, sql, config);
   registerStaffRoutes(app, sql, mailer);
   registerSyncRoutes(app, sql, config, signer);
+  registerBillingRoutes(app, sql, config, paystackFetch);
 
   return app;
 };

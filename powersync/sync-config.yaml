@@ -39,7 +39,7 @@ streams:
   appointments:
     auto_subscribe: true
     query: |
-      SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", patient_id AS "patientId", reason, scheduled_for AS "scheduledFor", status, visit_type AS "visitType"
+      SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", patient_id AS "patientId", reason, scheduled_for AS "scheduledFor", status, visit_type AS "visitType", charge_ids AS "chargeIds"
       FROM appointments
       WHERE facility_id = auth.parameter('facility_id')
   register_definitions:
@@ -123,18 +123,36 @@ streams:
   fee_items:
     auto_subscribe: true
     query: |
-      SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", name, category, amount_minor AS "amountMinor", currency, charge_when AS "chargeWhen", exemptions, active
+      SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", name, category, department_id AS "departmentId", amount_minor AS "amountMinor", currency, charge_when AS "chargeWhen", exemptions, active
       FROM fee_items
       WHERE facility_id = auth.parameter('facility_id')
   charges:
     auto_subscribe: true
     query: |
-      SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", patient_id AS "patientId", fee_item_id AS "feeItemId", description, category, list_price_minor AS "listPriceMinor", amount_minor AS "amountMinor", currency, exemption_reason AS "exemptionReason", appointment_id AS "appointmentId", encounter_id AS "encounterId"
+      SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", patient_id AS "patientId", fee_item_id AS "feeItemId", description, category, department_id AS "departmentId", list_price_minor AS "listPriceMinor", amount_minor AS "amountMinor", currency, exemption_reason AS "exemptionReason", appointment_id AS "appointmentId", encounter_id AS "encounterId"
       FROM charges
       WHERE facility_id = auth.parameter('facility_id')
   payments:
     auto_subscribe: true
     query: |
-      SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", patient_id AS "patientId", receipt_number AS "receiptNumber", method, amount_minor AS "amountMinor", currency, allocations, reference, reason, reverses
+      SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", patient_id AS "patientId", receipt_number AS "receiptNumber", method, incoming_transfer_id AS "incomingTransferId", amount_minor AS "amountMinor", currency, allocations, reference, reason, reverses
       FROM payments
+      WHERE facility_id = auth.parameter('facility_id')
+  billing_adjustments:
+    auto_subscribe: true
+    query: |
+      SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", patient_id AS "patientId", charge_id AS "chargeId", kind, amount_minor AS "amountMinor", reason
+      FROM billing_adjustments
+      WHERE facility_id = auth.parameter('facility_id')
+  incoming_transfers:
+    auto_subscribe: true
+    query: |
+      SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", provider, mode, provider_reference AS "providerReference", amount_minor AS "amountMinor", currency, received_on AS "receivedOn", payer_name AS "payerName", receiving_account AS "receivingAccount", department_id AS "departmentId"
+      FROM incoming_transfers
+      WHERE facility_id = auth.parameter('facility_id')
+  billing_departments:
+    auto_subscribe: true
+    query: |
+      SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", name, active
+      FROM billing_departments
       WHERE facility_id = auth.parameter('facility_id')

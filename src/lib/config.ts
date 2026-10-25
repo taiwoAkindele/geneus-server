@@ -43,6 +43,8 @@ const Config = z
     /** The sender, e.g. `Geneus <no-reply@example.org>` — on a domain verified with Resend. */
     emailFrom: z.string().min(1).optional(),
     isProduction: z.boolean(),
+    /** 32-byte hex master key for per-hospital Paystack credentials. Never synced. */
+    billingEncryptionKey: z.string().regex(/^[a-fA-F0-9]{64}$/).optional(),
   })
   .refine((config) => !config.resendApiKey || Boolean(config.emailFrom), {
     message: 'EMAIL_FROM is required when RESEND_API_KEY is set: Resend refuses a message with no sender',
@@ -72,4 +74,5 @@ export const loadConfig = (): Config =>
     resendApiKey: process.env.RESEND_API_KEY || undefined,
     emailFrom: process.env.EMAIL_FROM || undefined,
     isProduction: process.env.NODE_ENV === 'production',
+    billingEncryptionKey: process.env.BILLING_ENCRYPTION_KEY || undefined,
   });
