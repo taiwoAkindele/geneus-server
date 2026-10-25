@@ -10,6 +10,16 @@
 
 **Version:** 2.0 · **Owner:** Solo founder-builder · **Supersedes:** 1.1 (CouchDB)
 
+### Outpatient longitudinal extension (25 October 2026)
+
+Migration 0013 adds append-only `clinical_events`, facility/patient/encounter and
+revision-chain constraints, plus uniqueness for structured encounter corrections.
+The existing upload boundary rechecks permissions, role attribution, revision
+ancestry and linked problems. Patient/encounter locks serialize competing revisions
+and closure; refused payloads remain in reconciliation. Structured corrections cannot
+change saved dispositions or replace already dispensed prescriptions. Sync Streams
+include the new table. See [implementation and release order](../docs/EMR-OUTPATIENT-IMPLEMENTATION.md).
+
 > **Governing principle:** start with the **simplest architecture that preserves the core
 > requirements**, and evolve it only when a **real, observed bottleneck** appears. A solo
 > engineer must never have to *search* for where a bug lives — every symptom must have one
@@ -366,3 +376,18 @@ shared contract and frontend. Policy version is 8. Git promotion is owner-contro
 Patient consent/documents, cross-facility identity and portal access remain later work.
 Camera decoding and printer/low-memory-phone field acceptance still require supported
 hardware. Source/test validation uses isolated copies with authoritative shared source.
+
+
+Validation: 205 frontend tests and 302 server/shared tests pass. Both typechecks
+and the production build pass. Seven identity browser workflows and four session
+regressions pass with real Chrome mouse input and no browser exceptions. Initial
+JavaScript is 119.3 KB gzipped against the 300 KB budget. All 324 source/test files
+match the isolated validated copies. The browser fixture contains synthetic data;
+no production database was migrated and no live identity provider was called.
+
+Session regression found during acceptance: lastActivity updated immediately on
+pointer input, but active-session checks compared it with a display clock refreshed
+every 30 seconds. Database refreshes then mistook fresh activity for clock rollback
+and cleared login. SessionProvider now uses Date.now() for session validity while
+retaining the coarse display tick. Link confirmation and review requests retain
+login; genuine 30-minute inactivity still expires and reload cannot revive it.
