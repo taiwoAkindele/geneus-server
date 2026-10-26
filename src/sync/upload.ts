@@ -7,16 +7,21 @@ import {
   IMMUTABLE_ENVELOPE_FIELDS,
   OFFLINE_AUTHORIZATION_POLICY,
   parseDocument,
+  sameAppointmentTime,
+  validateRegisterEntry,
   paymentPermission,
   rolesFor,
   PIN_SETUP_CODE_CLAIM_FIELDS,
   ROSTER_SIGNED_FIELDS,
   type AnyDocument,
+  type Appointment,
   type ConflictingColumn,
   type DocType,
   type EncounterEntry,
+  type Encounter,
   type Payment,
   type Permission,
+  type RegisterDefinition,
   type PinSetupCode,
   type RejectionCategory,
   type Staff,
@@ -40,6 +45,7 @@ import { describeDenial, findStaffInFacility, staffDenial } from '../auth/staffA
 import { keepsAdministrator } from '../staff/access.ts';
 import { availableOnCharge } from '../billing/ledger.ts';
 import { claimMutation, recordRejection } from './ledger.ts';
+import { stockMovementIssue } from '../inventory/validation.ts';
 
 /**
  * The server's side of every offline write (root §18). PowerSync delivers the
@@ -125,7 +131,7 @@ const PUT_PERMISSION: Partial<Record<DocType, Permission>> = {
 
 /**
  * What a patch needs, decided from the columns it changes. Tables without an
- * update permission in the contract (appointments, visits) cannot be patched
+ * update permission in the contract (visits) cannot be patched
  * yet: nothing in the app updates them, and a permission is added when
  * something does — never inferred.
  */
@@ -134,8 +140,10 @@ const patchPermissions = (table: DocType, changes: Record<string, unknown>): Per
   switch (table) {
     case 'patient':
       return ['patient:update'];
+    case 'appointment':
+      return columns.every((column) => ['status', 'scheduledFor', 'attendance', 'activity'].includes(column)) ? ['appointment:update'] : undefined;
     case 'handoff':
-      return ['handoff:update'];
+      return columns.every((column) => column === 'status') ? ['handoff:update'] : undefined;
     case 'referral':
       return ['referral:update'];
     case 'stock_item':
@@ -349,6 +357,17 @@ const evaluatePut = async ({ tx, identity, uploadedAt }: Context, mutation: Uplo
     if (denial) return refuse('authorization', describeDenial(denial));
   }
 
+  if (record.type === 'appointment' && ((record.activity?.length ?? 0) > 0 || (record.attendance && record.attendance !== 'booked'))) return refuse('validation', 'Create a booking before recording attendance changes');
+  if (record.type === 'encounter' && record.appointmentId) {
+    // Use the same lock as attendance changes so cancellation cannot race a visit.
+    await tx`SELECT id FROM appointments WHERE facility_id = ${identity.facilityId} AND id = ${record.appointmentId} FOR UPDATE`;
+    const booking = await findRecord<Appointment>(tx, 'appointment', record.appointmentId);
+    if (!booking || booking.facilityId !== record.facilityId || booking.patientId !== record.patientId) return refuse('validation', 'The booking must belong to this visit patient and facility');
+    if (booking.attendance === 'cancelled' || booking.attendance === 'no_show') return refuse('conflict', 'Reopen this inactive booking before starting its visit');
+    const [visit] = await tx`SELECT id FROM encounters WHERE facility_id = ${identity.facilityId} AND appointment_id = ${record.appointmentId} LIMIT 1`;
+    if (visit) return refuse('conflict', 'This booking already has a visit. Continue or review that visit');
+  }
+
   if (record.type === 'encounter_entry') {
     // Serialise repeat saves, closure and corrections for the same encounter.
     await tx`SELECT id FROM encounters WHERE facility_id = ${identity.facilityId} AND id = ${record.encounterId} FOR UPDATE`;
@@ -400,6 +419,29 @@ const evaluatePut = async ({ tx, identity, uploadedAt }: Context, mutation: Uplo
     }
   }
 
+  if (record.type === 'register_entry') {
+    const definition = await findRecord<RegisterDefinition>(tx, 'register_definition', `${record.registerId}:v${record.registerVersion}`);
+    if (!definition || definition.facilityId !== record.facilityId || definition.status !== 'published') return refuse('validation', 'A register entry must name a published version in this facility');
+    const issues = validateRegisterEntry(definition.fields, record.values);
+    const known = new Set(definition.fields.filter((field) => field.type !== 'section').map((field) => field.id));
+    if (Object.keys(record.values).some((field) => !known.has(field))) issues.push('The entry includes a field outside its saved register version');
+    if (issues.length) return refuse('validation', issues.join('; '));
+  }
+
+  if (record.type === 'handoff' && record.encounterId) {
+    const encounter = await findRecord<Encounter>(tx, 'encounter', record.encounterId);
+    if (!encounter || encounter.facilityId !== record.facilityId || encounter.patientId !== record.patientId) return refuse('validation', 'A handoff must name a visit belonging to the same patient and facility');
+  }
+
+  if (record.type === 'stock_movement') {
+    const issue = stockMovementIssue(record);
+    if (issue) return refuse('validation', issue);
+    const [item] = await tx`SELECT id FROM stock_items WHERE facility_id = ${record.facilityId} AND id = ${record.itemId} FOR UPDATE`;
+    if (!item) return refuse('validation', 'The stock item must belong to this facility');
+    // Preserve real movements reported by offline devices even if their combined
+    // balance is negative. The inventory flags that discrepancy for a physical count.
+  }
+
   if (record.type === 'payment') {
     const refusal = await paymentRefusal(tx, record);
     if (refusal) return refusal;
@@ -440,6 +482,9 @@ const evaluatePatch = async ({ tx, identity, uploadedAt }: Context, mutation: Up
   if (typeof updatedBy !== 'string' || !updatedBy) return refuse('validation', 'a change must say who made it (updatedBy)');
 
   if (table === 'staff') await tx`SELECT id FROM facilities WHERE id = ${identity.facilityId} FOR UPDATE`;
+  if (table === 'stock_item') await tx`SELECT id FROM stock_items WHERE facility_id = ${identity.facilityId} AND id = ${mutation.id} FOR UPDATE`;
+  if (table === 'handoff') await tx`SELECT id FROM handoffs WHERE facility_id = ${identity.facilityId} AND id = ${mutation.id} FOR UPDATE`;
+  if (table === 'appointment') await tx`SELECT id FROM appointments WHERE facility_id = ${identity.facilityId} AND id = ${mutation.id} FOR UPDATE`;
   const current = await findRecord<AnyDocument>(tx, table, mutation.id);
   if (!current) return refuse('validation', `no ${table} ${mutation.id} exists to change`);
   if (current.facilityId !== identity.facilityId) return refuse('identity', `${table} ${mutation.id} belongs to another facility`);
@@ -474,7 +519,32 @@ const evaluatePatch = async ({ tx, identity, uploadedAt }: Context, mutation: Up
   }
 
   const merged = parseDocument({ ...current, ...changes, type: table });
+  if (table === 'stock_item') {
+    if ('quantityOnHand' in changes) return refuse('validation', 'The opening stock balance cannot be edited. Record an attributed stock movement');
+    if ('unitOfMeasure' in changes && current.type === 'stock_item' && changes.unitOfMeasure !== current.unitOfMeasure) {
+      const [movement] = await tx`SELECT id FROM stock_movements WHERE facility_id = ${identity.facilityId} AND item_id = ${mutation.id} LIMIT 1`;
+      if (movement) return refuse('validation', 'The unit of measure cannot change after stock movements have been recorded');
+    }
+  }
+  if (table === 'handoff' && current.type === 'handoff' && typeof changes.status === 'string') {
+    const order = ['pending', 'received', 'done'];
+    if (order.includes(changes.status) && order.indexOf(changes.status) < order.indexOf(current.status)) return refuse('conflict', 'This handoff has already progressed. Review its current state rather than reopening it');
+  }
   if (!merged.success) return refuse('validation', `does not match the contract: ${merged.error.issues.map((issue) => issue.path.join('.') + ' ' + issue.message).join('; ')}`);
+  if (current.type === 'appointment' && merged.data.type === 'appointment') {
+    const before = current.activity ?? [], after = merged.data.activity ?? [];
+    if (after.length !== before.length + 1 || !isDeepStrictEqual(after.slice(0, -1), before)) return refuse('conflict', 'Booking history has changed. Review the current booking before trying again');
+    const action = after[after.length - 1];
+    if (action.fromAttendance !== (current.attendance ?? 'booked') || !sameAppointmentTime(action.fromScheduledFor, current.scheduledFor)) return refuse('conflict', 'This booking has changed on another device. Review it before trying again');
+    if (action.recordedBy !== updatedBy || !sameAppointmentTime(action.recordedOn, performedOn)) return refuse('validation', 'A booking action must be attributed to the staff member and time of this change');
+    if (Date.parse(action.recordedOn) > uploadedAt + 5 * 60_000) return refuse('validation', 'The booking action is dated in the future. Check the device clock');
+    if (action.action === 'rescheduled' && merged.data.status !== 'scheduled') return refuse('validation', 'A rescheduled booking must be scheduled');
+    if (action.action !== 'rescheduled' && merged.data.status !== current.status) return refuse('validation', 'Only rescheduling changes the booking mode');
+    const [visit] = await tx`SELECT id FROM encounters WHERE facility_id = ${identity.facilityId} AND appointment_id = ${mutation.id} LIMIT 1`;
+    if (visit) return refuse('conflict', 'Care has already started. Continue or review the linked visit instead of changing attendance');
+    const held = await heldForPatient(tx, identity, current.patientId);
+    if (held) return held;
+  }
   if (table === 'patient' && typeof changes.nin === 'string' && changes.nin && !/^\d{11}$/.test(changes.nin)) return refuse('validation', 'NIN must contain 11 digits');
 
   if (current.type === 'staff' && merged.data.type === 'staff'
@@ -491,11 +561,19 @@ const evaluatePatch = async ({ tx, identity, uploadedAt }: Context, mutation: Up
     !mutation.previous && current.updatedOn !== undefined && performedOn !== undefined && current.updatedOn > performedOn;
   const conflicts: ConflictingColumn[] = changedColumns
     .filter((column) => {
+      // Handoff state is monotonic: an accepted arrival must not block a later
+      // completion from an offline device. Backwards moves were refused above.
+      if (table === 'handoff' && column === 'status') return false;
+      if (table === 'appointment' && column === 'scheduledFor' && mutation.previous && column in mutation.previous) return !sameAppointmentTime(current.type === 'appointment' ? current.scheduledFor : undefined, typeof mutation.previous[column] === 'string' ? mutation.previous[column] : undefined);
       const record = current as Record<string, unknown>;
       if (mutation.previous && column in mutation.previous) return !isDeepStrictEqual(record[column] ?? null, mutation.previous[column] ?? null);
       return serverMovedSince;
     })
     .map((column) => ({ column, deviceValue: changes[column], serverValue: (current as Record<string, unknown>)[column] }));
+
+  // A booking's time, attendance and attributed history form one fact. A partial
+  // application would leave the displayed state disagreeing with its history.
+  if (table === 'appointment' && conflicts.length) return refuse('conflict', 'This booking changed on another device. Review it before trying again');
 
   // Age and its observation date describe one fact. A partial merge of those
   // columns could make a patient's age jump even when both edits were valid.
@@ -528,7 +606,7 @@ const evaluatePatch = async ({ tx, identity, uploadedAt }: Context, mutation: Up
     if (failure) return failure;
   }
 
-  if ((table === 'staff' || table === 'patient') && !nothingLeft && conflicts.length === 0) await recordAuditEvent(tx, {
+  if ((table === 'staff' || table === 'patient' || table === 'appointment') && !nothingLeft && conflicts.length === 0) await recordAuditEvent(tx, {
     facilityId: identity.facilityId, deviceId: identity.deviceId, actorStaffId: updatedBy,
     action: 'update', entityType: table, entityId: mutation.id,
     metadata: { columns: changedColumns.join(',') },

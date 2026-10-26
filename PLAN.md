@@ -28,6 +28,25 @@ include the new table. See [implementation and release order](../docs/EMR-OUTPAT
 
 ---
 
+## Operational delivery (26 October 2026)
+
+Register uploads validate values against the exact published register version,
+including required fields, options and defined field IDs. Inventory validates
+movement direction and explanations; opening quantities cannot be patched and
+measurement units cannot change after movements. Derived negative stock remains
+visible for physical-count review instead of deleting reported offline usage.
+
+Handoffs must name the same patient/facility as their visit. Only status patches
+are supported. Row locks and monotonic state checks serialize arrivals/completions;
+stale forward progress is accepted and backwards updates cannot reopen finished work.
+Appointment attendance adds nullable attendance/activity columns in migration 0014
+and generated Sync Streams. Policy version 9 grants appointment:update to front
+desk and clinical roles. A booking row lock serializes attendance with visit creation;
+history is appended, competing changes are refused atomically, and inactive or
+duplicate booking-linked visits cannot be created. Promote the canonical shared
+contract before releasing these guards with the corresponding frontend. Scope and validation are recorded in
+../docs/OVERALL-REDESIGN-IMPLEMENTATION-2026-10-26.md.
+
 ## 0. What this repo is (and is not)
 
 - **Is:** the single service + infrastructure config that sits beside PostgreSQL:

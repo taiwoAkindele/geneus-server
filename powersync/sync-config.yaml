@@ -51,7 +51,7 @@ streams:
   appointments:
     auto_subscribe: true
     query: |
-      SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", patient_id AS "patientId", reason, scheduled_for AS "scheduledFor", status, visit_type AS "visitType", charge_ids AS "chargeIds"
+      SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", patient_id AS "patientId", reason, scheduled_for AS "scheduledFor", status, attendance, activity, visit_type AS "visitType", charge_ids AS "chargeIds"
       FROM appointments
       WHERE facility_id = auth.parameter('facility_id')
   register_definitions:
