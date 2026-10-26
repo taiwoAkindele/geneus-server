@@ -9,6 +9,7 @@ import {
   parseDocument,
   sameAppointmentTime,
   validateRegisterEntry,
+  registerDefinitionIssues,
   paymentPermission,
   rolesFor,
   PIN_SETUP_CODE_CLAIM_FIELDS,
@@ -340,6 +341,16 @@ const evaluatePut = async ({ tx, identity, uploadedAt }: Context, mutation: Uplo
   }
 
   if (table === 'staff') await tx`SELECT id FROM facilities WHERE id = ${identity.facilityId} FOR UPDATE`;
+  if (record.type === 'register_definition') {
+    await tx`SELECT id FROM facilities WHERE id = ${identity.facilityId} FOR UPDATE`;
+    const rows = await tx`SELECT id FROM register_definitions WHERE facility_id = ${identity.facilityId} AND register_id = ${record.registerId}`;
+    const versions = await Promise.all(rows.map((row) => findRecord<RegisterDefinition>(tx, 'register_definition', row.id as string)));
+    const history = versions.filter((version): version is RegisterDefinition => Boolean(version));
+    const nextVersion = history.reduce((highest, version) => Math.max(highest, version.version), 0) + 1;
+    if (record.version !== nextVersion) return refuse('conflict', 'This register has a newer or missing configuration version. Review the current register before saving again');
+    const issues = registerDefinitionIssues(record, history);
+    if (issues.length) return refuse('validation', issues.join(' '));
+  }
   const staff = await findStaffInFacility(tx, identity.facilityId, record.createdBy);
   const permission = record.type === 'payment' ? paymentPermission(record) : PUT_PERMISSION[table];
   if (!staff) return refuse('identity', describeDenial({ kind: 'not_member', staffId: record.createdBy }));
