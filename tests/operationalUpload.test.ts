@@ -88,4 +88,39 @@ describe('stock ledger and versioned register uploads', () => {
     const [raced] = await db.sql`SELECT status FROM handoffs WHERE id = 'handoff:race'`;
     assert.equal(raced.status, 'done');
   });
+  it('keeps named draft snapshots separate from the published form and its pinned entries', async () => {
+    const first = put('register_definition', 'authoring:v1', { registerId: 'authoring', version: 1, name: 'Authoring', category: 'General', status: 'draft', fields: [] });
+    assert.deepEqual((await send(first)).rejected, []);
+    assert.deepEqual((await send(first)).rejected, []);
+    const form = { registerId: 'authoring', name: 'Published form', category: 'General', status: 'published', fields: [{ id: 'patient_name', type: 'text', label: 'Patient name', required: true }] };
+    assert.deepEqual((await send(put('register_definition', 'authoring:v2', { ...form, version: 2 }), put('register_definition', 'authoring:v3', { ...form, version: 3, name: 'Unfinished revision', status: 'draft', fields: [] }))).rejected, []);
+    assert.deepEqual((await send(put('register_entry', 'authoring:entry', { registerId: 'authoring', registerVersion: 2, entryDate: '2026-10-26', values: { patient_name: 'Example patient' } }))).rejected, []);
+    assert.equal((await send(put('register_entry', 'authoring:invalid', { registerId: 'authoring', registerVersion: 3, entryDate: '2026-10-26', values: {} }))).rejected[0]?.category, 'validation');
+  });
+  it('rejects ambiguous definitions, reused identities and missing authoring versions', async () => {
+    const base = { registerId: 'authoring', name: 'Published form', category: 'General', status: 'published', version: 4 };
+    const fields = [{ id: 'patient_name', type: 'text', label: 'Patient name' }];
+    assert.equal((await send(put('register_definition', 'authoring:changed-type', { ...base, fields: [{ ...fields[0], type: 'number' }] }))).rejected[0]?.category, 'validation');
+    assert.equal((await send(put('register_definition', 'authoring:duplicates', { ...base, fields: [fields[0], fields[0]] }))).rejected[0]?.category, 'validation');
+    assert.equal((await send(put('register_definition', 'authoring:gap', { ...base, version: 5, fields }))).rejected[0]?.category, 'conflict');
+    assert.deepEqual((await send(put('register_definition', 'authoring:v4', { ...base, fields: [{ id: 'new_question', type: 'text', label: 'New question' }] }))).rejected, []);
+    assert.match((await send(put('register_definition', 'authoring:retired', { ...base, version: 5, fields }))).rejected[0]?.reason ?? '', /removed field identity/);
+    const [row] = await db.sql`SELECT count(*)::int AS n FROM register_definitions WHERE register_id = 'authoring'`;
+    assert.equal(row.n, 4);
+  });
+  it('enforces authoring permission for draft saves as well as publication', async () => {
+    const fields = { registerId: 'forbidden', version: 1, name: 'Forbidden', category: 'General', status: 'draft', fields: [] };
+    for (const actor of [nurse, readOnly]) assert.equal((await send(put('register_definition', 'forbidden:' + actor.id, fields, actor))).rejected[0]?.category, 'authorization');
+  });
+  it('retains a competing offline configuration instead of overwriting the winning snapshot', async () => {
+    const fields = { registerId: 'authoring-race', version: 1, name: 'Draft one', category: 'General', status: 'draft', fields: [] };
+    const mutations = [put('register_definition', 'authoring-race:v1', fields), put('register_definition', 'authoring-race:v1', { ...fields, name: 'Draft two' })];
+    const results = await Promise.all(mutations.map((mutation) => send(mutation)));
+    assert.equal(results.reduce((count, result) => count + result.rejected.length, 0), 1);
+    const [refused] = await db.sql`SELECT refused_record FROM sync_rejections WHERE entity_id = 'authoring-race:v1'`;
+    assert.ok(['Draft one', 'Draft two'].includes(refused.refused_record.name));
+    const [count] = await db.sql`SELECT count(*)::int AS n FROM register_definitions WHERE register_id = 'authoring-race'`;
+    assert.equal(count.n, 1);
+  });
+
 });

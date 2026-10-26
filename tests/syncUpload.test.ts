@@ -408,7 +408,7 @@ describe('POST /sync/upload', () => {
         op: 'put',
         table: 'register_definition',
         id: `register:opd:v${version}`,
-        data: { ...envelopeFor(a), deviceId: device.deviceId, createdBy: records.id, id: `register:opd:v${version}`, type: 'register_definition', registerId: 'register:opd', version, name, category: 'General', status: 'published', fields: [] },
+        data: { ...envelopeFor(a), deviceId: device.deviceId, createdBy: records.id, id: `register:opd:v${version}`, type: 'register_definition', registerId: 'register:opd', version, name, category: 'General', status: 'published', fields: [{ id: 'service', type: 'text', label: 'Service provided' }] },
       });
       await send(a.device.credential, definition(a.device, 1, 'OPD'));
 

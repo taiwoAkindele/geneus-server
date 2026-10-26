@@ -410,3 +410,7 @@ every 30 seconds. Database refreshes then mistook fresh activity for clock rollb
 and cleared login. SessionProvider now uses Date.now() for session validity while
 retaining the coarse display tick. Link confirmation and review requests retain
 login; genuine 30-minute inactivity still expires and reload cannot revive it.
+
+## Register authoring guards (27 October 2026)
+
+The upload boundary serializes register definition snapshots on the facility row, requires the next version, and applies canonical registerDefinitionIssues validation. Both draft and published snapshots remain immutable; named empty drafts are allowed, while publication requires questions and usable choices. Field IDs cannot change type or resurrect retired published identities. Existing published versions remain valid for incoming entries while a newer draft exists. Losing offline snapshots are kept for reconciliation. There is no new server migration for these guards.
