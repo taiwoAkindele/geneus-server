@@ -17,6 +17,15 @@ import { z } from 'zod';
  * get, and the mutations they send, are bound to that device's facility here.
  */
 export const registerSyncRoutes = (app: FastifyInstance, sql: Sql, config: Config, signer: Signer) => {
+  /** Transport receipts reveal outcomes only for this device, never refused evidence. */
+  app.post('/sync/receipts', async (request, reply) => {
+    const identity = await authenticateDevice(sql, request, reply); if (!identity) return;
+    const parsed = z.strictObject({ clientIds: z.array(z.number().int().nonnegative()).min(1).max(1000) }).safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: 'invalid_request', message: 'Provide between one and one thousand mutation identities' } satisfies ApiErrorBody);
+    const rows = await sql`SELECT client_id,outcome FROM applied_mutations WHERE device_id=${identity.deviceId} AND client_id IN ${sql(parsed.data.clientIds)}`;
+    reply.header('cache-control','no-store');
+    return { applied: rows.filter((r)=>r.outcome==='applied').map((r)=>Number(r.client_id)), rejected: rows.filter((r)=>r.outcome==='rejected').map((r)=>Number(r.client_id)) };
+  });
   /** PowerSync fetches this to verify sync tokens (configured as `jwks_uri`). */
   app.get('/.well-known/jwks.json', async () => {
     const rows = await sql`SELECT public_jwk FROM workforce_signing_keys WHERE trusted`;

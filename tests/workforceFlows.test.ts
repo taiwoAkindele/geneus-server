@@ -96,7 +96,7 @@ describe('PHC and hospital workforce flows', { timeout: 120000 }, () => {
       }
       const start = new Date(f.now);
       start.setUTCHours(22, 0, 0, 0);
-      if (start.getTime() <= f.now)
+      if (start.getTime() <= f.now + 2 * 3600000)
         start.setUTCDate(start.getUTCDate() + 1);
       const startsAt = start.toISOString(), endsAt = new Date(start.getTime() + 8 * 3600000).toISOString();
       const overnight = { ...f.session, id: `session:${randomUUID()}`, sessionId: `session:${randomUUID()}`, startsAt, endsAt };

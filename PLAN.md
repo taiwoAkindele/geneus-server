@@ -427,3 +427,8 @@ login; genuine 30-minute inactivity still expires and reload cannot revive it.
 ## Register authoring guards (27 October 2026)
 
 The upload boundary serializes register definition snapshots on the facility row, requires the next version, and applies canonical registerDefinitionIssues validation. Both draft and published snapshots remain immutable; named empty drafts are allowed, while publication requires questions and usable choices. Field IDs cannot change type or resurrect retired published identities. Existing published versions remain valid for incoming entries while a newer draft exists. Losing offline snapshots are kept for reconciliation. There is no new server migration for these guards.
+
+
+## Workforce web integration (29 October 2026)
+
+Migration 0017 permits independent exact-source review before first clinical upload and prevents moving a professional profile between staff identities. Verified review does not create clinical records or invent missing original grants; original author, time and content are preserved through normal sync. Device-scoped upload receipts recover original outcomes after lost responses. Verified private reconciliation preserves restricted original proposals. The matching web implements facility setup, services, assignments, coverage, intake, booking resources, handover and clinical reviews. Rollout remains explicit; no facility was activated. Full server/shared verification: 404 tests passing.

@@ -35,7 +35,10 @@ export const historicalReviewValid = async (tx: Tx, record: EncounterEntry | Cli
 export const approveHistoricalReview = async (tx: Tx, identity: DeviceIdentity, reviewer: Staff, rejection: SyncRejection, reason: string, now: number): Promise<string> => {
   if (rejection.facilityId !== identity.facilityId || rejection.operation !== 'put' || !rejection.refusedRecord || !['encounter_entry', 'clinical_event'].includes(rejection.entityType))
     throw new Error('Select an original refused clinical entry in this facility');
-  const parsed = parseDocument(rejection.refusedRecord);
+  return approveHistoricalSource(tx,identity,reviewer,rejection.refusedRecord,reason,now,rejection.id);
+};
+export const approveHistoricalSource = async(tx:Tx,identity:DeviceIdentity,reviewer:Staff,input:unknown,reason:string,now:number,rejectionId?:string):Promise<string>=>{
+  const parsed = parseDocument(input);
   if (!parsed.success || !['encounter_entry', 'clinical_event'].includes(parsed.data.type))
     throw new Error('Original reported care is not a valid source record');
   const record = parsed.data as EncounterEntry | ClinicalEvent;
@@ -54,8 +57,8 @@ export const approveHistoricalReview = async (tx: Tx, identity: DeviceIdentity, 
     throw new Error('Accepted source history does not support clinical scope at the reported performance time');
   const id = `historical_review:${randomUUID()}`;
   await tx`INSERT INTO workforce_historical_reviews(id,facility_id,rejection_id,payload_hash,reviewed_by,reason,reviewed_on,expires_on)
-    VALUES(${id},${identity.facilityId},${rejection.id},${workforcePayloadHash(record)},${reviewer.staffId},${reason},${new Date(now).toISOString()},${new Date(now + 86400000).toISOString()})`;
-  await recordAuditEvent(tx, { facilityId: identity.facilityId, deviceId: identity.deviceId, actorStaffId: reviewer.staffId, action: 'update', entityType: 'sync_rejection', entityId: rejection.id, metadata: { historicalReviewId: id, disposition: 'authorized_exact_resubmission' } });
+    VALUES(${id},${identity.facilityId},${rejectionId??null},${workforcePayloadHash(record)},${reviewer.staffId},${reason},${new Date(now).toISOString()},${new Date(now + 86400000).toISOString()})`;
+  await recordAuditEvent(tx, { facilityId: identity.facilityId, deviceId: identity.deviceId, actorStaffId: reviewer.staffId, action: 'update', entityType: rejectionId?'sync_rejection':record.type, entityId: rejectionId||record.id, metadata: { historicalReviewId: id, disposition: 'authorized_exact_resubmission' } });
   return id;
 };
 export const completeHistoricalReview = async (tx: Tx, record: EncounterEntry | ClinicalEvent, deviceId: string, now: number): Promise<void> => {

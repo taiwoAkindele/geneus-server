@@ -185,4 +185,42 @@ describe('workforce evidence and clinical security', { timeout: 120000 }, () => 
       await f.app.close();
     }
   });
+  it('returns original per-device outcomes after a lost response and never reveals another device ledger',async()=>{
+    const f=await setupWorkforce(db.sql);try{
+      const valid=put({...f.unit,id:'unit:'+randomUUID(),unitId:'unit:'+randomUUID(),name:'Receipt test team'});
+      const invalid=put({...f.credential,id:'credential:'+randomUUID(),credentialId:'credential:'+randomUUID(),staffId:f.facility.admin.id},{expectedPreviousId:null});
+      const result=await f.send([valid,invalid]);assert.equal(result.applied,1);assert.equal(result.rejected.length,1);
+      const replay=await f.send([valid,invalid]);assert.equal(replay.duplicates,2);
+      const body={clientIds:[valid.clientId,invalid.clientId]},headers=asDevice(f.facility.device.credential);
+      const receipt=await f.app.inject({method:'POST',url:'/sync/receipts',headers,payload:body});assert.equal(receipt.statusCode,200);assert.deepEqual(receipt.json(),{applied:[valid.clientId],rejected:[invalid.clientId]});assert.equal(receipt.headers['cache-control'],'no-store');
+      const other=await registerScratchFacility(db.sql);const cross=await f.app.inject({method:'POST',url:'/sync/receipts',headers:asDevice(other.device.credential),payload:body});assert.deepEqual(cross.json(),{applied:[],rejected:[]});
+    }finally{await f.app.close();}
+  });
+  it('keeps restricted refused evidence private when a verified manager records its review outcome',async()=>{
+    const f=await setupWorkforce(db.sql);try{
+      const invalid={...f.credential,id:'credential:'+randomUUID(),credentialId:'credential:'+randomUUID(),staffId:f.facility.admin.id};assert.equal((await f.send([put(invalid,{expectedPreviousId:null})])).rejected.length,1);
+      const [row]=await db.sql`SELECT id FROM sync_rejections WHERE entity_id=${invalid.id}`;
+      const url='/workforce/rejections/'+String(row.id)+'/resolve',payload={resolution:'Withdrawn after independent review; original evidence retained'};
+      assert.equal((await f.app.inject({method:'POST',url,headers:asDevice(f.facility.device.credential),payload})).statusCode,403);
+      const token=await privateLogin(f),headers={...asDevice(f.facility.device.credential),'x-workforce-access':token};
+      assert.equal((await f.app.inject({method:'POST',url,headers,payload})).statusCode,204);
+      assert.equal((await f.app.inject({method:'POST',url,headers,payload})).statusCode,204);
+      assert.equal((await f.app.inject({method:'POST',url,headers,payload:{resolution:'Changed outcome'}})).statusCode,409);
+      const saved=await findRecord<SyncRejection>(db.sql,'sync_rejection',String(row.id));assert.equal(saved?.visibility,'restricted');assert.equal(saved?.resolvedBy,f.facility.admin.id);assert.deepEqual(saved?.refusedRecord,invalid);
+    }finally{await f.app.close();}
+  });
+  it('reviews a retained clinical draft before first upload without creating care through the private endpoint',async()=>{
+    const f=await setupWorkforce(db.sql);try{
+      await f.enable();const [currentRow]=await db.sql`SELECT * FROM authority_snapshots WHERE facility_id=${f.facility.facility.id} AND staff_id=${f.worker.id} AND is_current`;
+      const current=fromRow<AuthoritySnapshot>('authority_snapshot',currentRow),issued=new Date(f.now-50*60000).toISOString(),performed=new Date(f.now-30*60000).toISOString();
+      const historical=AuthoritySnapshot.parse({...current,id:'authority:historical:'+randomUUID(),revision:current.revision+100,createdOn:issued,issuedOn:issued,expiresOn:new Date(f.now-20*60000).toISOString()});historical.signature=signer.signBytes(Buffer.from(authoritySignaturePayload(historical))).toString('base64');
+      await db.sql`INSERT INTO authority_snapshots ${db.sql({...toRow(db.sql,'authority_snapshot',historical),is_current:false})}`;
+      const encounterId='encounter:'+randomUUID();await insertRecord(db.sql,'encounter',{...f.env,id:encounterId,type:'encounter',createdOn:performed,patientId:f.patientId,openedOn:performed});
+      const record=EncounterEntry.parse({...f.env,id:'entry:'+randomUUID(),type:'encounter_entry',createdBy:f.worker.id,createdOn:performed,encounterId,patientId:f.patientId,step:'vitals',actorRole:'nurse',values:{pulseBpm:80},actorContext:{offeringId:f.offering.id,authoritySnapshotId:historical.id}});
+      const token=await privateLogin(f),headers={...asDevice(f.facility.device.credential),'x-workforce-access':token};
+      const response=await f.app.inject({method:'POST',url:'/workforce/clinical-drafts/review',headers,payload:{record,reason:'Independent review of retained original clinical report'}});assert.equal(response.statusCode,201,response.body);assert.equal(await findRecord(db.sql,'encounter_entry',record.id),undefined);
+      assert.ok((await f.send([put({...record,values:{pulseBpm:90}})])).rejected.length);assert.equal((await f.send([put(record)])).applied,1);const accepted=await findRecord<EncounterEntry>(db.sql,'encounter_entry',record.id);assert.equal(accepted?.createdBy,f.worker.id);assert.equal(Date.parse(accepted!.createdOn),Date.parse(performed));
+    }finally{await f.app.close();}
+  });
+
 });
