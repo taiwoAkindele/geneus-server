@@ -10,7 +10,7 @@ import type { Sql, Tx } from '../db/client.ts';
  * it allows: five, within fifteen minutes, then it is dead. Requesting a new
  * code retires the old one. Only a hash is stored.
  */
-export type VerificationPurpose = 'registration' | 'staff_email' | 'staff_email_current';
+export type VerificationPurpose = 'registration' | 'staff_email' | 'staff_email_current' | 'workforce_access';
 export type VerificationKey = { purpose: VerificationPurpose; subject: string; email: string };
 
 const CODE_TTL_MS = 15 * 60 * 1000;

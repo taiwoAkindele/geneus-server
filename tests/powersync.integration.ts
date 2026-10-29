@@ -15,6 +15,7 @@ import { createInvite } from '../src/facilities/invites.ts';
 import { createSigner } from '../src/lib/signing.ts';
 import { loadConfig } from '../src/lib/config.ts';
 import { readFirstCheckpoint, waitForRow, type SyncedRow } from './powersyncClient.ts';
+import { setupWorkforce, put, versions } from './workforceFixtures.ts';
 
 /**
  * The stack test: geneus-server + the PowerSync service + PostgreSQL, over
@@ -49,6 +50,25 @@ const serverIsUp = async (): Promise<boolean> =>
   );
 
 describe('PowerSync stack', { timeout: 120_000 }, () => {
+  it('gates workforce downloads by negotiated tokens and keeps evidence/private refusals out of every general replica', async () => {
+    const f = await setupWorkforce(sql);
+    try {
+      const privateRefusal = put({...f.decision,id:`private-refusal:${randomBytes(4).toString('hex')}`,staffId:f.facility.admin.id},{expectedPreviousId:null});
+      await f.send([privateRefusal]);
+      const modern = await json(await fetch(`${SERVER_URL}/sync/token`,{method:'POST',headers:{authorization:`Bearer ${f.facility.device.credential}`,'content-type':'application/json'},body:JSON.stringify({...versions,pendingMutationCount:0})}),SyncTokenResponse.parse);
+      const legacy = await tokenFor(f.facility);
+      const ready=await waitForRow(POWERSYNC_URL,modern.token,(r)=>r.table==='audit_events' && r.data.entityId===privateRefusal.id);
+      assert.ok(ready.found,'Public audit metadata reaches the modern replica after the private refusal is committed');
+      assert.ok(ready.last.rows.some((r)=>r.table==='locations' && r.id===f.location.id));
+      assert.ok(ready.last.rows.some((r)=>r.table==='authority_snapshots' && r.data.staffId===f.worker.id));
+      assert.equal(ready.last.rows.some((r)=>['credentials','capability_decisions','reviewer_delegations','clinical_authority_bootstraps','external_clinical_reviewers'].includes(r.table)),false);
+      assert.equal(ready.last.rows.some((r)=>r.table==='sync_rejections' && r.data.entityId===privateRefusal.id),false);
+      const old=await readFirstCheckpoint(POWERSYNC_URL,legacy.token);
+      assert.equal(old.status,200);assert.ok(old.rows.some((r)=>r.table==='patients' && r.id===f.patientId));
+      assert.equal(old.rows.some((r)=>['locations','service_offerings','authority_snapshots','service_sessions','staff_assignments'].includes(r.table)),false);
+      assert.equal(old.rows.find((r)=>r.table==='units' && r.id===f.unit.id)?.data.kind,undefined);
+    } finally { await f.app.close(); }
+  });
   const sql = createSql(config.postgresUrl);
   let server: ChildProcess | undefined;
   let a: Facility;

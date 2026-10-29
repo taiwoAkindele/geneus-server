@@ -1,6 +1,7 @@
 import { rosterSignaturePayload } from '#shared';
 import type { Sql } from '../db/client.ts';
 import type { Signer } from '../lib/signing.ts';
+import { refreshDueAuthority } from '../workforce/authority.ts';
 
 /**
  * Roster signing (PLAN.md §4.5). Shifts are written on devices and arrive
@@ -75,7 +76,11 @@ export const startRosterSigning = (
   let running: Promise<void> | undefined;
   const pass = () => {
     if (running) return;
-    running = signPendingShifts(sql, signer)
+    running = signPendingShifts(sql, signer).then(async (signed) => {
+      const authority = await refreshDueAuthority(sql,signer);
+      if (authority > 0) log.info({ refreshed: authority }, 'clinical authority refreshed');
+      return signed;
+    })
       .then(
         (signed) => {
           if (signed > 0) log.info({ signed }, 'roster shifts signed');

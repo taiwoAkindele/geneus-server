@@ -6,6 +6,10 @@ import type { Sql } from '../db/client.ts';
 import type { Config } from '../lib/config.ts';
 import type { Signer } from '../lib/signing.ts';
 import { processUpload } from '../sync/upload.ts';
+import { FACILITY_FEATURE_SUPPORT } from '../workforce/compatibility.ts';
+import { assertWorkforceCompatibility } from '../workforce/compatibility.ts';
+import { recordClientVersion } from '../workforce/readiness.ts';
+import { z } from 'zod';
 
 /**
  * The two calls PowerSync's connector makes, plus the key it verifies with.
@@ -14,17 +18,30 @@ import { processUpload } from '../sync/upload.ts';
  */
 export const registerSyncRoutes = (app: FastifyInstance, sql: Sql, config: Config, signer: Signer) => {
   /** PowerSync fetches this to verify sync tokens (configured as `jwks_uri`). */
-  app.get('/.well-known/jwks.json', async () => ({ keys: [signer.publicJwk()] }));
+  app.get('/.well-known/jwks.json', async () => {
+    const rows = await sql`SELECT public_jwk FROM workforce_signing_keys WHERE trusted`;
+    return { keys: [...new Map([signer.publicJwk(), ...rows.map((r) => r.public_jwk as ReturnType<Signer['publicJwk']>)].map((key) => [key.kid,key])).values()] };
+  });
 
   app.post('/sync/token', async (request, reply) => {
     const identity = await authenticateDevice(sql, request, reply);
     if (!identity) return;
+
+    const version = z.object({ facilityContractVersion: z.number().int().optional(), schemaVersion: z.number().int().optional(), policyVersion: z.number().int().optional(), pendingMutationCount: z.number().int().nonnegative().optional() }).safeParse(request.body ?? {});
+    if (!version.success) return reply.code(400).send({ error: 'invalid_request', message: 'Invalid client compatibility metadata' } satisfies ApiErrorBody);
+    if (version.data.facilityContractVersion !== undefined && version.data.facilityContractVersion !== 1) return reply.code(409).send({ error: 'upgrade_required', message: 'This server supports facility contract version one' } satisfies ApiErrorBody);
+    await sql.begin(async (tx) => {
+      await tx`SELECT id FROM facilities WHERE id=${identity.facilityId} FOR UPDATE`;
+      await assertWorkforceCompatibility(tx, identity.facilityId, { transactionId: null, mutations: [], ...version.data, facilityContractVersion: version.data.facilityContractVersion === 1 ? 1 : undefined }, Date.now());
+      await recordClientVersion(tx, identity, version.data, Date.now());
+    });
 
     const minted = mintSyncToken(signer, {
       deviceId: identity.deviceId,
       facilityId: identity.facilityId,
       audience: config.powerSyncAudience,
       ttlSeconds: config.syncTokenTtlSeconds,
+      facilityContractVersion: version.data.facilityContractVersion === 1 ? 1 : undefined,
     });
     await touchDevice(sql, identity.deviceId);
 
@@ -33,6 +50,7 @@ export const registerSyncRoutes = (app: FastifyInstance, sql: Sql, config: Confi
       expiresOn: minted.expiresOn,
       syncEndpoint: config.powerSyncPublicUrl,
       serverTime: new Date().toISOString(),
+      facilityFeature: FACILITY_FEATURE_SUPPORT,
     };
     return response;
   });
@@ -41,7 +59,8 @@ export const registerSyncRoutes = (app: FastifyInstance, sql: Sql, config: Confi
    * Business refusals come back as 200 with `rejected` entries (and a
    * `sync_rejection` record); only an unenrolled device (401) or a request our
    * own client could never produce (400) is an HTTP error — either of those
-   * rightly stops the queue.
+   * rightly stops the queue. Incompatible clients receive 409 before ledger
+   * claims, preserving their queued mutations until the client is upgraded.
    */
   app.post('/sync/upload', async (request, reply) => {
     const identity = await authenticateDevice(sql, request, reply);
@@ -57,7 +76,7 @@ export const registerSyncRoutes = (app: FastifyInstance, sql: Sql, config: Confi
       } satisfies ApiErrorBody);
     }
 
-    const response = await processUpload(sql, identity, parsed.data);
+    const response = await processUpload(sql, identity, parsed.data, Date.now(), signer);
     await touchDevice(sql, identity.deviceId);
 
     if (response.rejected.length > 0) {

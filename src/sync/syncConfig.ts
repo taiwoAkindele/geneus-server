@@ -1,4 +1,4 @@
-import { SCHEMA_BY_TYPE, type DocType } from '#shared';
+import { SCHEMA_BY_TYPE, FACILITY_DOCUMENT_TYPES, RESTRICTED_FACILITY_DOCUMENT_TYPES, Permission, type DocType } from '#shared';
 import { snakeCase, TABLE_FOR } from '../db/records.ts';
 
 /**
@@ -25,15 +25,40 @@ const EDITION = 3;
  * one place that mapping happens on the way down. `id` and `type` need no
  * alias: `id` is `id`, and `type` is the table, not a column.
  */
-const selectListFor = (type: DocType): string[] =>
+const LEGACY_OMISSIONS: Partial<Record<DocType, readonly string[]>> = {
+  facility:['timeZone','workforcePolicy'],unit:['kind','parentId','routingEnabled','revision'],billing_department:['organizationUnitId','revision'],
+  appointment:['allocation'],encounter_entry:['actorContext'],clinical_event:['actorContext'],sync_rejection:['dependencies','visibility','visibleToStaffIds'],
+};
+const selectListFor = (type: DocType, legacy = false): string[] =>
   Object.keys(SCHEMA_BY_TYPE[type].shape)
-    .filter((field) => field !== 'type')
+    .filter((field) => field !== 'type' && (!legacy || !LEGACY_OMISSIONS[type]?.includes(field)))
     .map((field) => {
       const column = snakeCase(field);
       return column === field ? column : `${column} AS "${field}"`;
     });
 
 export const streamNameFor = (type: DocType): string => TABLE_FOR[type];
+/** Device tokens identify a facility, not the human at a shared device. Evidence uses authenticated private reads. */
+export const syncedTypes = (): DocType[] => (Object.keys(TABLE_FOR) as DocType[]).filter((type) => !RESTRICTED_FACILITY_DOCUMENT_TYPES.some((restricted) => restricted === type));
+
+const queryFor = (type: DocType, legacy: boolean): string[] => {
+  const lines=[`SELECT ${selectListFor(type,legacy).join(', ')}`,`FROM ${TABLE_FOR[type]}`,`WHERE facility_id = auth.parameter('${FACILITY_CLAIM}')`];
+  lines.push(legacy ? "  AND (auth.parameter('facility_contract') IS NULL OR auth.parameter('facility_contract') <> 1)" : "  AND auth.parameter('facility_contract') = 1");
+  if(type==='authority_snapshot') lines.push('  AND is_current = true');
+  if(type==='sync_rejection') {
+    lines.push("  AND (visibility IS NULL OR visibility = 'facility')");
+    if(legacy) lines.push("  AND category <> 'dependency'",...FACILITY_DOCUMENT_TYPES.map((t)=>`  AND entity_type <> '${t}'`));
+  }
+  if(legacy && type==='audit_event') lines.push(`  AND (entity_type IS NULL OR (${FACILITY_DOCUMENT_TYPES.map((t)=>`entity_type <> '${t}'`).join(' AND ')}))`);
+  if(legacy && ['staff','encounter_entry','clinical_event'].includes(type)) {
+    for(const role of ['laboratory_staff','pharmacy_staff']) lines.push(`  AND ${type==='staff'?'role':'actor_role'} <> '${role}'`);
+    if(type==='staff') {
+      lines.push("  AND instr(additional_roles, 'laboratory_staff') = 0","  AND instr(additional_roles, 'pharmacy_staff') = 0");
+      for(const permission of Permission.options.filter((p)=>/^(location|service|practitioner|credential|clinical_capability|staff_assignment|service_session|work_ownership|clinical):/.test(p))) lines.push(`  AND instr(additional_permissions, '"${permission}"') = 0`);
+    }
+  }
+  return lines;
+};
 
 export const buildSyncConfig = (): string => {
   const lines: string[] = [
@@ -47,14 +72,14 @@ export const buildSyncConfig = (): string => {
     'streams:',
   ];
 
-  for (const type of Object.keys(TABLE_FOR) as DocType[]) {
-    const columns = selectListFor(type);
+  for (const type of syncedTypes()) {
     lines.push(`  ${streamNameFor(type)}:`);
     lines.push('    auto_subscribe: true');
-    lines.push('    query: |');
-    lines.push(`      SELECT ${columns.join(', ')}`);
-    lines.push(`      FROM ${TABLE_FOR[type]}`);
-    lines.push(`      WHERE facility_id = auth.parameter('${FACILITY_CLAIM}')`);
+    if(FACILITY_DOCUMENT_TYPES.some((t)=>t===type)) {
+      lines.push('    query: |',...queryFor(type,false).map((line)=>`      ${line}`));
+    } else {
+      lines.push('    queries:','      - |',...queryFor(type,false).map((line)=>`        ${line}`),'      - |',...queryFor(type,true).map((line)=>`        ${line}`));
+    }
   }
 
   return `${lines.join('\n')}\n`;

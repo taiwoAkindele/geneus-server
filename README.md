@@ -9,6 +9,9 @@ against SQLite; PowerSync moves them. Read [PLAN.md](PLAN.md) and
 
 ## Local development
 
+Facility services, organization and staff-assignment backend behavior, private
+evidence APIs and activation steps are documented in [WORKFORCE.md](WORKFORCE.md).
+
 ```
 npm install
 npm run db:up        # PostgreSQL 17 in Docker on :5433 (wal_level=logical)
