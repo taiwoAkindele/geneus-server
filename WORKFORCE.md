@@ -225,3 +225,10 @@ capacity, rescheduling, overnight sessions, handover, evidence privacy/expiry,
 external verification, PIN protection, co-signatures, historical review and actual
 modern/legacy replication isolation. Browser/device checks and real pilot activation
 remain part of the web rollout.
+
+
+## Web integration additions (29 October 2026)
+
+Deploy migration 0017 with the matching web. It permits exact-source review before first upload and prevents moving a professional profile between staff identities. POST /sync/receipts returns original ledger outcomes only for the authenticated device. POST /workforce/clinical-drafts/review requires a verified independent reviewer and authorizes the exact retained source; care is still created only through sync upload. POST /workforce/rejections/:id/resolve requires verified private access and reconciliation permission, retains the restricted original payload and records an attributed administrative outcome. It does not grant clinical scope.
+
+The web integration passed all 404 standard server/shared tests against isolated PostgreSQL 17, including duplicate receipts, cross-device isolation, private resolution and pre-upload review. The overnight-session fixture avoids its own already-booked interval at every wall-clock hour. The earlier seven real replication checks remain the separate backend baseline; no new live facility pilot is claimed. See ../geneus-web/WORKFORCE.md for the connected web flow and activation boundaries.

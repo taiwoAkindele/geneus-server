@@ -11,7 +11,7 @@ import { recordsInFacility } from '../workforce/records.ts';
 import { workforceReadiness } from '../workforce/readiness.ts';
 import { authorizeStaff } from '../auth/staffAuthorization.ts';
 import { findRecord } from '../db/records.ts';
-import { approveHistoricalReview } from '../workforce/clinical.ts';
+import { approveHistoricalReview, approveHistoricalSource } from '../workforce/clinical.ts';
 import { workforcePayloadHash } from '../workforce/digests.ts';
 const codeRequest = z.strictObject({ staffId: z.string().min(1).max(200) });
 const codeConfirmation = codeRequest.extend({ code: z.string().regex(/^\d{6}$/) });
@@ -19,6 +19,37 @@ const evidenceQuery = z.object({ type: z.enum(RESTRICTED_FACILITY_DOCUMENT_TYPES
 const tokenHeader = (value: string | string[] | undefined): string | undefined => typeof value === 'string' ? value : undefined;
 /** No public authority/bootstrap/clinical mutation endpoint: clinical writes continue through sync upload. */
 export const registerWorkforceRoutes = (app: FastifyInstance, sql: Sql, mailer: Mailer): void => {
+  app.post<{Params:{id:string}}>('/workforce/rejections/:id/resolve',async(request,reply)=>{
+    const identity=await authenticateDevice(sql,request,reply);if(!identity)return;
+    const staff=await privateStaff(sql,identity,tokenHeader(request.headers['x-workforce-access']));
+    if(!staff)return reply.code(403).send({error:'private_verification_required',message:'Verify your workforce contact first'} satisfies ApiErrorBody);
+    const body=z.strictObject({resolution:z.string().trim().min(1).max(1000)}).safeParse(request.body);
+    if(!body.success)return reply.code(400).send({error:'invalid_request',message:'Explain how the private proposal was reviewed or corrected'} satisfies ApiErrorBody);
+    if(!staffPermissions(staff).includes('sync_rejection:resolve'))return reply.code(403).send({error:'forbidden',message:'Reconciliation permission is required'} satisfies ApiErrorBody);
+    const result=await sql.begin(async(tx)=>{
+      await tx`SELECT id FROM facilities WHERE id=${identity.facilityId} FOR UPDATE`;
+      const rejection=await findRecord<SyncRejection>(tx,'sync_rejection',request.params.id);
+      if(!rejection||rejection.facilityId!==identity.facilityId||rejection.visibility!=='restricted'||!(canReadWorkforceEvidence(staff)||rejection.visibleToStaffIds?.includes(staff.staffId)))return 'missing';
+      if(rejection.resolvedOn)return rejection.resolvedBy===staff.staffId&&rejection.resolution===body.data.resolution?'ok':'closed';
+      await tx`UPDATE sync_rejections SET resolved_on=now(),resolved_by=${staff.staffId},resolution=${body.data.resolution} WHERE id=${rejection.id}`;
+      await recordAuditEvent(tx,{facilityId:identity.facilityId,deviceId:identity.deviceId,actorStaffId:staff.staffId,action:'update',entityType:'sync_rejection',entityId:rejection.id,metadata:{context:'restricted_workforce',operation:'resolve'}});
+      return 'ok';
+    });
+    if(result==='missing')return reply.code(404).send({error:'not_found',message:'The private review item is unavailable'} satisfies ApiErrorBody);
+    if(result==='closed')return reply.code(409).send({error:'already_resolved',message:'This item was already resolved. Refresh the accepted records'} satisfies ApiErrorBody);
+    return reply.code(204).send();
+  });
+  app.post('/workforce/clinical-drafts/review',async(request,reply)=>{
+    const identity=await authenticateDevice(sql,request,reply);if(!identity)return;
+    const staff=await privateStaff(sql,identity,tokenHeader(request.headers['x-workforce-access']));
+    if(!staff)return reply.code(403).send({error:'private_verification_required',message:'Verify the independent reviewing staff contact first'} satisfies ApiErrorBody);
+    const body=z.strictObject({record:z.unknown(),reason:z.string().trim().min(1).max(1000)}).safeParse(request.body);
+    if(!body.success)return reply.code(400).send({error:'invalid_request',message:'Provide the exact retained source and an independent review reason'} satisfies ApiErrorBody);
+    try{
+      const reviewId=await sql.begin(async(tx)=>{await tx`SELECT id FROM facilities WHERE id=${identity.facilityId} FOR UPDATE`;return approveHistoricalSource(tx,identity,staff,body.data.record,body.data.reason,Date.now());});
+      return reply.code(201).send({reviewId,disposition:'submit_exact_source_through_sync'});
+    }catch(cause){if(cause instanceof Error&&!('code'in cause))return reply.code(403).send({error:'review_refused',message:cause.message} satisfies ApiErrorBody);throw cause;}
+  });
   app.post('/workforce/clinical-preview', async (request, reply) => {
     const identity = await authenticateDevice(sql, request, reply);
     if (!identity)

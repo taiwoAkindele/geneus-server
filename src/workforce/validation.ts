@@ -173,6 +173,7 @@ export const validateWorkforceRecord = async (tx: Tx, identity: DeviceIdentity, 
   }
   if (record.type === 'location')
     issues.push(...hierarchyIssues(record, data.locations));
+  if(record.type==='practitioner_profile'&&current?.type==='practitioner_profile'&&record.staffId!==current.staffId)issues.push('Professional profiles retain their original staff identity');
   if (record.type === 'capability_decision' && ['approve', 'restrict'].includes(record.decision)) {
     const profiles = await recordsInFacility(tx, identity.facilityId, 'practitioner_profile');
     if (!profiles.some((p) => p.staffId === record.staffId && p.active))
