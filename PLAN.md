@@ -10,6 +10,19 @@
 
 **Version:** 2.0 · **Owner:** Solo founder-builder · **Supersedes:** 1.1 (CouchDB)
 
+### Facility services and workforce extension (29 October 2026)
+
+The schema-4/policy-10/facility-contract-1 server foundation is implemented.
+Migrations 0015/0016 add the 15 shared document types and database invariants.
+The existing upload boundary serializes configuration, authority, scheduling,
+allocation and ownership changes; clinical scope enforcement requires an explicit
+readiness-checked policy cutover. Evidence and restricted refusals are excluded
+from general sync and served through independently verified private staff reads.
+Negotiated tokens gate new operational projections while preserving legacy ones.
+Audited operator setup, immutable authority/inventory history and independent
+historical-care review are included. Web integration and pilot activation remain.
+See [WORKFORCE.md](WORKFORCE.md) for interfaces, validation and rollout steps.
+
 ### Outpatient longitudinal extension (25 October 2026)
 
 Migration 0013 adds append-only `clinical_events`, facility/patient/encounter and

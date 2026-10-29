@@ -9,7 +9,7 @@ import {
   type UploadResponse,
 } from '#shared';
 import { createSql, type Sql } from '../src/db/client.ts';
-import { migrate } from '../src/db/migrate.ts';
+import { migrate, type Migration } from '../src/db/migrate.ts';
 import { insertRecord } from '../src/db/records.ts';
 import { loadConfig, type Config } from '../src/lib/config.ts';
 import { createSigner, type Signer } from '../src/lib/signing.ts';
@@ -46,7 +46,7 @@ const requireAdmin = async (): Promise<Sql> => {
   return admin;
 };
 
-export const scratchDatabase = async (): Promise<ScratchDatabase> => {
+export const scratchDatabase = async (migrations?: Migration[]): Promise<ScratchDatabase> => {
   const admin = await requireAdmin();
   const name = `${TEST_DB_PREFIX}${randomBytes(4).toString('hex')}`;
   await admin.unsafe(`CREATE DATABASE ${name}`);
@@ -55,7 +55,7 @@ export const scratchDatabase = async (): Promise<ScratchDatabase> => {
   const url = new URL(config.postgresUrl);
   url.pathname = `/${name}`;
   const sql = createSql(url.toString());
-  try { await migrate(sql); }
+  try { await migrate(sql, migrations); }
   catch (error) {
     await sql.end();
     const cleaner = createSql(config.postgresUrl);

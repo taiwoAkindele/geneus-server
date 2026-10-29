@@ -35,6 +35,12 @@ export const TABLE_FOR: Record<DocType, string> = {
   billing_adjustment: 'billing_adjustments',
   incoming_transfer: 'incoming_transfers',
   billing_department: 'billing_departments',
+  location: 'locations', service_definition: 'service_definitions', service_offering: 'service_offerings',
+  practitioner_profile: 'practitioner_profiles', credential: 'credentials', capability_decision: 'capability_decisions',
+  reviewer_delegation: 'reviewer_delegations', clinical_authority_bootstrap: 'clinical_authority_bootstraps',
+  external_clinical_reviewer: 'external_clinical_reviewers', authority_snapshot: 'authority_snapshots',
+  staff_assignment: 'staff_assignments', service_session: 'service_sessions', session_event: 'session_events',
+  work_ownership_event: 'work_ownership_events', appointment_reservation: 'appointment_reservations',
 };
 
 /**
@@ -43,17 +49,23 @@ export const TABLE_FOR: Record<DocType, string> = {
  * JSON explicitly — and these are the only places JSONB is used (SCHEMA.md §11).
  */
 const JSONB_COLUMNS: Partial<Record<DocType, readonly string[]>> = {
-  appointment: ['charge_ids', 'activity'],
+  facility: ['workforce_policy'],
+  appointment: ['charge_ids', 'activity', 'allocation'],
   staff: ['additional_roles', 'additional_permissions'],
   register_definition: ['fields'],
   register_entry: ['values'],
-  encounter_entry: ['values'],
-  clinical_event: ['values'],
+  encounter_entry: ['values', 'actor_context'],
+  clinical_event: ['values', 'actor_context'],
   referral: ['tier1'],
   audit_event: ['metadata'],
-  sync_rejection: ['conflicts', 'refused_record', 'refused_changes'],
+  sync_rejection: ['conflicts', 'refused_record', 'refused_changes', 'dependencies', 'visible_to_staff_ids'],
   fee_item: ['exemptions'],
   payment: ['allocations'],
+  service_definition: ['concept'], service_offering: ['location_ids', 'required_actions'],
+  practitioner_profile: ['profession', 'specialties'], capability_decision: ['scope', 'credential_revision_ids'],
+  reviewer_delegation: ['scopes'], clinical_authority_bootstrap: ['scopes'], external_clinical_reviewer: ['scopes'],
+  authority_snapshot: ['grants', 'review_scopes', 'source_decision_ids'], staff_assignment: ['location_ids', 'required_actions'],
+  service_session: ['participants', 'resources', 'roster_shift_ids'],
 };
 
 export const snakeCase = (key: string): string => key.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`);
@@ -84,6 +96,7 @@ export const toRow = (sql: Sql | Tx, type: DocType, record: Record<string, unkno
 export const fromRow = <T extends AnyDocument>(type: DocType, row: Row): T => {
   const record: Row = { type };
   for (const [column, value] of Object.entries(row)) {
+    if (type === 'authority_snapshot' && column === 'is_current') continue;
     if (value === null) continue;
     record[camelCase(column)] = value;
   }

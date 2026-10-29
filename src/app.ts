@@ -8,6 +8,7 @@ import { registerFacilityRoutes } from './routes/facilities.ts';
 import { registerStaffRoutes } from './routes/staff.ts';
 import { registerSyncRoutes } from './routes/sync.ts';
 import { registerPatientRoutes } from './routes/patients.ts';
+import { registerWorkforceRoutes } from './routes/workforce.ts';
 import { billingRawBodies, registerBillingRoutes } from './routes/billing.ts';
 import type { PaystackFetch } from './billing/paystack.ts';
 import { createRateLimiter } from './lib/rateLimit.ts';
@@ -54,6 +55,8 @@ const RATE_LIMITED_ROUTES = new Set([
   'POST /staff/:staffId/email/code',
   'POST /staff/:staffId/email',
   'POST /staff/:staffId/pin-codes/email',
+  'POST /workforce/access/code',
+  'POST /workforce/access/verify',
 ]);
 const RATE_LIMIT_PER_MINUTE = 10;
 
@@ -98,7 +101,7 @@ export const buildApp = ({ config, sql, signer, mailer: givenMailer, paystackFet
     if (origin && config.corsOrigins.includes(origin)) {
       reply.header('access-control-allow-origin', origin);
       reply.header('vary', 'origin');
-      reply.header('access-control-allow-headers', 'content-type, authorization');
+      reply.header('access-control-allow-headers', 'content-type, authorization, x-workforce-access');
       reply.header('access-control-allow-methods', 'GET, POST, OPTIONS');
     }
     if (request.method === 'OPTIONS') return reply.code(204).send();
@@ -152,6 +155,7 @@ export const buildApp = ({ config, sql, signer, mailer: givenMailer, paystackFet
   });
 
   registerPatientRoutes(app, sql);
+  registerWorkforceRoutes(app, sql, mailer);
   const startedOn = new Date().toISOString();
 
   /**

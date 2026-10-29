@@ -2,6 +2,9 @@ import { pbkdf2Sync, randomBytes, randomInt, randomUUID } from 'node:crypto';
 import { normalizePinSetupCode, PinSetupCode, SCHEMA_VERSION } from '#shared';
 import type { Sql } from '../db/client.ts';
 import { insertRecord } from '../db/records.ts';
+import { findRecord } from '../db/records.ts';
+import { mayApproveWorkforcePin, workforceEnforcementActive, type Facility, type Staff } from '#shared';
+import { deriveAuthority, serverContext } from '../workforce/authority.ts';
 import { recordAuditEvent } from '../audit/auditEvents.ts';
 import { findStaffInFacility } from '../auth/staffAuthorization.ts';
 
@@ -37,7 +40,7 @@ export type PinSetupCodeChannel = 'admin' | 'email' | 'operator';
 
 export type PinSetupCodeOutcome =
   | { ok: true; code: string; record: PinSetupCode }
-  | { ok: false; error: 'unknown_staff' };
+  | { ok: false; error: 'unknown_staff' | 'clinical_review_required' };
 
 /**
  * Issues a code for `staffId` and revokes any earlier unused one for the same
@@ -48,8 +51,16 @@ export const issuePinSetupCode = async (
   input: { facilityId: string; staffId: string; issuedBy: string; issuedFrom: string; channel?: PinSetupCodeChannel },
 ): Promise<PinSetupCodeOutcome> =>
   sql.begin(async (tx): Promise<PinSetupCodeOutcome> => {
+    await tx`SELECT id FROM facilities WHERE id=${input.facilityId} FOR UPDATE`;
     const staff = await findStaffInFacility(tx, input.facilityId, input.staffId);
     if (!staff || !staff.active) return { ok: false, error: 'unknown_staff' };
+    const facility = await findRecord<Facility>(tx, 'facility', input.facilityId);
+    if ((input.channel ?? 'admin') === 'admin' && workforceEnforcementActive(facility?.workforcePolicy, Date.now())) {
+      const actor = await findRecord<Staff>(tx, 'staff', input.issuedBy), target = await findRecord<Staff>(tx, 'staff', input.staffId);
+      const now = Date.now();
+      if (!actor || !target || !mayApproveWorkforcePin(actor, serverContext(actor, input.issuedFrom, now), await deriveAuthority(tx, actor, input.issuedFrom, now), target,
+        (await deriveAuthority(tx, target, input.issuedFrom, now)).snapshot, now)) return { ok: false, error: 'clinical_review_required' };
+    }
 
     const now = new Date();
     await tx`

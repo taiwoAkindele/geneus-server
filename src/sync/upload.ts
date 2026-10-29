@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from 'node:util';
+import type { ZodType } from 'zod';
 import {
   CLOSING_STEPS,
   ENCOUNTER_STEP_VALUES,
@@ -12,8 +13,11 @@ import {
   registerDefinitionIssues,
   paymentPermission,
   rolesFor,
+  staffPermissions,
   PIN_SETUP_CODE_CLAIM_FIELDS,
   ROSTER_SIGNED_FIELDS,
+  FACILITY_DOCUMENT_POLICY, RESTRICTED_FACILITY_DOCUMENT_TYPES,
+  SCHEMA_BY_TYPE, type FacilityDependency,
   type AnyDocument,
   type Appointment,
   type ConflictingColumn,
@@ -47,6 +51,14 @@ import { keepsAdministrator } from '../staff/access.ts';
 import { availableOnCharge } from '../billing/ledger.ts';
 import { claimMutation, recordRejection } from './ledger.ts';
 import { stockMovementIssue } from '../inventory/validation.ts';
+import { validateWorkforceRecord, workforceType } from '../workforce/validation.ts';
+import { refreshFacilityAuthority } from '../workforce/authority.ts';
+import { clinicalAuthorityRefusal, historicalReviewValid, completeHistoricalReview, clinicalAttestationRefusal } from '../workforce/clinical.ts';
+import { allocationRefusal, recordReservation } from '../workforce/allocations.ts';
+import { assertWorkforceCompatibility, orderWorkforceMutations } from '../workforce/compatibility.ts';
+import type { Signer } from '../lib/signing.ts';
+import { validatePinCodeClaim } from '../workforce/pin.ts';
+import { recordClientVersion } from '../workforce/readiness.ts';
 
 /**
  * The server's side of every offline write (root §18). PowerSync delivers the
@@ -142,7 +154,7 @@ const patchPermissions = (table: DocType, changes: Record<string, unknown>): Per
     case 'patient':
       return ['patient:update'];
     case 'appointment':
-      return columns.every((column) => ['status', 'scheduledFor', 'attendance', 'activity'].includes(column)) ? ['appointment:update'] : undefined;
+      return columns.every((column) => ['status', 'scheduledFor', 'attendance', 'activity', 'allocation', 'schemaVersion'].includes(column)) ? ['appointment:update'] : undefined;
     case 'handoff':
       return columns.every((column) => column === 'status') ? ['handoff:update'] : undefined;
     case 'referral':
@@ -177,7 +189,7 @@ const patchPermissions = (table: DocType, changes: Record<string, unknown>): Per
   }
 };
 
-type Refusal = { category: RejectionCategory; reason: string; conflicts?: ConflictingColumn[] };
+type Refusal = { category: RejectionCategory; reason: string; conflicts?: ConflictingColumn[]; dependencies?: FacilityDependency[] };
 const refuse = (category: RejectionCategory, reason: string): Refusal => ({ category, reason });
 
 type Outcome = 'applied' | 'duplicate' | 'rejected' | 'applied_with_conflicts';
@@ -216,7 +228,7 @@ const attempt = async (tx: Tx, write: (sp: Tx) => Promise<void>): Promise<Refusa
 const isStale = (permissions: Permission[], performedOn: string | undefined, uploadedAt: number): boolean => {
   if (!permissions.some((permission) => HIGH_RISK_PERMISSIONS.includes(permission))) return false;
   const performed = performedOn ? Date.parse(performedOn) : Number.NaN;
-  return Number.isNaN(performed) || uploadedAt - performed > OFFLINE_AUTHORIZATION_POLICY.highRiskMs;
+  return Number.isNaN(performed) || performed > uploadedAt + 300_000 || uploadedAt - performed > OFFLINE_AUTHORIZATION_POLICY.highRiskMs;
 };
 
 type Context = { tx: Tx; identity: DeviceIdentity; uploadedAt: number };
@@ -334,6 +346,7 @@ const evaluatePut = async ({ tx, identity, uploadedAt }: Context, mutation: Uplo
 
   if (record.facilityId !== identity.facilityId) return refuse('identity', `facilityId ${record.facilityId} is not this device's facility`);
   if (record.deviceId !== identity.deviceId) return refuse('identity', `deviceId ${record.deviceId} is not this device`);
+  if (!record.createdBy) return refuse('identity', 'A record must identify its author');
 
   if ('patientId' in record && typeof record.patientId === 'string' && table !== 'patient') {
     const held = await heldForPatient(tx, identity, record.patientId);
@@ -352,10 +365,11 @@ const evaluatePut = async ({ tx, identity, uploadedAt }: Context, mutation: Uplo
     if (issues.length) return refuse('validation', issues.join(' '));
   }
   const staff = await findStaffInFacility(tx, identity.facilityId, record.createdBy);
+  const historical = (record.type === 'encounter_entry' || record.type === 'clinical_event') && await historicalReviewValid(tx, record, identity.deviceId, uploadedAt);
   const permission = record.type === 'payment' ? paymentPermission(record) : PUT_PERMISSION[table];
   if (!staff) return refuse('identity', describeDenial({ kind: 'not_member', staffId: record.createdBy }));
-  if (!staff.active) return refuse('authorization', describeDenial({ kind: 'deactivated', staffId: record.createdBy }));
-  if (permission) {
+  if (!staff.active && !historical) return refuse('authorization', describeDenial({ kind: 'deactivated', staffId: record.createdBy }));
+  if (permission && !historical) {
     const denial = staffDenial(staff, record.createdBy, permission);
     if (denial) return refuse('authorization', describeDenial(denial));
     if (isStale([permission], record.createdOn, uploadedAt)) {
@@ -383,7 +397,7 @@ const evaluatePut = async ({ tx, identity, uploadedAt }: Context, mutation: Uplo
     // Serialise repeat saves, closure and corrections for the same encounter.
     await tx`SELECT id FROM encounters WHERE facility_id = ${identity.facilityId} AND id = ${record.encounterId} FOR UPDATE`;
     // The stamp names the role the server knows, never one the device asserts (PRD §9.8.5).
-    if (!rolesFor(staff).includes(record.actorRole)) {
+    if (!historical && !rolesFor(staff).includes(record.actorRole)) {
       return refuse('authorization', `saved as ${record.actorRole}, but ${record.createdBy} is ${staff.role}`);
     }
     const closed = await closedEncounterRefusal(tx, record);
@@ -413,7 +427,7 @@ const evaluatePut = async ({ tx, identity, uploadedAt }: Context, mutation: Uplo
   }
 
   if (record.type === 'clinical_event') {
-    if (!rolesFor(staff).includes(record.actorRole)) return refuse('authorization', 'The recorded clinical role is not held by this staff member');
+    if (!historical && !rolesFor(staff).includes(record.actorRole)) return refuse('authorization', 'The recorded clinical role is not held by this staff member');
     await tx`SELECT id FROM patients WHERE facility_id = ${identity.facilityId} AND id = ${record.patientId} FOR UPDATE`;
     const versions = await tx<{ id: string; patient_id: string; kind: string }[]>`SELECT id, patient_id, kind FROM clinical_events WHERE facility_id = ${record.facilityId} AND record_id = ${record.recordId}`;
     if (!record.previousId && versions.length) return refuse('conflict', 'This clinical record already exists. Review its current version');
@@ -467,9 +481,24 @@ const evaluatePut = async ({ tx, identity, uploadedAt }: Context, mutation: Uplo
     }
   }
 
+  if (record.type === 'encounter_entry' || record.type === 'clinical_event') {
+    const denial = await clinicalAuthorityRefusal(tx, identity, record, uploadedAt);
+    if (denial) return denial;
+  }
+  if (record.type === 'appointment') {
+    const denial = await allocationRefusal(tx, record, uploadedAt);
+    if (denial) return denial;
+  }
+  if (record.type === 'audit_event') {
+    const denial = await clinicalAttestationRefusal(tx, identity, record, uploadedAt);
+    if (denial) return denial;
+  }
+
   // Server clock on audit events the device recorded offline.
   const toWrite = table === 'audit_event' ? { ...record, receivedOn: new Date(uploadedAt).toISOString() } : record;
   const failure = await attempt(tx, (sp) => insertRecord(sp, table, toWrite));
+  if (!failure && record.type === 'appointment') await recordReservation(tx, record, uploadedAt);
+  if (!failure && historical && (record.type === 'encounter_entry' || record.type === 'clinical_event')) await completeHistoricalReview(tx, record, identity.deviceId, uploadedAt);
   if (!failure && table === 'staff') await recordAuditEvent(tx, {
     facilityId: identity.facilityId, deviceId: identity.deviceId, actorStaffId: record.createdBy,
     action: 'create', entityType: 'staff', entityId: record.id,
@@ -516,6 +545,8 @@ const evaluatePatch = async ({ tx, identity, uploadedAt }: Context, mutation: Up
   if (!staff) return refuse('identity', describeDenial({ kind: 'not_member', staffId: updatedBy }));
   if (!staff.active) return refuse('authorization', describeDenial({ kind: 'deactivated', staffId: updatedBy }));
   if (table === 'pin_setup_code') {
+    const reset = await validatePinCodeClaim(tx, current as PinSetupCode, identity, uploadedAt);
+    if (reset) return refuse('authorization', reset);
     const refusal = claimRefusal(current as PinSetupCode, updatedBy, changes);
     if (refusal) return refusal;
   } else {
@@ -524,6 +555,7 @@ const evaluatePatch = async ({ tx, identity, uploadedAt }: Context, mutation: Up
       if (denial) return refuse('authorization', describeDenial(denial));
     }
   }
+  if (current.type === 'sync_rejection' && current.visibility === 'restricted' && !current.visibleToStaffIds?.includes(updatedBy) && !staffPermissions(staff).includes('credential:read')) return refuse('authorization', 'Restricted evidence reconciliation needs its owner or an authorized workforce reader');
   const performedOn = typeof changes.updatedOn === 'string' ? changes.updatedOn : undefined;
   if (isStale(permissions, performedOn, uploadedAt)) {
     return refuse('authorization', `${permissions.join(', ')} was performed more than 24 hours before reaching the server`);
@@ -542,7 +574,13 @@ const evaluatePatch = async ({ tx, identity, uploadedAt }: Context, mutation: Up
     if (order.includes(changes.status) && order.indexOf(changes.status) < order.indexOf(current.status)) return refuse('conflict', 'This handoff has already progressed. Review its current state rather than reopening it');
   }
   if (!merged.success) return refuse('validation', `does not match the contract: ${merged.error.issues.map((issue) => issue.path.join('.') + ' ' + issue.message).join('; ')}`);
+  if (merged.data.type === 'appointment') {
+    const denial = await allocationRefusal(tx, merged.data, uploadedAt);
+    if (denial) return denial;
+  }
   if (current.type === 'appointment' && merged.data.type === 'appointment') {
+    const allocationOnly = Object.keys(changes).filter((key) => !PATCH_METADATA.has(key)).every((key) => ['allocation', 'schemaVersion'].includes(key));
+    if (!allocationOnly) {
     const before = current.activity ?? [], after = merged.data.activity ?? [];
     if (after.length !== before.length + 1 || !isDeepStrictEqual(after.slice(0, -1), before)) return refuse('conflict', 'Booking history has changed. Review the current booking before trying again');
     const action = after[after.length - 1];
@@ -555,6 +593,7 @@ const evaluatePatch = async ({ tx, identity, uploadedAt }: Context, mutation: Up
     if (visit) return refuse('conflict', 'Care has already started. Continue or review the linked visit instead of changing attendance');
     const held = await heldForPatient(tx, identity, current.patientId);
     if (held) return held;
+    }
   }
   if (table === 'patient' && typeof changes.nin === 'string' && changes.nin && !/^\d{11}$/.test(changes.nin)) return refuse('validation', 'NIN must contain 11 digits');
 
@@ -623,7 +662,10 @@ const evaluatePatch = async ({ tx, identity, uploadedAt }: Context, mutation: Up
     metadata: { columns: changedColumns.join(',') },
   });
 
-  if (conflicts.length === 0) return undefined;
+  if (conflicts.length === 0) {
+    if (!nothingLeft && merged.data.type === 'appointment') await recordReservation(tx, merged.data, uploadedAt);
+    return undefined;
+  }
   if (lastWriteWins) {
     await recordAuditEvent(tx, {
       facilityId: identity.facilityId,
@@ -659,26 +701,64 @@ const occurredOnOf = (mutation: UploadMutation): string | undefined => {
   return typeof value === 'string' && !Number.isNaN(Date.parse(value)) ? value : undefined;
 };
 
+/** New workflow configuration/events share the existing upload, ledger, audit and reconciliation boundary. */
+const evaluateWorkforce = async ({ tx, identity, uploadedAt }: Context, mutation: UploadMutation, signer?: Signer): Promise<Refusal | undefined> => {
+  const policy = workforceType(mutation.table) ? FACILITY_DOCUMENT_POLICY[mutation.table as keyof typeof FACILITY_DOCUMENT_POLICY] : undefined;
+  if (policy?.writer === 'server') return refuse('authorization', 'This record is written only by the server');
+  if (mutation.op === 'delete') return refuse('authorization', 'Retire configuration or end work explicitly; history is not deleted');
+  const current = await findRecord(tx, mutation.table, mutation.id);
+  if (current && current.facilityId !== identity.facilityId) return refuse('identity', 'This record belongs to another facility');
+  if (mutation.op === 'patch' && !current) return refuse('validation', 'No accepted record exists to change');
+  if (current && (IMMUTABLE_ENVELOPE_FIELDS as readonly string[]).some((key) => key in mutation.data && !isDeepStrictEqual(mutation.data[key], (current as Record<string, unknown>)[key]))) return refuse('validation', 'Original identity and creation provenance cannot change');
+  const shape = SCHEMA_BY_TYPE[mutation.table].shape as Record<string,ZodType>;
+  const normalized = Object.fromEntries(Object.entries(mutation.data).map(([key,value]) => [key,value === null && shape[key]?.def.type === 'optional' ? undefined : value]));
+  const parsed = parseDocument({ ...current, ...normalized, id: mutation.id, type: mutation.table });
+  if (!parsed.success) return refuse('validation', 'Configuration does not match the shared contract');
+  const record = parsed.data;
+  if (record.facilityId !== identity.facilityId || (!current && record.deviceId !== identity.deviceId)) return refuse('identity', 'Configuration must belong to this device and facility');
+  const result = await validateWorkforceRecord(tx, identity, record, mutation, uploadedAt, current);
+  if (result.refusal) return result.refusal;
+  return attempt(tx, async (sp) => {
+    if (!current) await insertRecord(sp, mutation.table, result.record);
+    else {
+      const changes = Object.fromEntries(Object.keys(SCHEMA_BY_TYPE[mutation.table].shape).filter((key) => key !== 'type' && !IMMUTABLE_ENVELOPE_FIELDS.includes(key as typeof IMMUTABLE_ENVELOPE_FIELDS[number]))
+        .map((key) => [key, (result.record as Record<string, unknown>)[key] ?? null]));
+      await sp`UPDATE ${sp(TABLE_FOR[mutation.table])} SET ${sp(toRow(sp, mutation.table, changes))} WHERE facility_id=${identity.facilityId} AND id=${mutation.id}`;
+    }
+    await recordAuditEvent(sp, { facilityId: identity.facilityId, deviceId: identity.deviceId, actorStaffId: attributionOf(mutation), action: current ? 'update' : 'create', entityType: mutation.table, entityId: mutation.id, metadata: { workflow: 'facility_workforce' } });
+    if (signer && ['credential','capability_decision','reviewer_delegation'].includes(mutation.table)) await refreshFacilityAuthority(sp, identity.facilityId, signer, uploadedAt);
+  });
+};
+
 const processMutation = async (
   sql: Sql,
   identity: DeviceIdentity,
   transactionId: number | null,
   mutation: UploadMutation,
   uploadedAt: number,
+  request: UploadRequest,
+  signer?: Signer,
 ): Promise<MutationResult> =>
   sql.begin(async (tx): Promise<MutationResult> => {
+    // One order everywhere, including operator changes: facility, then record/calendar locks.
+    await tx`SELECT id FROM facilities WHERE id=${identity.facilityId} FOR UPDATE`;
+    await assertWorkforceCompatibility(tx, identity.facilityId, request, uploadedAt);
     const ledger = { deviceId: identity.deviceId, clientId: mutation.clientId, transactionId };
     if (!(await claimMutation(tx, ledger, mutation.table, mutation.id, 'applied'))) return { outcome: 'duplicate' };
 
     const context: Context = { tx, identity, uploadedAt };
-    const refusal =
+    const handled = workforceType(mutation.table) || ['unit','billing_department'].includes(mutation.table);
+    const refusal = handled ? await evaluateWorkforce(context, mutation, signer) :
       mutation.op === 'delete'
         ? refuse('authorization', 'records are never deleted; retire them instead')
         : mutation.op === 'put'
           ? await evaluatePut(context, mutation)
           : await evaluatePatch(context, mutation);
 
-    if (!refusal) return { outcome: 'applied' };
+    if (!refusal) {
+      if (signer && mutation.table === 'staff') await refreshFacilityAuthority(tx, identity.facilityId, signer, uploadedAt);
+      return { outcome: 'applied' };
+    }
 
     // A column conflict on a merge table applied the other columns; everything else applied nothing.
     const partial = refusal.conflicts !== undefined && mutation.op === 'patch';
@@ -696,6 +776,9 @@ const processMutation = async (
       attributedTo: attributionOf(mutation),
       occurredOn: occurredOnOf(mutation),
       conflicts: refusal.conflicts,
+      dependencies: refusal.dependencies,
+      visibility: RESTRICTED_FACILITY_DOCUMENT_TYPES.some((type) => type === mutation.table) ? 'restricted' : undefined,
+      visibleToStaffIds: RESTRICTED_FACILITY_DOCUMENT_TYPES.some((type) => type === mutation.table) ? [attributionOf(mutation)?.trim().slice(0,200) || 'system'] : undefined,
       refusedRecord: mutation.op === 'put' ? { ...mutation.data, id: mutation.id, type: mutation.table } : undefined,
       // A patch that applied nothing keeps what it tried to set; a partly applied one keeps its clash in `conflicts`.
       refusedChanges: mutation.op === 'patch' && !partial ? refusedChangesOf(mutation) : undefined,
@@ -718,13 +801,21 @@ export const processUpload = async (
   identity: DeviceIdentity,
   request: UploadRequest,
   now: number = Date.now(),
+  signer?: Signer,
 ): Promise<UploadResponse> => {
   let applied = 0;
   let duplicates = 0;
   const rejected: UploadRejection[] = [];
 
-  for (const mutation of request.mutations) {
-    const result = await processMutation(sql, identity, request.transactionId, mutation, now);
+  await sql.begin(async (tx) => {
+    await tx`SELECT id FROM facilities WHERE id=${identity.facilityId} FOR UPDATE`;
+    await assertWorkforceCompatibility(tx, identity.facilityId, request, now);
+    // Readiness must see an in-progress upload before any accepted mutation,
+    // including a legacy upload following an earlier modern-client handshake.
+    await recordClientVersion(tx, identity, { ...request, pendingMutationCount: 1 }, now);
+  });
+  for (const mutation of orderWorkforceMutations(request.mutations)) {
+    const result = await processMutation(sql, identity, request.transactionId, mutation, now, request, signer);
     if (result.outcome === 'duplicate') duplicates += 1;
     if (result.outcome === 'applied' || result.outcome === 'applied_with_conflicts') applied += 1;
     if (result.refusal) {
@@ -734,9 +825,10 @@ export const processUpload = async (
         id: mutation.id,
         category: result.refusal.category,
         reason: result.refusal.reason,
+        ...(result.refusal.dependencies ? { dependencies: result.refusal.dependencies } : {}),
       });
     }
   }
 
-  return { applied, duplicates, rejected, serverTime: new Date(now).toISOString() };
+  return { applied, duplicates, rejected, serverTime: new Date(now).toISOString(), ...(request.facilityContractVersion ? { facilityContractVersion: request.facilityContractVersion } : {}) };
 };

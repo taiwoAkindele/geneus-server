@@ -86,6 +86,7 @@ export const registerStaffRoutes = (app: FastifyInstance, sql: Sql, mailer: Mail
       issuedFrom: identity.deviceId,
     });
     if (!outcome.ok) {
+      if (outcome.error === 'clinical_review_required') return refuse(reply, 403, 'clinical_review_required', 'An authorized clinical reviewer must approve this account reset');
       return reply.code(404).send({ error: 'unknown_staff', message: 'No active member of staff with that id at this facility' } satisfies ApiErrorBody);
     }
 
