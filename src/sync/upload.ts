@@ -273,7 +273,7 @@ const heldForPatient = async (tx: Tx, identity: DeviceIdentity, patientId: strin
     : undefined;
 };
 
-/** Once an encounter is closed only amendments may be added to it (SCHEMA.md §13). */
+/** Consultation closure preserves fulfillment/review and amendments, while refusing new assessments. */
 const closedEncounterRefusal = async (tx: Tx, entry: EncounterEntry): Promise<Refusal | undefined> => {
   if ((POST_CONSULTATION_STEPS as readonly string[]).includes(entry.step)) return undefined;
   const closings = await tx<{ step: string; values: Record<string, unknown> }[]>`
@@ -283,7 +283,7 @@ const closedEncounterRefusal = async (tx: Tx, entry: EncounterEntry): Promise<Re
     `;
   const closing = closings.find(closesEncounter);
   return closing
-    ? refuse('conflict', `encounter ${entry.encounterId} was already closed (${closing.step}); only an amendment can be added`)
+    ? refuse('conflict', `encounter ${entry.encounterId} was already closed (${closing.step}); clinical changes require an amendment`)
     : undefined;
 };
 

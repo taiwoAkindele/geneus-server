@@ -49,7 +49,9 @@ export const registerOrganizationRoutes = (app: FastifyInstance, sql: Sql) => {
       await tx`INSERT INTO organizations(id,name) VALUES(${id},${parsed.data.name})`;
       await tx`INSERT INTO organization_facilities(facility_id,organization_id,joined_by) VALUES(${identity.facilityId},${id},${identity.staffId})`;
       await recordAuditEvent(tx, { ...identity, actorStaffId: identity.staffId, action: 'create', entityId: id, metadata: { workflow: 'organization_link' } });
-      return reply.code(201).send({ id, name: parsed.data.name });
+      // Fastify sends the returned data only after sql.begin commits.
+      reply.code(201);
+      return { id, name: parsed.data.name };
     });
   });
   app.post('/organization/invitations', async (request, reply) => {
@@ -91,7 +93,8 @@ export const registerOrganizationRoutes = (app: FastifyInstance, sql: Sql) => {
       const rows = await tx`INSERT INTO staff_provision_requests(id,from_facility_id,to_facility_id,source_staff_id,person_id,full_name,requested_by) VALUES(${id},${identity.facilityId},${input.toFacilityId},${input.staffId},${personId},${source.full_name},${identity.staffId}) ON CONFLICT DO NOTHING RETURNING id`;
       if (!rows.length) return reply.code(409).send({ error: 'already_requested', message: 'A provisioning request is already pending' });
       await recordAuditEvent(tx, { ...identity, actorStaffId: identity.staffId, action: 'create', entityId: id, metadata: { workflow: 'staff_provision_request', destination: input.toFacilityId } });
-      return reply.code(201).send({ id, status: 'pending' });
+      reply.code(201);
+      return { id, status: 'pending' };
     });
   });
   app.post<{ Params: { id: string } }>('/organization/staff-requests/:id/accept', async (request, reply) => {
@@ -114,7 +117,8 @@ export const registerOrganizationRoutes = (app: FastifyInstance, sql: Sql) => {
       await insertRecord(tx, 'staff', staff);
       await tx`UPDATE staff_provision_requests SET status='accepted',local_staff_id=${id},decided_by=${identity.staffId},decided_on=now() WHERE id=${provision.id}`;
       await recordAuditEvent(tx, { ...identity, actorStaffId: identity.staffId, action: 'create', entityType: 'staff', entityId: id, metadata: { workflow: 'staff_provision_accept', requestId: String(provision.id) } });
-      return reply.code(201).send({ staffId: id });
+      reply.code(201);
+      return { staffId: id };
     });
   });
   app.post<{ Params: { id: string } }>('/organization/staff-requests/:id/reject', async (request, reply) => {
