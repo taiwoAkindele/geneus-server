@@ -1,7 +1,8 @@
+import { careWorkflowIssues, chargeOrderIssues, routeReferral } from '../clinical/careWorkflow.ts';
 import { isDeepStrictEqual } from 'node:util';
 import type { ZodType } from 'zod';
 import {
-  CLOSING_STEPS,
+  CLOSING_STEPS, closesEncounter, POST_CONSULTATION_STEPS,
   ENCOUNTER_STEP_VALUES,
   REPEATABLE_STEPS,
   HIGH_RISK_PERMISSIONS,
@@ -81,9 +82,9 @@ import { recordClientVersion } from '../workforce/readiness.ts';
  */
 
 /** Written by the server; a device may never insert them. */
-const SERVER_WRITTEN: readonly DocType[] = ['facility', 'device', 'sync_rejection', 'pin_setup_code', 'incoming_transfer'];
+const SERVER_WRITTEN: readonly DocType[] = ['facility', 'device', 'sync_rejection', 'pin_setup_code', 'incoming_transfer', 'inbound_referral'];
 /** Server-written, but a device may patch the few columns that record what it did with them. */
-const DEVICE_MARKABLE: readonly DocType[] = ['sync_rejection', 'pin_setup_code'];
+const DEVICE_MARKABLE: readonly DocType[] = ['sync_rejection', 'pin_setup_code', 'inbound_referral'];
 /**
  * Never patched: the record is the event. An encounter is closed by a step, not
  * an edit (SCHEMA.md §13); a payment is cancelled by a reversal (SCHEMA.md §14).
@@ -108,6 +109,8 @@ const ADMIN_LAST_WRITE_WINS: readonly DocType[] = ['staff', 'roster_shift', 'uni
 /** Columns only the server may set. */
 const SERVER_OWNED_COLUMNS: Partial<Record<DocType, readonly string[]>> = {
   roster_shift: ['signature'],
+  staff: ['personId'],
+  fee_item: ['priceVersion'],
   payment: ['incomingTransferId'],
   patient_identity_event: ['revision'],
 };
@@ -158,7 +161,9 @@ const patchPermissions = (table: DocType, changes: Record<string, unknown>): Per
     case 'handoff':
       return columns.every((column) => column === 'status') ? ['handoff:update'] : undefined;
     case 'referral':
-      return ['referral:update'];
+      return columns.every((column) => ['status','seenOn','arrivedOn','closedOn','notYetArrivedFlagged'].includes(column)) ? ['referral:update'] : undefined;
+    case 'inbound_referral':
+      return columns.every((column) => ['status','localPatientId','localEncounterId','arrivedOn','closedOn'].includes(column)) ? ['referral:update'] : undefined;
     case 'stock_item':
       return ['stock_item:manage'];
     case 'fee_item':
@@ -270,12 +275,13 @@ const heldForPatient = async (tx: Tx, identity: DeviceIdentity, patientId: strin
 
 /** Once an encounter is closed only amendments may be added to it (SCHEMA.md §13). */
 const closedEncounterRefusal = async (tx: Tx, entry: EncounterEntry): Promise<Refusal | undefined> => {
-  if (entry.step === 'amendment') return undefined;
-  const [closing] = await tx<{ step: string }[]>`
-    SELECT step FROM encounter_entries
+  if ((POST_CONSULTATION_STEPS as readonly string[]).includes(entry.step)) return undefined;
+  const closings = await tx<{ step: string; values: Record<string, unknown> }[]>`
+    SELECT step, "values" FROM encounter_entries
     WHERE facility_id = ${entry.facilityId} AND encounter_id = ${entry.encounterId}
       AND step = ANY(${[...CLOSING_STEPS]})
-    LIMIT 1`;
+    `;
+  const closing = closings.find(closesEncounter);
   return closing
     ? refuse('conflict', `encounter ${entry.encounterId} was already closed (${closing.step}); only an amendment can be added`)
     : undefined;
@@ -393,6 +399,12 @@ const evaluatePut = async ({ tx, identity, uploadedAt }: Context, mutation: Uplo
     if (visit) return refuse('conflict', 'This booking already has a visit. Continue or review that visit');
   }
 
+  if (record.type === 'referral') {
+    if (record.fromFacilityId !== identity.facilityId || record.toFacilityId === identity.facilityId || record.status !== 'sent' || record.deliveryStatus !== 'alert_pending') return refuse('validation', 'A new referral must originate here and await delivery');
+    const [destination] = await tx`SELECT id FROM facilities WHERE id=${record.toFacilityId}`;
+    if (!destination) return refuse('validation', 'The receiving facility does not exist');
+  }
+  if (record.type === 'charge') { const issues = await chargeOrderIssues(tx, record); if (issues.length) return refuse('validation', issues.join('. ')); }
   if (record.type === 'encounter_entry') {
     // Serialise repeat saves, closure and corrections for the same encounter.
     await tx`SELECT id FROM encounters WHERE facility_id = ${identity.facilityId} AND id = ${record.encounterId} FOR UPDATE`;
@@ -400,6 +412,8 @@ const evaluatePut = async ({ tx, identity, uploadedAt }: Context, mutation: Uplo
     if (!historical && !rolesFor(staff).includes(record.actorRole)) {
       return refuse('authorization', `saved as ${record.actorRole}, but ${record.createdBy} is ${staff.role}`);
     }
+    const careIssues = await careWorkflowIssues(tx, record);
+    if (careIssues.length) return refuse('validation', careIssues.join('. '));
     const closed = await closedEncounterRefusal(tx, record);
     if (closed) return closed;
     if (record.step !== 'amendment' && !(REPEATABLE_STEPS as readonly string[]).includes(record.step)) {
@@ -410,11 +424,21 @@ const evaluatePut = async ({ tx, identity, uploadedAt }: Context, mutation: Uplo
       const target = await findRecord<EncounterEntry>(tx, 'encounter_entry', record.amends!);
       if (!target || target.facilityId !== record.facilityId || target.encounterId !== record.encounterId || target.patientId !== record.patientId || target.step === 'amendment') return refuse('validation', 'An amendment must name an original entry of this encounter and patient');
       if (record.values.correctedValues) {
-        if (!['vitals', 'complaint', 'lab_results', 'diagnosis', 'injection'].includes(target.step)) return refuse('validation', 'This step supports explanatory amendments only');
+        if (!['vitals', 'complaint', 'lab_results', 'diagnosis', 'prescription', 'injection_order', 'injection'].includes(target.step)) return refuse('validation', 'This step supports explanatory amendments only');
         const corrected = ENCOUNTER_STEP_VALUES[target.step].safeParse(record.values.correctedValues);
         if (!corrected.success) return refuse('validation', `Corrected values do not match ${target.step}`);
         const [latest] = await tx<{ id: string; values: Record<string, unknown> }[]>`SELECT e.id, e."values" FROM encounter_entries e WHERE e.facility_id = ${record.facilityId} AND e.amends = ${target.id} AND e."values" ? 'correctedValues' AND NOT EXISTS (SELECT 1 FROM encounter_entries n WHERE n.amends = e.amends AND n."values"->>'previousAmendmentId' = e.id) LIMIT 1`;
         if ((latest?.id ?? undefined) !== record.values.previousAmendmentId) return refuse('conflict', 'This entry has a newer correction. Review it before correcting again');
+        if (target.step === 'prescription' || target.step === 'injection_order') {
+          const fulfilledStep = target.step === 'prescription' ? 'dispense' : 'injection';
+          const [fulfilled] = await tx`SELECT id FROM encounter_entries WHERE facility_id=${record.facilityId} AND encounter_id=${record.encounterId} AND step=${fulfilledStep} LIMIT 1`;
+          if (fulfilled) return refuse('validation', 'A fulfilled treatment order cannot be replaced by a correction');
+        }
+        if (target.step === 'lab_results' && target.workflowVersion === 1) {
+          const before = ENCOUNTER_STEP_VALUES.lab_results.parse(target.values).results.map((r) => r.orderItemId ?? r.test).sort();
+          const after = ENCOUNTER_STEP_VALUES.lab_results.parse(corrected.data).results.map((r) => r.orderItemId ?? r.test).sort();
+          if (!isDeepStrictEqual(before, after)) return refuse('validation', 'A result correction cannot change its ordered investigation identity');
+        }
         if (target.step === 'diagnosis') {
           const values = corrected.data as Record<string, unknown>;
           if (Boolean(values.admit) !== Boolean(target.values.admit) || Boolean(values.giveInjection) !== Boolean(target.values.giveInjection)) return refuse('validation', 'Correcting a diagnosis cannot change the saved disposition');
@@ -497,6 +521,7 @@ const evaluatePut = async ({ tx, identity, uploadedAt }: Context, mutation: Uplo
   // Server clock on audit events the device recorded offline.
   const toWrite = table === 'audit_event' ? { ...record, receivedOn: new Date(uploadedAt).toISOString() } : record;
   const failure = await attempt(tx, (sp) => insertRecord(sp, table, toWrite));
+  if (!failure && record.type === 'referral') await routeReferral(tx, record);
   if (!failure && record.type === 'appointment') await recordReservation(tx, record, uploadedAt);
   if (!failure && historical && (record.type === 'encounter_entry' || record.type === 'clinical_event')) await completeHistoricalReview(tx, record, identity.deviceId, uploadedAt);
   if (!failure && table === 'staff') await recordAuditEvent(tx, {
@@ -606,6 +631,14 @@ const evaluatePatch = async ({ tx, identity, uploadedAt }: Context, mutation: Up
   // the device's base? With `previous` the answer is exact per column; without
   // it, a server row edited after this change was made is treated as wholly
   // in conflict — the conservative reading.
+  if (current.type === 'inbound_referral') {
+    const next = { ...current, ...mutation.data };
+    const progress = ['received', 'arrived', 'closed'];
+    if (current.status === 'received' && next.status === 'closed') return refuse('validation', 'Record arrival before completing the referral handover');
+    if ((current.arrivedOn && next.arrivedOn !== current.arrivedOn) || (current.closedOn && next.closedOn !== current.closedOn)) return refuse('validation', 'Recorded arrival and handover times cannot be rewritten');
+    if (progress.indexOf(String(next.status)) < progress.indexOf(current.status)) return refuse('validation', 'Referral progress cannot move backwards');
+    if (current.localPatientId && next.localPatientId !== current.localPatientId) return refuse('validation', 'The receiving patient link is already recorded');
+  }
   const changedColumns = Object.keys(changes).filter((column) => !PATCH_METADATA.has(column));
   const serverMovedSince =
     !mutation.previous && current.updatedOn !== undefined && performedOn !== undefined && current.updatedOn > performedOn;
@@ -663,6 +696,10 @@ const evaluatePatch = async ({ tx, identity, uploadedAt }: Context, mutation: Up
   });
 
   if (conflicts.length === 0) {
+    if (!nothingLeft && merged.data.type === 'inbound_referral') {
+      const incoming = merged.data;
+      await tx`UPDATE referrals SET status=${incoming.status === 'received' ? 'sent' : incoming.status}, arrived_on=${incoming.arrivedOn ?? null}, closed_on=${incoming.closedOn ?? null} WHERE id=${incoming.sourceReferralId} AND to_facility_id=${identity.facilityId}`;
+    }
     if (!nothingLeft && merged.data.type === 'appointment') await recordReservation(tx, merged.data, uploadedAt);
     return undefined;
   }

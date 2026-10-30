@@ -30,8 +30,7 @@ const split = (credential: string): { deviceId: string; secret: string } | undef
  * Mints and stores a credential for a device row that exists (or is being
  * inserted in the same transaction). The clear secret is returned exactly once.
  */
-export const issueCredential = async (sql: Sql | Tx, deviceId: string): Promise<string> => {
-  const secret = randomBytes(SECRET_BYTES).toString('base64url');
+export const issueCredential = async (sql: Sql | Tx, deviceId: string, secret = randomBytes(SECRET_BYTES).toString('base64url')): Promise<string> => {
   await sql`INSERT INTO device_credentials (device_id, credential_hash) VALUES (${deviceId}, ${hashSecret(secret)})`;
   return `${deviceId}.${secret}`;
 };
