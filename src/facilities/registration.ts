@@ -4,10 +4,11 @@ import {
   Facility,
   SCHEMA_VERSION,
   Staff,
+  type FacilityDetails,
   type FacilityRegistration,
   type FacilityRegistrationResult,
 } from '#shared';
-import { isPostgresError, UNIQUE_VIOLATION, type Sql } from '../db/client.ts';
+import { isPostgresError, UNIQUE_VIOLATION, type Sql, type Tx } from '../db/client.ts';
 import { insertRecord } from '../db/records.ts';
 import { recordAuditEvent } from '../audit/auditEvents.ts';
 import { issueCredential } from '../devices/credentials.ts';
@@ -37,7 +38,7 @@ export type RegistrationOutcome =
 
 type UniqueViolation = { constraint_name?: string };
 
-const takenBy = (cause: unknown): 'facility_code_taken' | 'device_already_enrolled' | undefined => {
+export const facilityRegistrationConflict = (cause: unknown): 'facility_code_taken' | 'device_already_enrolled' | undefined => {
   if (!isPostgresError(cause, UNIQUE_VIOLATION)) return undefined;
   const constraint = (cause as UniqueViolation).constraint_name;
   if (constraint === 'facilities_pkey') return 'facility_code_taken';
@@ -70,85 +71,10 @@ export const registerFacility = async (
         return { ok: false, error: 'invalid_invite', rejection: 'already_used' };
       }
 
-      const now = new Date().toISOString();
-      const envelope = {
-        facilityId: registration.code,
-        schemaVersion: SCHEMA_VERSION,
-        createdBy: 'system',
-        createdOn: now,
-        deviceId: registration.deviceId,
-      };
-
-      const facility = Facility.parse({
-        ...envelope,
-        id: registration.code,
-        type: 'facility',
-        code: registration.code,
-        name: registration.name,
-        state: registration.state,
-        lga: registration.lga,
-        level: registration.level,
-      });
-
-      const staffId = `staff:${randomUUID()}`;
-      const admin = Staff.parse({
-        ...envelope,
-        id: staffId,
-        type: 'staff',
-        staffId,
-        fullName: registration.adminFullName,
-        role: 'facility_admin',
-        permission: 'read_write',
-        active: true,
-      });
-
-      // The first device enrols itself, vouched for by the invite rather than
-      // by an already-enrolled device (there is none yet).
-      const device = Device.parse({
-        ...envelope,
-        id: registration.deviceId,
-        type: 'device',
-        label: registration.deviceLabel,
-        enrolledBy: staffId,
-        status: 'active',
-        wipeRequested: false,
-        enrolledOn: now,
-      });
-
-      await insertRecord(tx, 'facility', facility);
-      await insertRecord(tx, 'staff', admin);
-      await insertRecord(tx, 'device', device);
-      await saveStaffEmail(tx, facility.id, staffId, registration.adminEmail);
-      const credential = await issueCredential(tx, device.id);
-
-      await recordAuditEvent(tx, {
-        facilityId: facility.id,
-        deviceId: device.id,
-        actorStaffId: staffId,
-        action: 'create',
-        entityType: 'facility',
-        entityId: facility.id,
-      });
-      await recordAuditEvent(tx, {
-        facilityId: facility.id,
-        deviceId: device.id,
-        actorStaffId: staffId,
-        action: 'enroll',
-        entityType: 'device',
-        entityId: device.id,
-      });
-
-      return {
-        ok: true,
-        result: {
-          facility,
-          admin,
-          device: { deviceId: device.id, facilityId: facility.id, credential, syncEndpoint },
-        },
-      };
+      return { ok: true, result: await createFacilityRecords(tx, registration, syncEndpoint) };
     });
   } catch (cause) {
-    const taken = takenBy(cause);
+    const taken = facilityRegistrationConflict(cause);
     if (taken) return { ok: false, error: taken };
     throw cause;
   }
@@ -156,3 +82,83 @@ export const registerFacility = async (
 
 export const facilityExists = async (sql: Sql, code: string): Promise<boolean> =>
   (await sql`SELECT 1 FROM facilities WHERE id = ${code}`).length === 1;
+
+/** Shared bootstrap for invite registration and an authorized organization administrator. */
+export const createFacilityRecords = async (
+  tx: Sql | Tx,
+  registration: FacilityDetails & Pick<FacilityRegistration, 'deviceId' | 'deviceLabel' | 'adminFullName' | 'adminEmail'>,
+  syncEndpoint: string,
+  personId?: string,
+  deviceSecret?: string,
+): Promise<FacilityRegistrationResult> => {
+  const now = new Date().toISOString();
+  const envelope = {
+    facilityId: registration.code,
+    schemaVersion: SCHEMA_VERSION,
+    createdBy: 'system',
+    createdOn: now,
+    deviceId: registration.deviceId,
+  };
+
+  const facility = Facility.parse({
+    ...envelope,
+    id: registration.code,
+    type: 'facility',
+    code: registration.code,
+    name: registration.name,
+    state: registration.state,
+    lga: registration.lga,
+    level: registration.level,
+  });
+
+  const staffId = `staff:${randomUUID()}`;
+  const admin = Staff.parse({
+    ...envelope,
+    id: staffId,
+    type: 'staff',
+    staffId,
+    fullName: registration.adminFullName,
+    ...(personId ? { personId } : {}),
+    role: 'facility_admin',
+    permission: 'read_write',
+    active: true,
+  });
+
+  // The first device enrols itself, vouched for by the invite rather than
+  // by an already-enrolled device (there is none yet).
+  const device = Device.parse({
+    ...envelope,
+    id: registration.deviceId,
+    type: 'device',
+    label: registration.deviceLabel,
+    enrolledBy: staffId,
+    status: 'active',
+    wipeRequested: false,
+    enrolledOn: now,
+  });
+
+  await insertRecord(tx, 'facility', facility);
+  await insertRecord(tx, 'staff', admin);
+  await insertRecord(tx, 'device', device);
+  await saveStaffEmail(tx, facility.id, staffId, registration.adminEmail);
+  const credential = await issueCredential(tx, device.id, deviceSecret);
+
+  await recordAuditEvent(tx, {
+    facilityId: facility.id,
+    deviceId: device.id,
+    actorStaffId: staffId,
+    action: 'create',
+    entityType: 'facility',
+    entityId: facility.id,
+  });
+  await recordAuditEvent(tx, {
+    facilityId: facility.id,
+    deviceId: device.id,
+    actorStaffId: staffId,
+    action: 'enroll',
+    entityType: 'device',
+    entityId: device.id,
+  });
+
+  return { facility, admin, device: { deviceId: device.id, facilityId: facility.id, credential, syncEndpoint } };
+};

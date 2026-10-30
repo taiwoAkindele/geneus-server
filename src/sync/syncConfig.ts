@@ -26,12 +26,14 @@ const EDITION = 3;
  * alias: `id` is `id`, and `type` is the table, not a column.
  */
 const LEGACY_OMISSIONS: Partial<Record<DocType, readonly string[]>> = {
-  facility:['timeZone','workforcePolicy'],unit:['kind','parentId','routingEnabled','revision'],billing_department:['organizationUnitId','revision'],
-  appointment:['allocation'],encounter_entry:['actorContext'],clinical_event:['actorContext'],sync_rejection:['dependencies','visibility','visibleToStaffIds'],
+  facility:['timeZone','workforcePolicy','allowCustomInvestigations'],unit:['kind','parentId','routingEnabled','revision'],billing_department:['organizationUnitId','revision'],
+  fee_item:['priceVersion'], encounter:['workflowVersion'], staff:['personId'], charge:['orderItemId','orderEntryId'],
+  appointment:['allocation'],encounter_entry:['actorContext','workflowVersion'],clinical_event:['actorContext'],sync_rejection:['dependencies','visibility','visibleToStaffIds'],
 };
-const selectListFor = (type: DocType, legacy = false): string[] =>
+const CARE_FIELDS: Partial<Record<DocType, readonly string[]>> = { facility: ['allowCustomInvestigations'], staff: ['personId'], fee_item: ['priceVersion'], service_definition: ['investigation'], service_offering: ['feeItemId'], encounter: ['workflowVersion'], encounter_entry: ['workflowVersion'], charge: ['orderItemId','orderEntryId'] };
+const selectListFor = (type: DocType, legacy = false, care = true): string[] =>
   Object.keys(SCHEMA_BY_TYPE[type].shape)
-    .filter((field) => field !== 'type' && (!legacy || !LEGACY_OMISSIONS[type]?.includes(field)))
+    .filter((field) => field !== 'type' && (!legacy || !LEGACY_OMISSIONS[type]?.includes(field)) && (care || !CARE_FIELDS[type]?.includes(field)))
     .map((field) => {
       const column = snakeCase(field);
       return column === field ? column : `${column} AS "${field}"`;
@@ -41,9 +43,13 @@ export const streamNameFor = (type: DocType): string => TABLE_FOR[type];
 /** Device tokens identify a facility, not the human at a shared device. Evidence uses authenticated private reads. */
 export const syncedTypes = (): DocType[] => (Object.keys(TABLE_FOR) as DocType[]).filter((type) => !RESTRICTED_FACILITY_DOCUMENT_TYPES.some((restricted) => restricted === type));
 
-const queryFor = (type: DocType, legacy: boolean): string[] => {
-  const lines=[`SELECT ${selectListFor(type,legacy).join(', ')}`,`FROM ${TABLE_FOR[type]}`,`WHERE facility_id = auth.parameter('${FACILITY_CLAIM}')`];
+const queryFor = (type: DocType, legacy: boolean, care = true): string[] => {
+  const lines=[`SELECT ${selectListFor(type,legacy,care).join(', ')}`,`FROM ${TABLE_FOR[type]}`,`WHERE facility_id = auth.parameter('${FACILITY_CLAIM}')`];
   lines.push(legacy ? "  AND (auth.parameter('facility_contract') IS NULL OR auth.parameter('facility_contract') <> 1)" : "  AND auth.parameter('facility_contract') = 1");
+  lines.push(care ? "  AND auth.parameter('clinical_workflow') = 1" : "  AND (auth.parameter('clinical_workflow') IS NULL OR auth.parameter('clinical_workflow') <> 1)");
+  if (type === 'encounter' || type === 'encounter_entry') lines.push("  AND (auth.parameter('clinical_workflow') = 1 OR workflow_version IS NULL)");
+  if(type === 'inbound_referral') lines.push("  AND auth.parameter('clinical_workflow') = 1");
+  if(type === 'encounter_entry') lines.push("  AND (auth.parameter('clinical_workflow') = 1 OR (step <> 'investigation_review' AND step <> 'result_review' AND step <> 'prescription' AND step <> 'injection_order' AND step <> 'disposition'))");
   if(type==='authority_snapshot') lines.push('  AND is_current = true');
   if(type==='sync_rejection') {
     lines.push("  AND (visibility IS NULL OR visibility = 'facility')");
@@ -76,9 +82,10 @@ export const buildSyncConfig = (): string => {
     lines.push(`  ${streamNameFor(type)}:`);
     lines.push('    auto_subscribe: true');
     if(FACILITY_DOCUMENT_TYPES.some((t)=>t===type)) {
-      lines.push('    query: |',...queryFor(type,false).map((line)=>`      ${line}`));
+      lines.push('    queries:', '      - |', ...queryFor(type,false,true).map((line)=>`        ${line}`), '      - |', ...queryFor(type,false,false).map((line)=>`        ${line}`));
     } else {
-      lines.push('    queries:','      - |',...queryFor(type,false).map((line)=>`        ${line}`),'      - |',...queryFor(type,true).map((line)=>`        ${line}`));
+      lines.push('    queries:');
+      for (const care of [true,false]) for (const legacy of [false,true]) lines.push('      - |', ...queryFor(type,legacy,care).map((line)=>`        ${line}`));
     }
   }
 

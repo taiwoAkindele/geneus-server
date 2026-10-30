@@ -1,3 +1,5 @@
+import { registerOrganizationRoutes } from './routes/organizations.ts';
+import { registerOrganizationFacilityRoutes } from './routes/organizationFacilities.ts';
 import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify';
 import { SCHEMA_VERSION, type ApiErrorBody } from '#shared';
 import type { Sql } from './db/client.ts';
@@ -212,6 +214,8 @@ export const buildApp = ({ config, sql, signer, mailer: givenMailer, paystackFet
 
   registerFacilityRoutes(app, sql, config, mailer);
   registerDeviceRoutes(app, sql, config);
+  registerOrganizationRoutes(app, sql);
+  registerOrganizationFacilityRoutes(app, sql, config.powerSyncPublicUrl);
   registerStaffRoutes(app, sql, mailer);
   registerSyncRoutes(app, sql, config, signer);
   registerBillingRoutes(app, sql, config, paystackFetch);

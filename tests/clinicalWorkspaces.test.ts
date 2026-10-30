@@ -1,0 +1,51 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { Patient, type UploadMutation } from '#shared';
+import { asDevice, clientId, envelopeFor, registerScratchFacility, scratchDatabase, testApp, upload } from './postgres.ts';
+import { findRecord, insertRecord } from '../src/db/records.ts';
+
+test('independent facilities: provision explicitly, complete care without orders, and route a handover without sharing a chart', async (t) => {
+  const db = await scratchDatabase(); t.after(() => db.drop());
+  const app = testApp(db.sql); t.after(() => app.close());
+  const a = await registerScratchFacility(db.sql), b = await registerScratchFacility(db.sql), env = envelopeFor(a);
+  const post = (path: string, facility = a, values: Record<string, unknown> = {}) => app.inject({ method: 'POST', url: path, headers: asDevice(facility.device.credential), payload: { actorStaffId: facility.admin.id, ...values } });
+  const put = (record: Record<string, unknown>): UploadMutation => ({ clientId: clientId(), op: 'put', table: record.type as UploadMutation['table'], id: String(record.id), data: record });
+  const send = (records: Record<string, unknown>[], facility = a) => upload(app, facility.device.credential, { clinicalWorkflowVersion: 1, facilityContractVersion: 1, schemaVersion: 4, policyVersion: 10, transactionId: clientId(), mutations: records.map(put) });
+  const patientId = `${a.facility.code}-000001-K2`;
+  const patient = Patient.parse({ ...env, id: patientId, type: 'patient', patientId, fullName: 'Synthetic source patient', address: 'Synthetic address', sex: 'female', ageYears: 30 });
+  const encounterId = 'encounter:independent-test';
+  const header = { ...env, id: encounterId, type: 'encounter', patientId, workflowVersion: 1, openedOn: env.createdOn };
+  const entry = (id: string, step: string, values: Record<string, unknown>) => ({ ...env, id, type: 'encounter_entry', workflowVersion: 1, patientId, encounterId, actorRole: a.admin.role, step, values });
+  const noOrders = await send([patient, header, entry('entry:assessment', 'diagnosis', { diagnosis: 'Assessment documented' }), entry('entry:review', 'investigation_review', { decision: 'none_required' }), entry('entry:discharge', 'disposition', { kind: 'home_care', note: 'Advice and review instructions documented' })]);
+  assert.deepEqual(noOrders.rejected, []);
+  const [counts] = await db.sql`SELECT (SELECT count(*) FROM charges WHERE facility_id=${a.facility.id})::int AS charges,(SELECT count(*) FROM patients WHERE facility_id=${b.facility.id})::int AS receiving_patients`;
+  assert.equal(counts.charges, 0); assert.equal(counts.receiving_patients, 0);
+
+  const created = await post('/organizations', a, { name: 'Synthetic independent organization' }); assert.equal(created.statusCode, 201, created.body);
+  const invite = await post('/organization/invitations'); assert.equal(invite.statusCode, 200);
+  const joined = await post('/organization/join', b, { code: invite.json().code }); assert.equal(joined.statusCode, 200, joined.body);
+  const organization = await post('/organization/current', b); assert.equal(organization.json().organization.facilities.length, 2);
+  const provision = await post('/organization/staff-requests', a, { staffId: a.admin.id, toFacilityId: b.facility.id }); assert.equal(provision.statusCode, 201, provision.body);
+  const beforeAccept = await db.sql`SELECT id FROM staff WHERE facility_id=${b.facility.id}`; assert.equal(beforeAccept.length, 1);
+  const wrongFacility = await post(`/organization/staff-requests/${encodeURIComponent(provision.json().id)}/accept`, a, { role: 'nurse', permission: 'read_only' }); assert.equal(wrongFacility.statusCode, 404);
+  const accepted = await post(`/organization/staff-requests/${encodeURIComponent(provision.json().id)}/accept`, b, { role: 'nurse', permission: 'read_only' }); assert.equal(accepted.statusCode, 201, accepted.body);
+  const membership = await findRecord(db.sql, 'staff', accepted.json().staffId);
+  assert.equal(membership?.facilityId, b.facility.id);
+  assert.equal(membership?.type === 'staff' && membership.permission, 'read_only');
+  assert.notEqual(membership?.id, a.admin.id);
+  const [grants] = await db.sql`SELECT count(*)::int AS n FROM capability_decisions WHERE facility_id=${b.facility.id} AND staff_id=${membership!.id}`; assert.equal(grants.n, 0);
+
+  const referralId = 'referral:independent-test';
+  const referral = { ...env, id: referralId, referralId, type: 'referral', patientId, fromFacilityId: a.facility.id, toFacilityId: b.facility.id, tier1: { fullName: patient.fullName, sex: patient.sex, allergies: ['Synthetic reported allergy'], currentMedications: [], reason: 'Receiving service assessment requested' }, status: 'sent', deliveryStatus: 'alert_pending', sentOn: env.createdOn };
+  const delivered = await send([referral]); assert.deepEqual(delivered.rejected, []);
+  const [incoming] = await db.sql`SELECT * FROM inbound_referrals WHERE facility_id=${b.facility.id} AND source_referral_id=${referralId}`;
+  assert.ok(incoming); assert.equal(incoming.sender_patient_id, patientId);
+  const receivingPatients = await db.sql`SELECT id FROM patients WHERE facility_id=${b.facility.id}`; assert.equal(receivingPatients.length, 0);
+  const bEnv = envelopeFor(b), localId = `${b.facility.code}-000001-K2`;
+  await insertRecord(db.sql, 'patient', Patient.parse({ ...bEnv, id: localId, patientId: localId, type: 'patient', fullName: patient.fullName, address: 'Locally registered address', sex: 'female', ageYears: 30 }));
+  const arrival: UploadMutation = { clientId: clientId(), op: 'patch', table: 'inbound_referral', id: incoming.id, data: { status: 'arrived', localPatientId: localId, arrivedOn: env.createdOn, updatedBy: b.admin.id, updatedOn: env.createdOn }, previous: { status: 'received', localPatientId: null, arrivedOn: null } };
+  const arrived = await upload(app, b.device.credential, { clinicalWorkflowVersion: 1, facilityContractVersion: 1, schemaVersion: 4, policyVersion: 10, transactionId: clientId(), mutations: [arrival] }); assert.deepEqual(arrived.rejected, []);
+  const [sourceReferral] = await db.sql`SELECT status FROM referrals WHERE id=${referralId}`; assert.equal(sourceReferral.status, 'arrived');
+  const original = await findRecord(db.sql, 'patient', patientId); assert.equal(original?.facilityId, a.facility.id);
+  const crossFacility = await upload(app, a.device.credential, { clinicalWorkflowVersion: 1, facilityContractVersion: 1, schemaVersion: 4, policyVersion: 10, transactionId: clientId(), mutations: [{ ...arrival, clientId: clientId() }] }); assert.equal(crossFacility.rejected.length, 1);
+});

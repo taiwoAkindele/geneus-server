@@ -199,7 +199,7 @@ describe('encounters and Patient ID clashes on upload', () => {
   });
 
   describe('closing an encounter', () => {
-    it('takes only amendments once closed, keeping the late entry in the queue', async () => {
+    it('takes outstanding service results and amendments after closure, keeping late assessments in the queue', async () => {
       await send(
         a.device.credential,
         encounterPut('encounter:3', patientId('000002'), doctor),
@@ -209,14 +209,16 @@ describe('encounters and Patient ID clashes on upload', () => {
 
       // Recorded on the second device while it had not yet heard of the close.
       const late = entryPut('encounter_entry:3-late', 'encounter:3', patientId('000002'), nurse, 'lab_results', { results: [{ test: 'Malaria RDT', result: 'Positive' }] }, { deviceId: second.deviceId });
+      const lateAssessment = entryPut('encounter_entry:3-late-vitals', 'encounter:3', patientId('000002'), nurse, 'vitals', { pulseBpm: 80 }, { deviceId: second.deviceId });
       const amendment = entryPut('encounter_entry:3-amend', 'encounter:3', patientId('000002'), doctor, 'amendment', { note: 'Uncomplicated malaria' }, { amends: 'encounter_entry:3-diagnosis', deviceId: second.deviceId });
-      const response = await send(second.credential, late, amendment);
+      const response = await send(second.credential, late, lateAssessment, amendment);
 
-      assert.equal(response.applied, 1);
-      assert.equal(response.rejected[0]?.id, late.id);
+      assert.equal(response.applied, 2);
+      assert.equal(response.rejected.length, 1);
+      assert.equal(response.rejected[0]?.id, lateAssessment.id);
       assert.equal(response.rejected[0]?.category, 'conflict');
-      const queued = await rejectionFor(late.id);
-      assert.deepEqual(queued?.refused_record?.values, { results: [{ test: 'Malaria RDT', result: 'Positive' }] });
+      const queued = await rejectionFor(lateAssessment.id);
+      assert.deepEqual(queued?.refused_record?.values, { pulseBpm: 80 });
     });
   });
 
