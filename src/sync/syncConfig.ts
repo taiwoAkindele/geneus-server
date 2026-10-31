@@ -51,6 +51,8 @@ const queryFor = (type: DocType, legacy: boolean, care = true): string[] => {
   // only after identification, while upgraded clients can provide care now.
   if (type === 'patient') lines.push("  AND (auth.parameter('patient_registration') = 1 OR identity_status = 'identified')");
   if (['inpatient_event', 'bed_ready_event'].includes(type)) lines.push("  AND auth.parameter('inpatient_workflow') = 1");
+  if (['library_document','visit_document'].includes(type)) lines.push("  AND auth.parameter('document_workflow') = 1");
+  if(type==='audit_event'||type==='sync_rejection')lines.push("  AND (auth.parameter('document_workflow') = 1 OR entity_type IS NULL OR (entity_type <> 'library_document' AND entity_type <> 'visit_document'))");
   if (type === 'audit_event' || type === 'sync_rejection') lines.push("  AND (auth.parameter('inpatient_workflow') = 1 OR entity_type IS NULL OR (entity_type <> 'inpatient_event' AND entity_type <> 'bed_ready_event'))");
   if (type === 'staff') lines.push("  AND (auth.parameter('inpatient_workflow') = 1 OR instr(additional_permissions, '\"admission:manage\"') = 0)");
   if (type === 'referral' || type === 'inbound_referral') lines.push("  AND (auth.parameter('patient_registration') = 1 OR json_extract(tier1, '$.sex') IS NOT NULL)");

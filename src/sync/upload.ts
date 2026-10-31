@@ -1,5 +1,6 @@
 import { careWorkflowIssues, chargeOrderIssues, routeReferral } from '../clinical/careWorkflow.ts';
 import { inpatientUploadIssues, inpatientLocationIssues } from '../clinical/inpatient.ts';
+import { clinicalDocumentIssues } from '../documents/validation.ts';
 import { isDeepStrictEqual } from 'node:util';
 import type { ZodType } from 'zod';
 import {
@@ -99,6 +100,7 @@ const APPEND_ONLY: readonly DocType[] = [
   'encounter_entry',
   'clinical_event',
   'inpatient_event', 'bed_ready_event',
+  'library_document','visit_document',
   'charge',
   'payment',
   'billing_adjustment',
@@ -132,6 +134,7 @@ const PUT_PERMISSION: Partial<Record<DocType, Permission>> = {
   encounter_entry: 'encounter:record',
   clinical_event: 'encounter:record',
   inpatient_event: 'admission:manage', bed_ready_event: 'admission:manage',
+  library_document:'encounter:record',visit_document:'encounter:record',
   handoff: 'handoff:create',
   appointment: 'appointment:create',
   register_definition: 'register_definition:publish',
@@ -397,6 +400,10 @@ const evaluatePut = async ({ tx, identity, uploadedAt }: Context, mutation: Uplo
     if (!rolesFor(staff).includes(record.actorRole)) return refuse('authorization', 'The recorded role is not held by this staff member');
     const issues = await inpatientUploadIssues(tx, record);
     if (issues.length) return refuse('conflict', issues.join('; '));
+  }
+  if(record.type==='library_document'||record.type==='visit_document'){
+    if(!rolesFor(staff).includes(record.actorRole))return refuse('authorization','The document role must be held by its author');
+    const issues=await clinicalDocumentIssues(tx,record);if(issues.length)return refuse('conflict',issues.join('; '));
   }
 
   if (record.type === 'appointment' && ((record.activity?.length ?? 0) > 0 || (record.attendance && record.attendance !== 'booked'))) return refuse('validation', 'Create a booking before recording attendance changes');
