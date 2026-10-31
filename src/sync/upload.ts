@@ -1,4 +1,5 @@
 import { careWorkflowIssues, chargeOrderIssues, routeReferral } from '../clinical/careWorkflow.ts';
+import { inpatientUploadIssues, inpatientLocationIssues } from '../clinical/inpatient.ts';
 import { isDeepStrictEqual } from 'node:util';
 import type { ZodType } from 'zod';
 import {
@@ -97,6 +98,7 @@ const APPEND_ONLY: readonly DocType[] = [
   'encounter',
   'encounter_entry',
   'clinical_event',
+  'inpatient_event', 'bed_ready_event',
   'charge',
   'payment',
   'billing_adjustment',
@@ -129,6 +131,7 @@ const PUT_PERMISSION: Partial<Record<DocType, Permission>> = {
   encounter: 'encounter:record',
   encounter_entry: 'encounter:record',
   clinical_event: 'encounter:record',
+  inpatient_event: 'admission:manage', bed_ready_event: 'admission:manage',
   handoff: 'handoff:create',
   appointment: 'appointment:create',
   register_definition: 'register_definition:publish',
@@ -388,6 +391,12 @@ const evaluatePut = async ({ tx, identity, uploadedAt }: Context, mutation: Uplo
   if (record.type === 'staff') {
     const denial = staffDenial(staff, record.createdBy, 'staff:permission');
     if (denial) return refuse('authorization', describeDenial(denial));
+  }
+
+  if (record.type === 'inpatient_event' || record.type === 'bed_ready_event') {
+    if (!rolesFor(staff).includes(record.actorRole)) return refuse('authorization', 'The recorded role is not held by this staff member');
+    const issues = await inpatientUploadIssues(tx, record);
+    if (issues.length) return refuse('conflict', issues.join('; '));
   }
 
   if (record.type === 'appointment' && ((record.activity?.length ?? 0) > 0 || (record.attendance && record.attendance !== 'booked'))) return refuse('validation', 'Create a booking before recording attendance changes');
@@ -761,6 +770,10 @@ const evaluateWorkforce = async ({ tx, identity, uploadedAt }: Context, mutation
   if (!parsed.success) return refuse('validation', 'Configuration does not match the shared contract');
   const record = parsed.data;
   if (record.facilityId !== identity.facilityId || (!current && record.deviceId !== identity.deviceId)) return refuse('identity', 'Configuration must belong to this device and facility');
+  if (current && (current.type === 'location' || current.type === 'unit') && (record.type === 'location' || record.type === 'unit')) {
+    const issues = await inpatientLocationIssues(tx, current, record);
+    if (issues.length) return refuse('conflict', issues.join('; '));
+  }
   const result = await validateWorkforceRecord(tx, identity, record, mutation, uploadedAt, current);
   if (result.refusal) return result.refusal;
   return attempt(tx, async (sp) => {

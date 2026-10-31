@@ -51,5 +51,7 @@ describe('sync-config.yaml', () => {
     assert.ok(config.includes('AND is_current = true'));
     assert.ok(config.includes("AND auth.parameter('facility_contract') = 1"));
     assert.ok(config.includes("auth.parameter('facility_contract') IS NULL"));
+    assert.ok(config.includes("AND auth.parameter('inpatient_workflow') = 1"));
+    assert.ok(config.includes("entity_type <> 'inpatient_event' AND entity_type <> 'bed_ready_event'"));
   });
 });

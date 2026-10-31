@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
-import { AuthoritySnapshot, POLICY_VERSION, authoritySignaturePayload, projectClinicalAuthority, staffPermissions, type AuthorityProof, type AuthorizationContext, type Staff, } from '#shared';
+import { AuthoritySnapshot, POLICY_VERSION, FACILITY_MIN_POLICY_VERSION, authoritySignaturePayload, projectClinicalAuthority, staffPermissions, type AuthorityProof, type AuthorizationContext, type Staff, } from '#shared';
 import type { Sql, Tx } from '../db/client.ts';
 import { fromRow, insertRecord } from '../db/records.ts';
 import type { Signer } from '../lib/signing.ts';
@@ -22,7 +22,7 @@ export const deriveAuthority = async (tx: Sql | Tx, staff: Staff, deviceId: stri
   projection.expiresOn = new Date(Math.min(Date.parse(projection.expiresOn), now + 7 * 86400000)).toISOString();
   const snapshot = AuthoritySnapshot.parse({
     id: 'server-derived', type: 'authority_snapshot', facilityId: staff.facilityId,
-    createdBy: 'system', createdOn: new Date(now).toISOString(), deviceId, staffId: staff.staffId, revision: 1, policyVersion: POLICY_VERSION,
+    createdBy: 'system', createdOn: new Date(now).toISOString(), deviceId, staffId: staff.staffId, revision: 1, policyVersion: FACILITY_MIN_POLICY_VERSION,
     issuedOn: new Date(now).toISOString(), ...projection, keyId: 'server-derived', signature: 'internal-authoritative-derivation'
   });
   return { snapshot, signatureVerified: true, currentRevision: 1 };
@@ -51,7 +51,7 @@ export const refreshFacilityAuthority = async (tx: Tx, facilityId: string, signe
     const record = AuthoritySnapshot.parse({
       id: `authority_snapshot:${randomUUID()}`, type: 'authority_snapshot', facilityId,
       createdBy: 'system', createdOn: new Date(now).toISOString(), deviceId: worker.deviceId, staffId: worker.staffId,
-      revision: (revisions.find((r) => r.staff_id === worker.staffId)?.revision ?? 0) + 1, policyVersion: POLICY_VERSION, issuedOn: new Date(now).toISOString(), ...projection,
+      revision: (revisions.find((r) => r.staff_id === worker.staffId)?.revision ?? 0) + 1, policyVersion: FACILITY_MIN_POLICY_VERSION, issuedOn: new Date(now).toISOString(), ...projection,
       keyId: signer.publicKeyFingerprint, signature: 'pending'
     });
     record.signature = signer.signBytes(Buffer.from(authoritySignaturePayload(record))).toString('base64');

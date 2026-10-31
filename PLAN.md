@@ -10,6 +10,10 @@
 
 **Version:** 2.0 · **Owner:** Solo founder-builder · **Supersedes:** 1.1 (CouchDB)
 
+### Admissions and wards foundation (31 October 2026)
+
+Migration 0021 adds immutable inpatient and bed-readiness events. The existing locked upload path enforces admission/request/visit links, exact predecessors, one active admission across linked patient IDs, bed availability and post-departure/transfer cleaning. Operational location changes cannot invalidate reserved, occupied or unclean beds. Policy 11 adds explicit admission management while retaining existing signed clinical authority. New streams are gated by a negotiated inpatient-workflow claim; old clients continue using their existing projections. See [implementation and release order](../docs/INPATIENT-FOUNDATION.md).
+
 ### Provisional patient registration (31 October 2026)
 
 Migration 0020 preserves legacy identified patients while allowing explicit provisional records to omit unknown demographics. Database constraints and triggers preserve original registration circumstances and completed identification attribution. Identification compares the exact reviewed demographic snapshot and either applies together or refuses together; server audit records the identifying actor. Schema-4 facility writers remain supported alongside schema 5. Signed patient-registration capability gates provisional patients and referrals with unknown sex away from older clients that assume complete demographics.
