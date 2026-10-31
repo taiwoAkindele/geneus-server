@@ -10,6 +10,12 @@
 
 **Version:** 2.0 · **Owner:** Solo founder-builder · **Supersedes:** 1.1 (CouchDB)
 
+### Provisional patient registration (31 October 2026)
+
+Migration 0020 preserves legacy identified patients while allowing explicit provisional records to omit unknown demographics. Database constraints and triggers preserve original registration circumstances and completed identification attribution. Identification compares the exact reviewed demographic snapshot and either applies together or refuses together; server audit records the identifying actor. Schema-4 facility writers remain supported alongside schema 5. Signed patient-registration capability gates provisional patients and referrals with unknown sex away from older clients that assume complete demographics.
+
+The implementation is verified against the canonical shared contract. Promote the shared commit to both consumers before ordinary builds; deploy migration/server and regenerated Sync Streams before enabling the upgraded PWA. See [verification and release order](../geneus-web/qa/provisional-registration-qa.md).
+
 ### Facility services and workforce extension (29 October 2026)
 
 The schema-4/policy-10/facility-contract-1 server foundation is implemented.

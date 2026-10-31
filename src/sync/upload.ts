@@ -9,6 +9,7 @@ import {
   IMMUTABLE_ENVELOPE_FIELDS,
   OFFLINE_AUTHORIZATION_POLICY,
   parseDocument,
+  patientIdentificationIssues,
   sameAppointmentTime,
   validateRegisterEntry,
   registerDefinitionIssues,
@@ -349,6 +350,7 @@ const evaluatePut = async ({ tx, identity, uploadedAt }: Context, mutation: Uplo
     if (held) return held;
   }
   if (record.type === 'patient' && record.nin && !/^\d{11}$/.test(record.nin)) return refuse('validation', 'NIN must contain 11 digits');
+  if (record.type === 'patient' && record.identityStatus === 'identified' && record.provisionalReason) return refuse('validation', 'Identification history must follow a provisional registration');
 
   if (record.facilityId !== identity.facilityId) return refuse('identity', `facilityId ${record.facilityId} is not this device's facility`);
   if (record.deviceId !== identity.deviceId) return refuse('identity', `deviceId ${record.deviceId} is not this device`);
@@ -599,6 +601,11 @@ const evaluatePatch = async ({ tx, identity, uploadedAt }: Context, mutation: Up
     if (order.includes(changes.status) && order.indexOf(changes.status) < order.indexOf(current.status)) return refuse('conflict', 'This handoff has already progressed. Review its current state rather than reopening it');
   }
   if (!merged.success) return refuse('validation', `does not match the contract: ${merged.error.issues.map((issue) => issue.path.join('.') + ' ' + issue.message).join('; ')}`);
+  if (current.type === 'patient' && merged.data.type === 'patient') {
+    const issues = patientIdentificationIssues(current, merged.data, updatedBy, String(changes.updatedOn ?? ''));
+    if (issues.length) return refuse('validation', issues.join('; '));
+    if (current.identityStatus === 'provisional' && merged.data.identityStatus === 'identified' && Date.parse(merged.data.identifiedOn!) > uploadedAt + 5 * 60_000) return refuse('validation', 'Identification is dated in the future. Check the device clock');
+  }
   if (merged.data.type === 'appointment') {
     const denial = await allocationRefusal(tx, merged.data, uploadedAt);
     if (denial) return denial;
@@ -657,6 +664,7 @@ const evaluatePatch = async ({ tx, identity, uploadedAt }: Context, mutation: Up
   // A booking's time, attendance and attributed history form one fact. A partial
   // application would leave the displayed state disagreeing with its history.
   if (table === 'appointment' && conflicts.length) return refuse('conflict', 'This booking changed on another device. Review it before trying again');
+  if (current.type === 'patient' && current.identityStatus === 'provisional' && merged.data.type === 'patient' && merged.data.identityStatus === 'identified' && conflicts.length) return refuse('conflict', 'Patient details changed on another device. Review the current record before identifying this patient');
 
   // Age and its observation date describe one fact. A partial merge of those
   // columns could make a patient's age jump even when both edits were valid.

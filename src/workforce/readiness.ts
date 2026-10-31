@@ -1,4 +1,4 @@
-import { rolesFor, currentFacilityRevisions, type Facility, type FacilityWorkforcePolicy, type Staff } from '#shared';
+import { SCHEMA_VERSION, rolesFor, currentFacilityRevisions, type Facility, type FacilityWorkforcePolicy, type Staff } from '#shared';
 import type { Sql, Tx } from '../db/client.ts';
 import { findRecord } from '../db/records.ts';
 import type { DeviceIdentity } from '../devices/credentials.ts';
@@ -11,7 +11,7 @@ export const recordClientVersion = async (sql: Sql | Tx, identity: DeviceIdentit
   policyVersion?: number;
   pendingMutationCount?: number;
 }, now: number): Promise<void> => {
-  const compatible = input.facilityContractVersion === 1 && input.schemaVersion === 4 && input.policyVersion === 10;
+  const compatible = input.facilityContractVersion === 1 && (input.schemaVersion ?? 0) >= 4 && (input.schemaVersion ?? Infinity) <= SCHEMA_VERSION && input.policyVersion === 10;
   await sql`INSERT INTO workforce_client_versions(device_id,facility_id,contract_version,schema_version,policy_version,pending_mutation_count,recorded_on)
     VALUES(${identity.deviceId},${identity.facilityId},${compatible ? 1 : 0},${input.schemaVersion ?? 0},${input.policyVersion ?? 0},${input.pendingMutationCount ?? 1},${new Date(now).toISOString()})
     ON CONFLICT(device_id) DO UPDATE SET contract_version=EXCLUDED.contract_version,schema_version=EXCLUDED.schema_version,policy_version=EXCLUDED.policy_version,pending_mutation_count=EXCLUDED.pending_mutation_count,recorded_on=EXCLUDED.recorded_on`;
@@ -42,7 +42,7 @@ export const workforceReadiness = async (sql: Sql | Tx, facilityId: string, now 
       add('published_coverage_needs_approval_or_cover', [session.id]);
   }
   const devices = await sql`SELECT d.id FROM devices d LEFT JOIN workforce_client_versions v ON v.device_id=d.id
-    WHERE d.facility_id=${facilityId} AND d.status='active' AND (v.device_id IS NULL OR v.contract_version<>1 OR v.schema_version<>4 OR v.policy_version<>10 OR v.pending_mutation_count<>0 OR v.recorded_on<${new Date(now - 86400000).toISOString()})`;
+    WHERE d.facility_id=${facilityId} AND d.status='active' AND (v.device_id IS NULL OR v.contract_version<>1 OR v.schema_version<4 OR v.schema_version>${SCHEMA_VERSION} OR v.policy_version<>10 OR v.pending_mutation_count<>0 OR v.recorded_on<${new Date(now - 86400000).toISOString()})`;
   add('upgrade_and_drain_active_devices', devices.map((r) => r.id as string));
   const rejections = await sql`SELECT id FROM sync_rejections WHERE facility_id=${facilityId} AND resolved_on IS NULL AND entity_type IN ('encounter_entry','clinical_event','credential','capability_decision','reviewer_delegation')`;
   add('resolve_pending_clinical_or_authority_writes', rejections.map((r) => r.id as string));

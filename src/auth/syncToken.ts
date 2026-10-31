@@ -20,6 +20,7 @@ export type SyncTokenOptions = {
   now?: number;
   facilityContractVersion?: 1;
   clinicalWorkflowVersion?: 1;
+  patientRegistrationVersion?: 1;
 };
 
 const base64url = (input: Buffer | string): string => Buffer.from(input).toString('base64url');
@@ -32,7 +33,7 @@ export const mintSyncToken = (signer: Signer, options: SyncTokenOptions): { toke
     iat: issuedAt,
     exp: issuedAt + options.ttlSeconds,
     facility_id: options.facilityId,
-  }), ...(options.facilityContractVersion ? { facility_contract: options.facilityContractVersion } : {}), ...(options.clinicalWorkflowVersion ? { clinical_workflow: 1 } : {}) };
+  }), ...(options.facilityContractVersion ? { facility_contract: options.facilityContractVersion } : {}), ...(options.clinicalWorkflowVersion ? { clinical_workflow: 1 } : {}), ...(options.patientRegistrationVersion ? { patient_registration: 1 } : {}) };
   const header = { alg: 'EdDSA', typ: 'JWT', kid: signer.publicKeyFingerprint };
   const signingInput = `${base64url(JSON.stringify(header))}.${base64url(JSON.stringify(claims))}`;
   const signature = base64url(signer.signBytes(Buffer.from(signingInput)));

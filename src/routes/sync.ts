@@ -53,6 +53,7 @@ export const registerSyncRoutes = (app: FastifyInstance, sql: Sql, config: Confi
       ttlSeconds: config.syncTokenTtlSeconds,
       facilityContractVersion: version.data.facilityContractVersion === 1 ? 1 : undefined,
       clinicalWorkflowVersion: version.data.clinicalWorkflowVersion,
+      patientRegistrationVersion: version.data.schemaVersion === 5 ? 1 : undefined,
     });
     await touchDevice(sql, identity.deviceId);
 
