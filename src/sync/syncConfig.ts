@@ -47,6 +47,10 @@ const queryFor = (type: DocType, legacy: boolean, care = true): string[] => {
   const lines=[`SELECT ${selectListFor(type,legacy,care).join(', ')}`,`FROM ${TABLE_FOR[type]}`,`WHERE facility_id = auth.parameter('${FACILITY_CLAIM}')`];
   lines.push(legacy ? "  AND (auth.parameter('facility_contract') IS NULL OR auth.parameter('facility_contract') <> 1)" : "  AND auth.parameter('facility_contract') = 1");
   lines.push(care ? "  AND auth.parameter('clinical_workflow') = 1" : "  AND (auth.parameter('clinical_workflow') IS NULL OR auth.parameter('clinical_workflow') <> 1)");
+  // Legacy screens assume complete demographics; they receive this record
+  // only after identification, while upgraded clients can provide care now.
+  if (type === 'patient') lines.push("  AND (auth.parameter('patient_registration') = 1 OR identity_status = 'identified')");
+  if (type === 'referral' || type === 'inbound_referral') lines.push("  AND (auth.parameter('patient_registration') = 1 OR json_extract(tier1, '$.sex') IS NOT NULL)");
   if (type === 'encounter' || type === 'encounter_entry') lines.push("  AND (auth.parameter('clinical_workflow') = 1 OR workflow_version IS NULL)");
   if(type === 'inbound_referral') lines.push("  AND auth.parameter('clinical_workflow') = 1");
   if(type === 'encounter_entry') lines.push("  AND (auth.parameter('clinical_workflow') = 1 OR (step <> 'investigation_review' AND step <> 'result_review' AND step <> 'prescription' AND step <> 'injection_order' AND step <> 'disposition'))");

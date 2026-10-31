@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { Unit, BillingDepartment, Patient } from '#shared';
 import { loadMigrations, migrate } from '../src/db/migrate.ts';
-import { findRecord, insertRecord } from '../src/db/records.ts';
+import { findRecord, insertRecord, toRow } from '../src/db/records.ts';
 import { envelopeFor, registerScratchFacility, scratchDatabase } from './postgres.ts';
 test('workforce upgrade preserves legacy identities and financial links without inventing classifications or credentials', async (t) => {
   const migrations = await loadMigrations(), db = await scratchDatabase(migrations.filter((m) => m.version <= 14));
@@ -15,10 +15,12 @@ test('workforce upgrade preserves legacy identities and financial links without 
   const patient = Patient.parse({ ...env, id: patientId, type: 'patient', patientId, fullName: 'Synthetic legacy patient', address: 'Synthetic address', sex: 'female', ageYears: 40 });
   await insertRecord(db.sql, 'unit', unit);
   await insertRecord(db.sql, 'billing_department', department);
-  await insertRecord(db.sql, 'patient', patient);
+  // Seed the actual pre-0020 shape; the current parser now adds identityStatus.
+  const { identityStatus: _identityStatus, ...legacyPatient } = patient;
+  await db.sql`INSERT INTO patients ${db.sql(toRow(db.sql, 'patient', legacyPatient))}`;
   const before = await Promise.all([findRecord(db.sql, 'unit', unit.id), findRecord(db.sql, 'billing_department', department.id), findRecord(db.sql, 'patient', patient.id), findRecord(db.sql, 'staff', facility.admin.id)]);
   const outcomes = await migrate(db.sql, migrations);
-  assert.deepEqual(outcomes.filter((m) => m.outcome === 'applied').map((m) => m.version), [15, 16, 17, 18, 19]);
+  assert.deepEqual(outcomes.filter((m) => m.outcome === 'applied').map((m) => m.version), [15, 16, 17, 18, 19, 20]);
   const after = await Promise.all([findRecord(db.sql, 'unit', unit.id), findRecord(db.sql, 'billing_department', department.id), findRecord(db.sql, 'patient', patient.id), findRecord(db.sql, 'staff', facility.admin.id)]);
   assert.deepEqual(after, before);
   const [unseeded] = await db.sql`SELECT (SELECT count(*) FROM locations) AS places,(SELECT count(*) FROM credentials) AS credentials,(SELECT count(*) FROM service_offerings) AS services`;
