@@ -50,6 +50,9 @@ const queryFor = (type: DocType, legacy: boolean, care = true): string[] => {
   // Legacy screens assume complete demographics; they receive this record
   // only after identification, while upgraded clients can provide care now.
   if (type === 'patient') lines.push("  AND (auth.parameter('patient_registration') = 1 OR identity_status = 'identified')");
+  if (['inpatient_event', 'bed_ready_event'].includes(type)) lines.push("  AND auth.parameter('inpatient_workflow') = 1");
+  if (type === 'audit_event' || type === 'sync_rejection') lines.push("  AND (auth.parameter('inpatient_workflow') = 1 OR entity_type IS NULL OR (entity_type <> 'inpatient_event' AND entity_type <> 'bed_ready_event'))");
+  if (type === 'staff') lines.push("  AND (auth.parameter('inpatient_workflow') = 1 OR instr(additional_permissions, '\"admission:manage\"') = 0)");
   if (type === 'referral' || type === 'inbound_referral') lines.push("  AND (auth.parameter('patient_registration') = 1 OR json_extract(tier1, '$.sex') IS NOT NULL)");
   if (type === 'encounter' || type === 'encounter_entry') lines.push("  AND (auth.parameter('clinical_workflow') = 1 OR workflow_version IS NULL)");
   if(type === 'inbound_referral') lines.push("  AND auth.parameter('clinical_workflow') = 1");

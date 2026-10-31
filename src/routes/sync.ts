@@ -36,8 +36,9 @@ export const registerSyncRoutes = (app: FastifyInstance, sql: Sql, config: Confi
     const identity = await authenticateDevice(sql, request, reply);
     if (!identity) return;
 
-    const version = z.object({ clinicalWorkflowVersion: z.literal(1).optional(), facilityContractVersion: z.number().int().optional(), schemaVersion: z.number().int().optional(), policyVersion: z.number().int().optional(), pendingMutationCount: z.number().int().nonnegative().optional() }).safeParse(request.body ?? {});
+    const version = z.object({ inpatientWorkflowVersion: z.literal(1).optional(), clinicalWorkflowVersion: z.literal(1).optional(), facilityContractVersion: z.number().int().optional(), schemaVersion: z.number().int().optional(), policyVersion: z.number().int().optional(), pendingMutationCount: z.number().int().nonnegative().optional() }).safeParse(request.body ?? {});
     if (!version.success) return reply.code(400).send({ error: 'invalid_request', message: 'Invalid client compatibility metadata' } satisfies ApiErrorBody);
+    if (version.data.inpatientWorkflowVersion === 1 && (version.data.facilityContractVersion !== 1 || (version.data.schemaVersion ?? 0) < 5 || (version.data.policyVersion ?? 0) < 11)) return reply.code(409).send({ error: 'upgrade_required', message: 'Admissions require facility contract 1, schema 5 and policy 11' } satisfies ApiErrorBody);
     if (version.data.clinicalWorkflowVersion === 1 && (version.data.facilityContractVersion !== 1 || (version.data.schemaVersion ?? 0) < 4 || (version.data.policyVersion ?? 0) < 10)) return reply.code(409).send({ error: 'upgrade_required', message: 'The current clinical workflow requires facility contract 1, schema 4 and policy 10' } satisfies ApiErrorBody);
     if (version.data.facilityContractVersion !== undefined && version.data.facilityContractVersion !== 1) return reply.code(409).send({ error: 'upgrade_required', message: 'This server supports facility contract version one' } satisfies ApiErrorBody);
     await sql.begin(async (tx) => {
@@ -54,6 +55,7 @@ export const registerSyncRoutes = (app: FastifyInstance, sql: Sql, config: Confi
       facilityContractVersion: version.data.facilityContractVersion === 1 ? 1 : undefined,
       clinicalWorkflowVersion: version.data.clinicalWorkflowVersion,
       patientRegistrationVersion: version.data.schemaVersion === 5 ? 1 : undefined,
+      inpatientWorkflowVersion: version.data.inpatientWorkflowVersion,
     });
     await touchDevice(sql, identity.deviceId);
 
@@ -63,6 +65,7 @@ export const registerSyncRoutes = (app: FastifyInstance, sql: Sql, config: Confi
       syncEndpoint: config.powerSyncPublicUrl,
       serverTime: new Date().toISOString(),
       facilityFeature: FACILITY_FEATURE_SUPPORT,
+      inpatientWorkflowVersion: version.data.inpatientWorkflowVersion,
     };
     return response;
   });

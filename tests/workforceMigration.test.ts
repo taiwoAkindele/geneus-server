@@ -20,7 +20,7 @@ test('workforce upgrade preserves legacy identities and financial links without 
   await db.sql`INSERT INTO patients ${db.sql(toRow(db.sql, 'patient', legacyPatient))}`;
   const before = await Promise.all([findRecord(db.sql, 'unit', unit.id), findRecord(db.sql, 'billing_department', department.id), findRecord(db.sql, 'patient', patient.id), findRecord(db.sql, 'staff', facility.admin.id)]);
   const outcomes = await migrate(db.sql, migrations);
-  assert.deepEqual(outcomes.filter((m) => m.outcome === 'applied').map((m) => m.version), [15, 16, 17, 18, 19, 20]);
+  assert.deepEqual(outcomes.filter((m) => m.outcome === 'applied').map((m) => m.version), [15, 16, 17, 18, 19, 20, 21]);
   const after = await Promise.all([findRecord(db.sql, 'unit', unit.id), findRecord(db.sql, 'billing_department', department.id), findRecord(db.sql, 'patient', patient.id), findRecord(db.sql, 'staff', facility.admin.id)]);
   assert.deepEqual(after, before);
   const [unseeded] = await db.sql`SELECT (SELECT count(*) FROM locations) AS places,(SELECT count(*) FROM credentials) AS credentials,(SELECT count(*) FROM service_offerings) AS services`;

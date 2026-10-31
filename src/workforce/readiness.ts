@@ -1,4 +1,4 @@
-import { SCHEMA_VERSION, rolesFor, currentFacilityRevisions, type Facility, type FacilityWorkforcePolicy, type Staff } from '#shared';
+import { SCHEMA_VERSION, POLICY_VERSION, rolesFor, currentFacilityRevisions, type Facility, type FacilityWorkforcePolicy, type Staff } from '#shared';
 import type { Sql, Tx } from '../db/client.ts';
 import { findRecord } from '../db/records.ts';
 import type { DeviceIdentity } from '../devices/credentials.ts';
@@ -11,7 +11,7 @@ export const recordClientVersion = async (sql: Sql | Tx, identity: DeviceIdentit
   policyVersion?: number;
   pendingMutationCount?: number;
 }, now: number): Promise<void> => {
-  const compatible = input.facilityContractVersion === 1 && (input.schemaVersion ?? 0) >= 4 && (input.schemaVersion ?? Infinity) <= SCHEMA_VERSION && input.policyVersion === 10;
+  const compatible = input.facilityContractVersion === 1 && (input.schemaVersion ?? 0) >= 4 && (input.schemaVersion ?? Infinity) <= SCHEMA_VERSION && (input.policyVersion ?? 0) >= 10 && (input.policyVersion ?? Infinity) <= POLICY_VERSION;
   await sql`INSERT INTO workforce_client_versions(device_id,facility_id,contract_version,schema_version,policy_version,pending_mutation_count,recorded_on)
     VALUES(${identity.deviceId},${identity.facilityId},${compatible ? 1 : 0},${input.schemaVersion ?? 0},${input.policyVersion ?? 0},${input.pendingMutationCount ?? 1},${new Date(now).toISOString()})
     ON CONFLICT(device_id) DO UPDATE SET contract_version=EXCLUDED.contract_version,schema_version=EXCLUDED.schema_version,policy_version=EXCLUDED.policy_version,pending_mutation_count=EXCLUDED.pending_mutation_count,recorded_on=EXCLUDED.recorded_on`;
