@@ -254,6 +254,68 @@ streams:
           AND (auth.parameter('facility_contract') IS NULL OR auth.parameter('facility_contract') <> 1)
           AND (auth.parameter('clinical_workflow') IS NULL OR auth.parameter('clinical_workflow') <> 1)
           AND auth.parameter('inpatient_workflow') = 1
+  library_documents:
+    auto_subscribe: true
+    queries:
+      - |
+        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", document_id AS "documentId", previous_id AS "previousId", version, title, file, actor_role AS "actorRole", action, archived
+        FROM library_documents
+        WHERE facility_id = auth.parameter('facility_id')
+          AND auth.parameter('facility_contract') = 1
+          AND auth.parameter('clinical_workflow') = 1
+          AND auth.parameter('document_workflow') = 1
+      - |
+        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", document_id AS "documentId", previous_id AS "previousId", version, title, file, actor_role AS "actorRole", action, archived
+        FROM library_documents
+        WHERE facility_id = auth.parameter('facility_id')
+          AND (auth.parameter('facility_contract') IS NULL OR auth.parameter('facility_contract') <> 1)
+          AND auth.parameter('clinical_workflow') = 1
+          AND auth.parameter('document_workflow') = 1
+      - |
+        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", document_id AS "documentId", previous_id AS "previousId", version, title, file, actor_role AS "actorRole", action, archived
+        FROM library_documents
+        WHERE facility_id = auth.parameter('facility_id')
+          AND auth.parameter('facility_contract') = 1
+          AND (auth.parameter('clinical_workflow') IS NULL OR auth.parameter('clinical_workflow') <> 1)
+          AND auth.parameter('document_workflow') = 1
+      - |
+        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", document_id AS "documentId", previous_id AS "previousId", version, title, file, actor_role AS "actorRole", action, archived
+        FROM library_documents
+        WHERE facility_id = auth.parameter('facility_id')
+          AND (auth.parameter('facility_contract') IS NULL OR auth.parameter('facility_contract') <> 1)
+          AND (auth.parameter('clinical_workflow') IS NULL OR auth.parameter('clinical_workflow') <> 1)
+          AND auth.parameter('document_workflow') = 1
+  visit_documents:
+    auto_subscribe: true
+    queries:
+      - |
+        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", document_id AS "documentId", previous_id AS "previousId", version, title, file, actor_role AS "actorRole", patient_id AS "patientId", encounter_id AS "encounterId", admission_id AS "admissionId", admission_event_id AS "admissionEventId", template_version_id AS "templateVersionId", action, signature_status AS "signatureStatus", signature_review AS "signatureReview", change_reason AS "changeReason"
+        FROM visit_documents
+        WHERE facility_id = auth.parameter('facility_id')
+          AND auth.parameter('facility_contract') = 1
+          AND auth.parameter('clinical_workflow') = 1
+          AND auth.parameter('document_workflow') = 1
+      - |
+        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", document_id AS "documentId", previous_id AS "previousId", version, title, file, actor_role AS "actorRole", patient_id AS "patientId", encounter_id AS "encounterId", admission_id AS "admissionId", admission_event_id AS "admissionEventId", template_version_id AS "templateVersionId", action, signature_status AS "signatureStatus", signature_review AS "signatureReview", change_reason AS "changeReason"
+        FROM visit_documents
+        WHERE facility_id = auth.parameter('facility_id')
+          AND (auth.parameter('facility_contract') IS NULL OR auth.parameter('facility_contract') <> 1)
+          AND auth.parameter('clinical_workflow') = 1
+          AND auth.parameter('document_workflow') = 1
+      - |
+        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", document_id AS "documentId", previous_id AS "previousId", version, title, file, actor_role AS "actorRole", patient_id AS "patientId", encounter_id AS "encounterId", admission_id AS "admissionId", admission_event_id AS "admissionEventId", template_version_id AS "templateVersionId", action, signature_status AS "signatureStatus", signature_review AS "signatureReview", change_reason AS "changeReason"
+        FROM visit_documents
+        WHERE facility_id = auth.parameter('facility_id')
+          AND auth.parameter('facility_contract') = 1
+          AND (auth.parameter('clinical_workflow') IS NULL OR auth.parameter('clinical_workflow') <> 1)
+          AND auth.parameter('document_workflow') = 1
+      - |
+        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", document_id AS "documentId", previous_id AS "previousId", version, title, file, actor_role AS "actorRole", patient_id AS "patientId", encounter_id AS "encounterId", admission_id AS "admissionId", admission_event_id AS "admissionEventId", template_version_id AS "templateVersionId", action, signature_status AS "signatureStatus", signature_review AS "signatureReview", change_reason AS "changeReason"
+        FROM visit_documents
+        WHERE facility_id = auth.parameter('facility_id')
+          AND (auth.parameter('facility_contract') IS NULL OR auth.parameter('facility_contract') <> 1)
+          AND (auth.parameter('clinical_workflow') IS NULL OR auth.parameter('clinical_workflow') <> 1)
+          AND auth.parameter('document_workflow') = 1
   handoffs:
     auto_subscribe: true
     queries:
@@ -680,6 +742,7 @@ streams:
         WHERE facility_id = auth.parameter('facility_id')
           AND auth.parameter('facility_contract') = 1
           AND auth.parameter('clinical_workflow') = 1
+          AND (auth.parameter('document_workflow') = 1 OR entity_type IS NULL OR (entity_type <> 'library_document' AND entity_type <> 'visit_document'))
           AND (auth.parameter('inpatient_workflow') = 1 OR entity_type IS NULL OR (entity_type <> 'inpatient_event' AND entity_type <> 'bed_ready_event'))
       - |
         SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", actor_staff_id AS "actorStaffId", action, entity_type AS "entityType", entity_id AS "entityId", result, occurred_on AS "occurredOn", received_on AS "receivedOn", metadata
@@ -687,6 +750,7 @@ streams:
         WHERE facility_id = auth.parameter('facility_id')
           AND (auth.parameter('facility_contract') IS NULL OR auth.parameter('facility_contract') <> 1)
           AND auth.parameter('clinical_workflow') = 1
+          AND (auth.parameter('document_workflow') = 1 OR entity_type IS NULL OR (entity_type <> 'library_document' AND entity_type <> 'visit_document'))
           AND (auth.parameter('inpatient_workflow') = 1 OR entity_type IS NULL OR (entity_type <> 'inpatient_event' AND entity_type <> 'bed_ready_event'))
           AND (entity_type IS NULL OR (entity_type <> 'location' AND entity_type <> 'service_definition' AND entity_type <> 'service_offering' AND entity_type <> 'practitioner_profile' AND entity_type <> 'credential' AND entity_type <> 'capability_decision' AND entity_type <> 'reviewer_delegation' AND entity_type <> 'clinical_authority_bootstrap' AND entity_type <> 'authority_snapshot' AND entity_type <> 'external_clinical_reviewer' AND entity_type <> 'staff_assignment' AND entity_type <> 'service_session' AND entity_type <> 'session_event' AND entity_type <> 'work_ownership_event' AND entity_type <> 'appointment_reservation'))
       - |
@@ -695,6 +759,7 @@ streams:
         WHERE facility_id = auth.parameter('facility_id')
           AND auth.parameter('facility_contract') = 1
           AND (auth.parameter('clinical_workflow') IS NULL OR auth.parameter('clinical_workflow') <> 1)
+          AND (auth.parameter('document_workflow') = 1 OR entity_type IS NULL OR (entity_type <> 'library_document' AND entity_type <> 'visit_document'))
           AND (auth.parameter('inpatient_workflow') = 1 OR entity_type IS NULL OR (entity_type <> 'inpatient_event' AND entity_type <> 'bed_ready_event'))
       - |
         SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", actor_staff_id AS "actorStaffId", action, entity_type AS "entityType", entity_id AS "entityId", result, occurred_on AS "occurredOn", received_on AS "receivedOn", metadata
@@ -702,6 +767,7 @@ streams:
         WHERE facility_id = auth.parameter('facility_id')
           AND (auth.parameter('facility_contract') IS NULL OR auth.parameter('facility_contract') <> 1)
           AND (auth.parameter('clinical_workflow') IS NULL OR auth.parameter('clinical_workflow') <> 1)
+          AND (auth.parameter('document_workflow') = 1 OR entity_type IS NULL OR (entity_type <> 'library_document' AND entity_type <> 'visit_document'))
           AND (auth.parameter('inpatient_workflow') = 1 OR entity_type IS NULL OR (entity_type <> 'inpatient_event' AND entity_type <> 'bed_ready_event'))
           AND (entity_type IS NULL OR (entity_type <> 'location' AND entity_type <> 'service_definition' AND entity_type <> 'service_offering' AND entity_type <> 'practitioner_profile' AND entity_type <> 'credential' AND entity_type <> 'capability_decision' AND entity_type <> 'reviewer_delegation' AND entity_type <> 'clinical_authority_bootstrap' AND entity_type <> 'authority_snapshot' AND entity_type <> 'external_clinical_reviewer' AND entity_type <> 'staff_assignment' AND entity_type <> 'service_session' AND entity_type <> 'session_event' AND entity_type <> 'work_ownership_event' AND entity_type <> 'appointment_reservation'))
   sync_rejections:
@@ -713,6 +779,7 @@ streams:
         WHERE facility_id = auth.parameter('facility_id')
           AND auth.parameter('facility_contract') = 1
           AND auth.parameter('clinical_workflow') = 1
+          AND (auth.parameter('document_workflow') = 1 OR entity_type IS NULL OR (entity_type <> 'library_document' AND entity_type <> 'visit_document'))
           AND (auth.parameter('inpatient_workflow') = 1 OR entity_type IS NULL OR (entity_type <> 'inpatient_event' AND entity_type <> 'bed_ready_event'))
           AND (visibility IS NULL OR visibility = 'facility')
       - |
@@ -721,6 +788,7 @@ streams:
         WHERE facility_id = auth.parameter('facility_id')
           AND (auth.parameter('facility_contract') IS NULL OR auth.parameter('facility_contract') <> 1)
           AND auth.parameter('clinical_workflow') = 1
+          AND (auth.parameter('document_workflow') = 1 OR entity_type IS NULL OR (entity_type <> 'library_document' AND entity_type <> 'visit_document'))
           AND (auth.parameter('inpatient_workflow') = 1 OR entity_type IS NULL OR (entity_type <> 'inpatient_event' AND entity_type <> 'bed_ready_event'))
           AND (visibility IS NULL OR visibility = 'facility')
           AND category <> 'dependency'
@@ -745,6 +813,7 @@ streams:
         WHERE facility_id = auth.parameter('facility_id')
           AND auth.parameter('facility_contract') = 1
           AND (auth.parameter('clinical_workflow') IS NULL OR auth.parameter('clinical_workflow') <> 1)
+          AND (auth.parameter('document_workflow') = 1 OR entity_type IS NULL OR (entity_type <> 'library_document' AND entity_type <> 'visit_document'))
           AND (auth.parameter('inpatient_workflow') = 1 OR entity_type IS NULL OR (entity_type <> 'inpatient_event' AND entity_type <> 'bed_ready_event'))
           AND (visibility IS NULL OR visibility = 'facility')
       - |
@@ -753,6 +822,7 @@ streams:
         WHERE facility_id = auth.parameter('facility_id')
           AND (auth.parameter('facility_contract') IS NULL OR auth.parameter('facility_contract') <> 1)
           AND (auth.parameter('clinical_workflow') IS NULL OR auth.parameter('clinical_workflow') <> 1)
+          AND (auth.parameter('document_workflow') = 1 OR entity_type IS NULL OR (entity_type <> 'library_document' AND entity_type <> 'visit_document'))
           AND (auth.parameter('inpatient_workflow') = 1 OR entity_type IS NULL OR (entity_type <> 'inpatient_event' AND entity_type <> 'bed_ready_event'))
           AND (visibility IS NULL OR visibility = 'facility')
           AND category <> 'dependency'

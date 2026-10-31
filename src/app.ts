@@ -1,4 +1,5 @@
 import { registerOrganizationRoutes } from './routes/organizations.ts';
+import { registerDocumentRoutes } from './routes/documents.ts';
 import { registerOrganizationFacilityRoutes } from './routes/organizationFacilities.ts';
 import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify';
 import { SCHEMA_VERSION, type ApiErrorBody } from '#shared';
@@ -49,6 +50,7 @@ const serializers = {
  * address, a real person mistyping gets plenty.
  */
 const RATE_LIMITED_ROUTES = new Set([
+  'POST /documents/files/:id',
   'GET /invites/:token',
   'POST /facilities',
   'POST /devices',
@@ -103,7 +105,7 @@ export const buildApp = ({ config, sql, signer, mailer: givenMailer, paystackFet
     if (origin && config.corsOrigins.includes(origin)) {
       reply.header('access-control-allow-origin', origin);
       reply.header('vary', 'origin');
-      reply.header('access-control-allow-headers', 'content-type, authorization, x-workforce-access');
+      reply.header('access-control-allow-headers', 'content-type, authorization, x-workforce-access, x-actor-staff-id, x-file-mime, x-file-sha256');
       reply.header('access-control-allow-methods', 'GET, POST, OPTIONS');
     }
     if (request.method === 'OPTIONS') return reply.code(204).send();
@@ -157,6 +159,7 @@ export const buildApp = ({ config, sql, signer, mailer: givenMailer, paystackFet
   });
 
   registerPatientRoutes(app, sql);
+  registerDocumentRoutes(app,sql);
   registerWorkforceRoutes(app, sql, mailer);
   const startedOn = new Date().toISOString();
 

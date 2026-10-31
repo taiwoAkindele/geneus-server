@@ -15,6 +15,7 @@ export const TABLE_FOR: Record<DocType, string> = {
   encounter_entry: 'encounter_entries',
   clinical_event: 'clinical_events',
   inpatient_event: 'inpatient_events', bed_ready_event: 'bed_ready_events',
+  library_document:'library_documents',visit_document:'visit_documents',
   handoff: 'handoffs',
   appointment: 'appointments',
   register_definition: 'register_definitions',
@@ -51,6 +52,7 @@ export const TABLE_FOR: Record<DocType, string> = {
  * JSON explicitly — and these are the only places JSONB is used (SCHEMA.md §11).
  */
 const JSONB_COLUMNS: Partial<Record<DocType, readonly string[]>> = {
+  library_document:['file'],visit_document:['file','signature_review'],
   patient: ['identification_base'],
   facility: ['workforce_policy'],
   appointment: ['charge_ids', 'activity', 'allocation'],
