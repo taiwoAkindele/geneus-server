@@ -29,6 +29,16 @@ describe('staff editing and combined authorization', () => {
     assert.deepEqual(staff?.additionalPermissions, []);
     assert.ok(staff && staffPermissions(staff).includes('staff:permission'));
   });
+  it('grants and revokes chart reading independently of front-desk and read-only access', async () => {
+    const member=await addStaff(db.sql,facility,{role:'records_officer',permission:'read_only'});
+    assert.equal(staffDenial(await findStaffInFacility(db.sql,facility.facility.id,member.id),member.id,'patient_chart:read')?.kind,'not_granted');
+    assert.equal((await send(facility,patch(member.id,facility.admin,{additionalPermissions:['patient_chart:read']}))).applied,1);
+    const allowed=await findStaffInFacility(db.sql,facility.facility.id,member.id);
+    assert.equal(staffDenial(allowed,member.id,'patient_chart:read'),undefined);
+    assert.equal(staffDenial(allowed,member.id,'encounter:record')?.kind,'not_granted');
+    assert.equal((await send(facility,patch(member.id,facility.admin,{additionalPermissions:[]}))).applied,1);
+    assert.equal(staffDenial(await findStaffInFacility(db.sql,facility.facility.id,member.id),member.id,'patient_chart:read')?.kind,'not_granted');
+  });
 
   it('creates and edits combined staff access, with an attributed audit event', async () => {
     const id = 'staff:combined';
