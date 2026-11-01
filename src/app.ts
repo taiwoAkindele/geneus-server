@@ -1,4 +1,5 @@
 import { registerOrganizationRoutes } from './routes/organizations.ts';
+import { registerInvestigationRoutes } from './routes/investigations.ts';
 import { registerDocumentRoutes } from './routes/documents.ts';
 import { registerOrganizationFacilityRoutes } from './routes/organizationFacilities.ts';
 import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify';
@@ -218,6 +219,7 @@ export const buildApp = ({ config, sql, signer, mailer: givenMailer, paystackFet
   registerFacilityRoutes(app, sql, config, mailer);
   registerDeviceRoutes(app, sql, config);
   registerOrganizationRoutes(app, sql);
+  registerInvestigationRoutes(app, sql);
   registerOrganizationFacilityRoutes(app, sql, config.powerSyncPublicUrl);
   registerStaffRoutes(app, sql, mailer);
   registerSyncRoutes(app, sql, config, signer);

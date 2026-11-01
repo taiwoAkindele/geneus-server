@@ -165,6 +165,11 @@ export const validateWorkforceRecord = async (tx: Tx, identity: DeviceIdentity, 
     case 'service_definition':
       if (!record.active && data.offerings.some((o) => o.serviceDefinitionId === record.id && o.configuration === 'active'))
         issues.push('Retire or replace active offerings before retiring this definition');
+      // Lab tests are added only through the server's catalogue routes; a device may not create one or recode it.
+      if (record.investigation && !(current?.type === 'service_definition' && current.investigation))
+        issues.push('Add laboratory tests from the investigation catalogue while connected');
+      if (current?.type === 'service_definition' && (record.concept.system !== current.concept.system || record.concept.code !== current.concept.code))
+        issues.push('A catalogue entry keeps its original code');
       break;
   }
   if ('version' in record && 'previousId' in record && ['credential', 'capability_decision', 'reviewer_delegation', 'staff_assignment', 'service_session'].includes(record.type)) {
