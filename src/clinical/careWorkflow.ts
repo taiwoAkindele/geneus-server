@@ -12,9 +12,8 @@ export const careWorkflowIssues = async (tx: Tx, entry: EncounterEntry): Promise
   if (entry.step === 'lab_order' && entry.values.items) {
     const { items } = ENCOUNTER_STEP_VALUES.lab_order.parse(entry.values);
     for (const item of items!) {
+      // A clinician may always request a test that is not in the catalogue; it carries no catalogue price.
       if (item.custom) {
-        const [facility] = await tx`SELECT allow_custom_investigations FROM facilities WHERE id=${entry.facilityId}`;
-        if (!facility?.allow_custom_investigations) return ['Custom investigations are not enabled by this facility'];
         if (item.feeItemId || item.priceMinor !== undefined) return ['Unlisted requests cannot invent a catalogue price'];
         continue;
       }
