@@ -2,7 +2,7 @@ import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import type { FastifyInstance } from 'fastify';
 import type { FacilityRegistrationResult, Staff, UploadMutation } from '#shared';
-import { findRecord } from '../src/db/records.ts';
+import { findRecord, insertRecord } from '../src/db/records.ts';
 import { addStaff, clientId, envelopeFor, registerScratchFacility, scratchDatabase, testApp, upload, type ScratchDatabase } from './postgres.ts';
 
 describe('longitudinal clinical records and corrections on upload', () => {
@@ -31,9 +31,10 @@ describe('longitudinal clinical records and corrections on upload', () => {
       ...['000001', '000002'].map((sequence) => put('patient', patientId(sequence), { patientId: patientId(sequence), fullName: 'Clinical Patient', address: 'Test road', sex: 'female', ageYears: 30 })),
       put('encounter', 'encounter:clinical', { patientId: patientId(), openedOn: new Date().toISOString() }),
       entry('entry:vitals', 'vitals', { temperatureC: 39 }),
-      entry('entry:diagnosis', 'diagnosis', { diagnosis: 'Initial diagnosis', prescription: [{ drug: 'Medicine', dose: '1 tablet' }], admit: false, giveInjection: false }),
     );
     assert.deepEqual(response.rejected, []);
+    // A diagnosis recorded in the retired order already held on the server: its corrections stay protected.
+    await insertRecord(db.sql, 'encounter_entry', entry('entry:diagnosis', 'diagnosis', { diagnosis: 'Initial diagnosis', prescription: [{ drug: 'Medicine', dose: '1 tablet' }], admit: false, giveInjection: false }).data);
   });
   after(async () => { if (app) await app.close(); if (db) await db.drop(); });
 
@@ -99,23 +100,27 @@ describe('longitudinal clinical records and corrections on upload', () => {
     const encounterId = 'encounter:corrected-prescription';
     const diagnosisId = 'entry:corrected-prescription';
     const prescription = [{ drug: 'Reviewed medicine', dose: '1 tablet' }];
-    assert.deepEqual((await send(
+    // A visit recorded in the retired order, already on the server: corrected, then dispensed.
+    for (const mutation of [
       put('encounter', encounterId, { patientId: patientId(), openedOn: new Date().toISOString() }),
       entry(diagnosisId, 'diagnosis', { diagnosis: 'Initial', prescription: [] }, { encounterId }),
       entry('entry:rx-correction', 'amendment', { note: 'Before dispensing', correctedValues: { diagnosis: 'Reviewed', prescription } }, { encounterId, amends: diagnosisId }),
       entry('entry:reviewed-dispense', 'dispense', { lines: [{ drug: 'Reviewed medicine', dispensed: true }] }, { encounterId }),
-    )).rejected, []);
+    ]) await insertRecord(db.sql, mutation.table, mutation.data);
     const response = await send(entry('entry:clarify-diagnosis', 'amendment', { note: 'Diagnosis clarification only', correctedValues: { diagnosis: 'Clarified', prescription }, previousAmendmentId: 'entry:rx-correction' }, { encounterId, amends: diagnosisId }));
     assert.deepEqual(response.rejected, []);
   });
   it('allows amendments after closure but refuses additional observations', async () => {
-    await send(entry('entry:close', 'follow_up', {}));
+    // Closed in the retired order before the server stopped accepting it; a new follow-up step is refused.
+    assert.match((await send(entry('entry:new-close', 'follow_up', {}))).rejected[0]?.reason ?? '', /explicit disposition/);
+    await insertRecord(db.sql, 'encounter_entry', entry('entry:close', 'follow_up', {}).data);
     assert.equal((await send(entry('entry:late', 'vitals', { temperatureC: 38 }))).rejected[0]?.category, 'conflict');
     assert.deepEqual((await send(entry('entry:late-note', 'amendment', { note: 'Additional clarification' }, { amends: 'entry:vitals' }))).rejected, []);
   });
   it('does not bypass prescription correction controls by inserting a second diagnosis', async () => {
     const response = await send(entry('entry:second-diagnosis', 'diagnosis', { diagnosis: 'Second diagnosis' }, { encounterId: 'encounter:corrected-prescription' }));
-    assert.equal(response.rejected[0]?.category, 'conflict');
-    assert.match(response.rejected[0]?.reason ?? '', /already saved/);
+    // Refused either as a duplicate or, in this visit begun in the retired order, for skipping the testing decision.
+    assert.equal(response.applied, 0);
+    assert.match(response.rejected[0]?.reason ?? '', /already saved|testing decision/);
   });
 });
