@@ -16,7 +16,7 @@ test('independent facilities: provision explicitly, complete care without orders
   const encounterId = 'encounter:independent-test';
   const header = { ...env, id: encounterId, type: 'encounter', patientId, workflowVersion: 1, openedOn: env.createdOn };
   const entry = (id: string, step: string, values: Record<string, unknown>) => ({ ...env, id, type: 'encounter_entry', workflowVersion: 1, patientId, encounterId, actorRole: a.admin.role, step, values });
-  const noOrders = await send([patient, header, entry('entry:assessment', 'diagnosis', { diagnosis: 'Assessment documented' }), entry('entry:review', 'investigation_review', { decision: 'none_required' }), entry('entry:discharge', 'disposition', { kind: 'home_care', note: 'Advice and review instructions documented' })]);
+  const noOrders = await send([patient, header, entry('entry:vitals', 'vitals', { temperatureC: 37 }), entry('entry:complaint', 'complaint', { complaints: ['Headache'] }), entry('entry:review', 'investigation_review', { decision: 'none_required' }), entry('entry:assessment', 'diagnosis', { diagnosis: 'Assessment documented' }), entry('entry:medication', 'prescription', { decision: 'none_required', prescription: [] }), entry('entry:injection', 'injection_order', { required: false }), entry('entry:discharge', 'disposition', { kind: 'home_care', note: 'Advice and review instructions documented' })]);
   assert.deepEqual(noOrders.rejected, []);
   const [counts] = await db.sql`SELECT (SELECT count(*) FROM charges WHERE facility_id=${a.facility.id})::int AS charges,(SELECT count(*) FROM patients WHERE facility_id=${b.facility.id})::int AS receiving_patients`;
   assert.equal(counts.charges, 0); assert.equal(counts.receiving_patients, 0);

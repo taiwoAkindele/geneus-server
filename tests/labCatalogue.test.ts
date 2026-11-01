@@ -94,6 +94,8 @@ describe('server-owned laboratory catalogue', () => {
     const records = [
       Patient.parse({ ...env, id: patientId, type: 'patient', patientId, fullName: 'Synthetic patient', address: 'Synthetic address', sex: 'female', ageYears: 30 }),
       { ...env, id: encounterId, type: 'encounter', patientId, workflowVersion: 1, openedOn: env.createdOn },
+      entry('entry:vitals', 'vitals', { temperatureC: 38 }),
+      entry('entry:complaint', 'complaint', { complaints: ['Tiredness'] }),
       entry('entry:order', 'lab_order', { tests: [item.name], items: [item] }),
       entry('entry:decision', 'investigation_review', { decision: 'ordered', orderEntryId: 'entry:order' }),
     ];

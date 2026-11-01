@@ -9,15 +9,18 @@ describe('inpatient upload and real PostgreSQL concurrency', () => {
   let db: ScratchDatabase, app: FastifyInstance, facility: FacilityRegistrationResult, doctor: Staff, cashier: Staff;
   let sequence=0;
   const put = (table: UploadMutation['table'], id: string, data: Record<string,unknown>, actor?: Staff): UploadMutation => ({ clientId:clientId(),op:'put',table,id,data:{...envelopeFor(facility),createdBy:(actor??doctor).id,id,type:table,...data} });
-  const send = (...mutations: UploadMutation[]) => upload(app,facility.device.credential,{ transactionId:1,inpatientWorkflowVersion:1,facilityContractVersion:1,schemaVersion:5,policyVersion:POLICY_VERSION,mutations });
+  const send = (...mutations: UploadMutation[]) => upload(app,facility.device.credential,{ transactionId:1,inpatientWorkflowVersion:1,clinicalWorkflowVersion:1,facilityContractVersion:1,schemaVersion:5,policyVersion:POLICY_VERSION,mutations });
   const event = (record: InpatientEvent, actor?: Staff) => put('inpatient_event',record.id,record,actor);
   const next = (previous: InpatientEvent, action: InpatientEvent['action'], extra: Partial<InpatientEvent> = {}): InpatientEvent => ({...previous,...envelopeFor(facility),createdBy:doctor.id,id:`inpatient:${++sequence}`,previousId:previous.id,action,...extra});
   const newCase = async () => {
     const suffix=String(++sequence).padStart(6,'0'), patientId=`${facility.facility.id}-${suffix}-K2`, encounterId=`encounter:${suffix}`, requestEntryId=`request:${suffix}`, id=`stay:${suffix}`;
     assert.deepEqual((await send(
       put('patient',patientId,{patientId,fullName:'Synthetic inpatient',address:'Test road',sex:'female',ageYears:30}),
-      put('encounter',encounterId,{patientId,openedOn:new Date().toISOString()}),
-      put('encounter_entry',requestEntryId,{patientId,encounterId,step:'admission',actorRole:'doctor',values:{ward:'Ward A'}}),
+      put('encounter',encounterId,{patientId,workflowVersion:1,openedOn:new Date().toISOString()}),
+      // The visit in order, ending in the disposition that requests admission.
+      ...([['vitals',{temperatureC:38}],['complaint',{complaints:['Fever']}],['investigation_review',{decision:'none_required'}],['diagnosis',{diagnosis:'Severe malaria'}],['prescription',{decision:'none_required',prescription:[]}],['injection_order',{required:false}]] as const)
+        .map(([step,values])=>put('encounter_entry',`${requestEntryId}:${step}`,{patientId,encounterId,step,actorRole:'doctor',workflowVersion:1,values})),
+      put('encounter_entry',requestEntryId,{patientId,encounterId,step:'disposition',actorRole:'doctor',workflowVersion:1,values:{kind:'admission',note:'Admit for parenteral treatment',responsibleService:'Ward team'}}),
     )).rejected,[]);
     const confirm: InpatientEvent={...envelopeFor(facility),schemaVersion:5,createdBy:doctor.id,id,type:'inpatient_event',admissionId:id,patientId,encounterId,requestEntryId,action:'confirm',receivingUnitId:'unit:ward',actorRole:'doctor'};
     return confirm;
@@ -40,7 +43,8 @@ describe('inpatient upload and real PostgreSQL concurrency', () => {
     assert.deepEqual((await send(...[confirm,reserve,arrive,ready,departure].map((record)=>event(record)))).rejected,[]);
     assert.deepEqual((await send(put('bed_ready_event','clean:complete',{bedId,releaseEventId:departure.id,actorRole:'doctor'}))).rejected,[]);
     const [counts]=await db.sql`SELECT (SELECT count(*) FROM inpatient_events WHERE admission_id=${confirm.id}) AS events, (SELECT count(*) FROM encounter_entries WHERE encounter_id=${confirm.encounterId}) AS entries`;
-    assert.equal(Number(counts.events),5); assert.equal(Number(counts.entries),1);
+    // The admission workflow adds no entries to the signed visit: only the 7 recorded in order before it.
+    assert.equal(Number(counts.events),5); assert.equal(Number(counts.entries),7);
     await assert.rejects(db.sql`UPDATE inpatient_events SET note='rewrite' WHERE id=${confirm.id}`,/never changed/);
     await assert.rejects(db.sql`DELETE FROM inpatient_events WHERE id=${confirm.id}`,/never changed/);
     await assert.rejects(db.sql`DELETE FROM bed_ready_events WHERE id='clean:complete'`,/never changed/);

@@ -2,7 +2,7 @@ import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import type { FastifyInstance } from 'fastify';
 import type { FacilityRegistrationResult, Patient, Staff, SyncRejection, UploadMutation } from '#shared';
-import { findRecord } from '../src/db/records.ts';
+import { findRecord, insertRecord } from '../src/db/records.ts';
 import { enrollDevice, issueEnrollmentCode } from '../src/devices/enrollment.ts';
 import {
   addStaff,
@@ -200,12 +200,12 @@ describe('encounters and Patient ID clashes on upload', () => {
 
   describe('closing an encounter', () => {
     it('takes outstanding service results and amendments after closure, keeping late assessments in the queue', async () => {
-      await send(
-        a.device.credential,
+      // A visit closed in the retired order, already on the server.
+      for (const mutation of [
         encounterPut('encounter:3', patientId('000002'), doctor),
         entryPut('encounter_entry:3-diagnosis', 'encounter:3', patientId('000002'), doctor, 'diagnosis', { diagnosis: 'Malaria' }),
         entryPut('encounter_entry:3-close', 'encounter:3', patientId('000002'), doctor, 'follow_up', {}),
-      );
+      ]) await insertRecord(db.sql, mutation.table, mutation.data);
 
       // Recorded on the second device while it had not yet heard of the close.
       const late = entryPut('encounter_entry:3-late', 'encounter:3', patientId('000002'), nurse, 'lab_results', { results: [{ test: 'Malaria RDT', result: 'Positive' }] }, { deviceId: second.deviceId });
