@@ -44,6 +44,7 @@ export const TABLE_FOR: Record<DocType, string> = {
   external_clinical_reviewer: 'external_clinical_reviewers', authority_snapshot: 'authority_snapshots',
   staff_assignment: 'staff_assignments', service_session: 'service_sessions', session_event: 'session_events',
   work_ownership_event: 'work_ownership_events', appointment_reservation: 'appointment_reservations',
+  result_template: 'result_templates', result_part: 'result_parts', answer_list: 'answer_lists',
 };
 
 /**
@@ -59,7 +60,7 @@ const JSONB_COLUMNS: Partial<Record<DocType, readonly string[]>> = {
   staff: ['additional_roles', 'additional_permissions'],
   register_definition: ['fields'],
   register_entry: ['values'],
-  encounter_entry: ['values', 'actor_context'],
+  encounter_entry: ['values', 'actor_context', 'lab_report'],
   clinical_event: ['values', 'actor_context'],
   referral: ['tier1'],
   inbound_referral: ['tier1'],
@@ -72,6 +73,7 @@ const JSONB_COLUMNS: Partial<Record<DocType, readonly string[]>> = {
   reviewer_delegation: ['scopes'], clinical_authority_bootstrap: ['scopes'], external_clinical_reviewer: ['scopes'],
   authority_snapshot: ['grants', 'review_scopes', 'source_decision_ids'], staff_assignment: ['location_ids', 'required_actions'],
   service_session: ['participants', 'resources', 'roster_shift_ids'],
+  result_template: ['parts', 'service_definition_ids'], result_part: ['part'], answer_list: ['answers'],
 };
 
 export const snakeCase = (key: string): string => key.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`);

@@ -41,6 +41,7 @@ export const registerDocumentRoutes=(app:FastifyInstance,sql:Sql):void=>{
       f.uploaded_by=${who.actorId}
       OR EXISTS(SELECT 1 FROM library_documents d WHERE d.facility_id=f.facility_id AND d.file_id=f.id)
       OR EXISTS(SELECT 1 FROM visit_documents d WHERE d.facility_id=f.facility_id AND d.file_id=f.id)
+      OR EXISTS(SELECT 1 FROM encounter_entries e WHERE e.facility_id=f.facility_id AND e.lab_report IS NOT NULL AND jsonb_path_exists(e.lab_report,'$.items[*].values[*] ? (@.kind == "images").files[*] ? (@.id == $id)',jsonb_build_object('id',f.id)))
       OR EXISTS(SELECT 1 FROM sync_rejections r WHERE r.facility_id=f.facility_id AND r.entity_type IN ('library_document','visit_document') AND r.refused_record->'file'->>'id'=f.id)
     )`;
     if(!file)return reply.code(404).send({error:'not_found',message:'This document file is unavailable in the current hospital'});

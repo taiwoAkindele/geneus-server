@@ -1,4 +1,5 @@
 import { careWorkflowIssues, chargeOrderIssues, routeReferral } from '../clinical/careWorkflow.ts';
+import { labReportUploadIssues } from '../clinical/labReports.ts';
 import { inpatientUploadIssues, inpatientLocationIssues } from '../clinical/inpatient.ts';
 import { clinicalDocumentIssues } from '../documents/validation.ts';
 import { isDeepStrictEqual } from 'node:util';
@@ -85,7 +86,7 @@ import { recordClientVersion } from '../workforce/readiness.ts';
  */
 
 /** Written by the server; a device may never insert them. */
-const SERVER_WRITTEN: readonly DocType[] = ['facility', 'device', 'sync_rejection', 'pin_setup_code', 'incoming_transfer', 'inbound_referral'];
+const SERVER_WRITTEN: readonly DocType[] = ['facility', 'device', 'sync_rejection', 'pin_setup_code', 'incoming_transfer', 'inbound_referral', 'result_template', 'result_part', 'answer_list'];
 /** Server-written, but a device may patch the few columns that record what it did with them. */
 const DEVICE_MARKABLE: readonly DocType[] = ['sync_rejection', 'pin_setup_code', 'inbound_referral'];
 /**
@@ -456,6 +457,11 @@ const evaluatePut = async ({ tx, identity, uploadedAt }: Context, mutation: Uplo
           const before = ENCOUNTER_STEP_VALUES.lab_results.parse(target.values).results.map((r) => r.orderItemId ?? r.test).sort();
           const after = ENCOUNTER_STEP_VALUES.lab_results.parse(corrected.data).results.map((r) => r.orderItemId ?? r.test).sort();
           if (!isDeepStrictEqual(before, after)) return refuse('validation', 'A result correction cannot change its ordered investigation identity');
+        }
+        if (record.labReport) {
+          if (target.step !== 'lab_results') return refuse('validation', 'A structured result corrects only a lab result');
+          const reportIssues = await labReportUploadIssues(tx, record, record.labReport, ENCOUNTER_STEP_VALUES.lab_results.parse(corrected.data).results);
+          if (reportIssues.length) return refuse('validation', reportIssues.join('. '));
         }
         if (target.step === 'diagnosis') {
           const values = corrected.data as Record<string, unknown>;
