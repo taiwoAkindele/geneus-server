@@ -1,7 +1,7 @@
 import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import type { FastifyInstance } from 'fastify';
-import type { FacilityRegistrationResult, StandardTemplate, UploadMutation } from '#shared';
+import type { FacilityRegistrationResult, ResultTemplate, StandardTemplate, StandardTest, UploadMutation } from '#shared';
 import { insertRecord, findRecord } from '../src/db/records.ts';
 import { recordsInFacility } from '../src/workforce/records.ts';
 import { ensureAllStandardCatalogues } from '../src/clinical/standardCatalogue.ts';
@@ -39,7 +39,7 @@ describe('catalogue and templates edited offline, checked on sync', () => {
     const id = `standard_test:${facility.facility.id}:fbc`;
     await db.sql`UPDATE standard_tests SET name = 'Tampered' WHERE id = ${id}`;
     await ensureAllStandardCatalogues(db.sql);
-    assert.equal((await findRecord<{ name: string }>(db.sql, 'standard_test', id))?.name, fbc.name);
+    assert.equal((await findRecord<StandardTest>(db.sql, 'standard_test', id))?.name, fbc.name);
   });
 
   it('accepts a standard test added offline exactly as listed, and refuses an altered copy or a duplicate name', async () => {
@@ -60,7 +60,7 @@ describe('catalogue and templates edited offline, checked on sync', () => {
     // Two edits made offline, one after the other, arrive in order.
     const edits = await send(patch('result_template', template.id, 1, { name: 'Serum ferritin' }), patch('result_template', template.id, 2, { status: 'active' }));
     assert.deepEqual(edits.rejected, []);
-    assert.equal((await findRecord<{ revision: number }>(db.sql, 'result_template', template.id))?.revision, 3);
+    assert.equal((await findRecord<ResultTemplate>(db.sql, 'result_template', template.id))?.revision, 3);
     const [history] = await db.sql`SELECT count(*)::int AS n FROM result_template_versions WHERE source_id = ${template.id}`;
     assert.equal(history.n, 3);
     const stale = await send(patch('result_template', template.id, 1, { name: 'Stale edit' }));
