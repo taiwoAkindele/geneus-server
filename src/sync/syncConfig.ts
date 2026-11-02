@@ -31,9 +31,12 @@ const LEGACY_OMISSIONS: Partial<Record<DocType, readonly string[]>> = {
   appointment:['allocation'],encounter_entry:['actorContext','workflowVersion'],clinical_event:['actorContext'],sync_rejection:['dependencies','visibility','visibleToStaffIds'],
 };
 const CARE_FIELDS: Partial<Record<DocType, readonly string[]>> = { facility: ['allowCustomInvestigations'], staff: ['personId'], fee_item: ['priceVersion'], service_definition: ['investigation'], service_offering: ['feeItemId'], encounter: ['workflowVersion'], encounter_entry: ['workflowVersion'], charge: ['orderItemId','orderEntryId'] };
-const selectListFor = (type: DocType, legacy = false, care = true): string[] =>
+/** Sent only to devices that negotiated result templates; others keep the plain result summary. */
+const TEMPLATE_FIELDS: Partial<Record<DocType, readonly string[]>> = { encounter_entry: ['labReport'] };
+const RESULT_TEMPLATE_TYPES: readonly DocType[] = ['result_template', 'result_part', 'answer_list'];
+const selectListFor = (type: DocType, legacy = false, care = true, templates?: boolean): string[] =>
   Object.keys(SCHEMA_BY_TYPE[type].shape)
-    .filter((field) => field !== 'type' && (!legacy || !LEGACY_OMISSIONS[type]?.includes(field)) && (care || !CARE_FIELDS[type]?.includes(field)))
+    .filter((field) => field !== 'type' && (!legacy || !LEGACY_OMISSIONS[type]?.includes(field)) && (care || !CARE_FIELDS[type]?.includes(field)) && (templates === true || !TEMPLATE_FIELDS[type]?.includes(field)))
     .map((field) => {
       const column = snakeCase(field);
       return column === field ? column : `${column} AS "${field}"`;
@@ -43,8 +46,8 @@ export const streamNameFor = (type: DocType): string => TABLE_FOR[type];
 /** Device tokens identify a facility, not the human at a shared device. Evidence uses authenticated private reads. */
 export const syncedTypes = (): DocType[] => (Object.keys(TABLE_FOR) as DocType[]).filter((type) => !RESTRICTED_FACILITY_DOCUMENT_TYPES.some((restricted) => restricted === type));
 
-const queryFor = (type: DocType, legacy: boolean, care = true): string[] => {
-  const lines=[`SELECT ${selectListFor(type,legacy,care).join(', ')}`,`FROM ${TABLE_FOR[type]}`,`WHERE facility_id = auth.parameter('${FACILITY_CLAIM}')`];
+const queryFor = (type: DocType, legacy: boolean, care = true, templates?: boolean): string[] => {
+  const lines=[`SELECT ${selectListFor(type,legacy,care,templates).join(', ')}`,`FROM ${TABLE_FOR[type]}`,`WHERE facility_id = auth.parameter('${FACILITY_CLAIM}')`];
   lines.push(legacy ? "  AND (auth.parameter('facility_contract') IS NULL OR auth.parameter('facility_contract') <> 1)" : "  AND auth.parameter('facility_contract') = 1");
   lines.push(care ? "  AND auth.parameter('clinical_workflow') = 1" : "  AND (auth.parameter('clinical_workflow') IS NULL OR auth.parameter('clinical_workflow') <> 1)");
   // Legacy screens assume complete demographics; they receive this record
@@ -55,6 +58,10 @@ const queryFor = (type: DocType, legacy: boolean, care = true): string[] => {
   if(type==='audit_event'||type==='sync_rejection')lines.push("  AND (auth.parameter('document_workflow') = 1 OR entity_type IS NULL OR (entity_type <> 'library_document' AND entity_type <> 'visit_document'))");
   if (type === 'audit_event' || type === 'sync_rejection') lines.push("  AND (auth.parameter('inpatient_workflow') = 1 OR entity_type IS NULL OR (entity_type <> 'inpatient_event' AND entity_type <> 'bed_ready_event'))");
   if (type === 'staff') lines.push("  AND (auth.parameter('inpatient_workflow') = 1 OR instr(additional_permissions, '\"admission:manage\"') = 0)");
+  if (RESULT_TEMPLATE_TYPES.includes(type) || templates === true) lines.push("  AND auth.parameter('result_template_workflow') = 1");
+  if (templates === false) lines.push("  AND (auth.parameter('result_template_workflow') IS NULL OR auth.parameter('result_template_workflow') <> 1)");
+  if (type === 'staff') lines.push("  AND (auth.parameter('result_template_workflow') = 1 OR instr(additional_permissions, '\"result_template:manage\"') = 0)");
+  if (type === 'audit_event' || type === 'sync_rejection') lines.push(`  AND (auth.parameter('result_template_workflow') = 1 OR entity_type IS NULL OR (${RESULT_TEMPLATE_TYPES.map((t) => `entity_type <> '${t}'`).join(' AND ')}))`);
   if (type === 'referral' || type === 'inbound_referral') lines.push("  AND (auth.parameter('patient_registration') = 1 OR json_extract(tier1, '$.sex') IS NOT NULL)");
   if (type === 'encounter' || type === 'encounter_entry') lines.push("  AND (auth.parameter('clinical_workflow') = 1 OR workflow_version IS NULL)");
   if(type === 'inbound_referral') lines.push("  AND auth.parameter('clinical_workflow') = 1");
@@ -94,7 +101,11 @@ export const buildSyncConfig = (): string => {
       lines.push('    queries:', '      - |', ...queryFor(type,false,true).map((line)=>`        ${line}`), '      - |', ...queryFor(type,false,false).map((line)=>`        ${line}`));
     } else {
       lines.push('    queries:');
-      for (const care of [true,false]) for (const legacy of [false,true]) lines.push('      - |', ...queryFor(type,legacy,care).map((line)=>`        ${line}`));
+      for (const care of [true,false]) for (const legacy of [false,true]) {
+        // Only the current clinical workflow can negotiate result templates.
+        const split = Boolean(TEMPLATE_FIELDS[type]) && care && !legacy;
+        for (const templates of split ? [true, false] : [undefined]) lines.push('      - |', ...queryFor(type,legacy,care,templates).map((line)=>`        ${line}`));
+      }
     }
   }
 

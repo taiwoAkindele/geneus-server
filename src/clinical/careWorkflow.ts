@@ -1,6 +1,7 @@
 import { careEntryIssues, effectiveEncounterEntries, ENCOUNTER_STEP_VALUES, type Encounter, type EncounterEntry, type FeeItem, type InvestigationItem, type Referral, type ServiceDefinition, type ServiceOffering } from '#shared';
 import type { Tx } from '../db/client.ts';
 import { findRecord, fromRow } from '../db/records.ts';
+import { labReportUploadIssues } from './labReports.ts';
 
 export const careWorkflowIssues = async (tx: Tx, entry: EncounterEntry): Promise<string[]> => {
   const encounter = await findRecord<Encounter>(tx, 'encounter', entry.encounterId);
@@ -9,6 +10,10 @@ export const careWorkflowIssues = async (tx: Tx, entry: EncounterEntry): Promise
   const prior = effectiveEncounterEntries(rows.map((row) => fromRow<EncounterEntry>('encounter_entry', row)));
   const issues = careEntryIssues(entry, prior);
   if (issues.length) return issues;
+  if (entry.step === 'lab_results' && entry.labReport) {
+    const reportIssues = await labReportUploadIssues(tx, entry, entry.labReport, ENCOUNTER_STEP_VALUES.lab_results.parse(entry.values).results);
+    if (reportIssues.length) return reportIssues;
+  }
   if (entry.step === 'lab_order' && entry.values.items) {
     const { items } = ENCOUNTER_STEP_VALUES.lab_order.parse(entry.values);
     for (const item of items!) {
