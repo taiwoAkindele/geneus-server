@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import type { FastifyInstance } from 'fastify';
 import {
   Patient, labItemSummary, labPatientFacts, rangeFor, type FacilityRegistrationResult, type LabReport, type NumberPart, type ResultPart,
-  type ResultTemplate, type UploadMutation,
+  type ResultTemplate, type UploadMutation, type EncounterEntry,
 } from '#shared';
 import { recordsInFacility } from '../src/workforce/records.ts';
 import { findRecord } from '../src/db/records.ts';
@@ -129,7 +129,7 @@ describe('server-owned result templates', () => {
 
     const accepted = await send([entry('entry:results', 'lab_results', results(good), { labReport: good })]);
     assert.deepEqual(accepted.rejected, []);
-    const stored = (await findRecord<{ labReport?: LabReport }>(db.sql, 'encounter_entry', 'entry:results'))!;
+    const stored = (await findRecord<EncounterEntry>(db.sql, 'encounter_entry', 'entry:results'))!;
     assert.equal(stored.labReport?.items[0].values[0].kind, 'number');
 
     const corrected = report([number('haemoglobin', 11.2, 'low'), number('pcv', 34), number('wbc', 7.2), number('platelets', 98, 'low')]);
