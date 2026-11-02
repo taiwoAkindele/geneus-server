@@ -33,7 +33,7 @@ const LEGACY_OMISSIONS: Partial<Record<DocType, readonly string[]>> = {
 const CARE_FIELDS: Partial<Record<DocType, readonly string[]>> = { facility: ['allowCustomInvestigations'], staff: ['personId'], fee_item: ['priceVersion'], service_definition: ['investigation'], service_offering: ['feeItemId'], encounter: ['workflowVersion'], encounter_entry: ['workflowVersion'], charge: ['orderItemId','orderEntryId'] };
 /** Sent only to devices that negotiated result templates; others keep the plain result summary. */
 const TEMPLATE_FIELDS: Partial<Record<DocType, readonly string[]>> = { encounter_entry: ['labReport'] };
-const RESULT_TEMPLATE_TYPES: readonly DocType[] = ['result_template', 'result_part', 'answer_list'];
+const RESULT_TEMPLATE_TYPES: readonly DocType[] = ['result_template', 'result_part', 'answer_list', 'standard_test', 'standard_template'];
 const selectListFor = (type: DocType, legacy = false, care = true, templates?: boolean): string[] =>
   Object.keys(SCHEMA_BY_TYPE[type].shape)
     .filter((field) => field !== 'type' && (!legacy || !LEGACY_OMISSIONS[type]?.includes(field)) && (care || !CARE_FIELDS[type]?.includes(field)) && (templates === true || !TEMPLATE_FIELDS[type]?.includes(field)))

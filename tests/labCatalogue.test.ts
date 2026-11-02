@@ -73,11 +73,11 @@ describe('server-owned laboratory catalogue', () => {
     assert.ok(!(await definitions()).some((d) => d.name === 'HbA1c'));
   });
 
-  it('refuses a lab test created or recoded on a device, while ordinary edits still sync', async () => {
+  it('refuses a forged standard test or a recode from a device, while ordinary edits still sync', async () => {
     const put = (id: string, data: Record<string, unknown>): UploadMutation => ({ clientId: clientId(), op: 'put', table: 'service_definition', id, data: { ...envelopeFor(facility), ...data, id, type: 'service_definition' } });
     const forged = await upload(app, facility.device.credential, { ...versions, transactionId: clientId(), mutations: [put('service_definition:forged', { name: 'Forged standard test', category: 'laboratory', concept: { system: 'http://loinc.org', code: '718-7', label: 'Forged' }, orderable: true, active: true, revision: 1, investigation: { specimen: 'Blood', department: 'Haematology', aliases: [] } })] });
     assert.equal(forged.applied, 0);
-    assert.match(forged.rejected[0].reason, /investigation catalogue while connected/);
+    assert.match(forged.rejected[0].reason, /not on the standard list/);
     const existing = (await definitions()).find((d) => d.name === 'Widal test') as ServiceDefinition;
     const patch = (data: Record<string, unknown>): UploadMutation => ({ clientId: clientId(), op: 'patch', table: 'service_definition', id: existing.id, expectedRevision: existing.revision, data: { ...data, revision: existing.revision + 1, updatedBy: facility.admin.id, updatedOn: new Date().toISOString() } });
     const recoded = await upload(app, facility.device.credential, { ...versions, transactionId: clientId(), mutations: [patch({ concept: { ...existing.concept, code: 'other' } })] });
