@@ -758,7 +758,7 @@ streams:
           AND auth.parameter('clinical_workflow') = 1
           AND (auth.parameter('document_workflow') = 1 OR (ifnull(entity_type, '') <> 'library_document' AND ifnull(entity_type, '') <> 'visit_document'))
           AND (auth.parameter('inpatient_workflow') = 1 OR (ifnull(entity_type, '') <> 'inpatient_event' AND ifnull(entity_type, '') <> 'bed_ready_event'))
-          AND (auth.parameter('result_template_workflow') = 1 OR (ifnull(entity_type, '') <> 'result_template' AND ifnull(entity_type, '') <> 'result_part' AND ifnull(entity_type, '') <> 'answer_list'))
+          AND (auth.parameter('result_template_workflow') = 1 OR (ifnull(entity_type, '') <> 'result_template' AND ifnull(entity_type, '') <> 'result_part' AND ifnull(entity_type, '') <> 'answer_list' AND ifnull(entity_type, '') <> 'standard_test' AND ifnull(entity_type, '') <> 'standard_template'))
       - |
         SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", actor_staff_id AS "actorStaffId", action, entity_type AS "entityType", entity_id AS "entityId", result, occurred_on AS "occurredOn", received_on AS "receivedOn", metadata
         FROM audit_events
@@ -767,8 +767,8 @@ streams:
           AND auth.parameter('clinical_workflow') = 1
           AND (auth.parameter('document_workflow') = 1 OR (ifnull(entity_type, '') <> 'library_document' AND ifnull(entity_type, '') <> 'visit_document'))
           AND (auth.parameter('inpatient_workflow') = 1 OR (ifnull(entity_type, '') <> 'inpatient_event' AND ifnull(entity_type, '') <> 'bed_ready_event'))
-          AND (auth.parameter('result_template_workflow') = 1 OR (ifnull(entity_type, '') <> 'result_template' AND ifnull(entity_type, '') <> 'result_part' AND ifnull(entity_type, '') <> 'answer_list'))
-          AND ifnull(entity_type, '') <> 'location' AND ifnull(entity_type, '') <> 'service_definition' AND ifnull(entity_type, '') <> 'service_offering' AND ifnull(entity_type, '') <> 'practitioner_profile' AND ifnull(entity_type, '') <> 'credential' AND ifnull(entity_type, '') <> 'capability_decision' AND ifnull(entity_type, '') <> 'reviewer_delegation' AND ifnull(entity_type, '') <> 'clinical_authority_bootstrap' AND ifnull(entity_type, '') <> 'authority_snapshot' AND ifnull(entity_type, '') <> 'external_clinical_reviewer' AND ifnull(entity_type, '') <> 'staff_assignment' AND ifnull(entity_type, '') <> 'service_session' AND ifnull(entity_type, '') <> 'session_event' AND ifnull(entity_type, '') <> 'work_ownership_event' AND ifnull(entity_type, '') <> 'appointment_reservation'
+          AND (auth.parameter('result_template_workflow') = 1 OR (ifnull(entity_type, '') <> 'result_template' AND ifnull(entity_type, '') <> 'result_part' AND ifnull(entity_type, '') <> 'answer_list' AND ifnull(entity_type, '') <> 'standard_test' AND ifnull(entity_type, '') <> 'standard_template'))
+          AND ifnull(entity_type, '') <> 'location' AND ifnull(entity_type, '') <> 'service_definition' AND ifnull(entity_type, '') <> 'service_offering' AND ifnull(entity_type, '') <> 'practitioner_profile' AND ifnull(entity_type, '') <> 'credential' AND ifnull(entity_type, '') <> 'capability_decision' AND ifnull(entity_type, '') <> 'reviewer_delegation' AND ifnull(entity_type, '') <> 'clinical_authority_bootstrap' AND ifnull(entity_type, '') <> 'authority_snapshot' AND ifnull(entity_type, '') <> 'external_clinical_reviewer' AND ifnull(entity_type, '') <> 'staff_assignment' AND ifnull(entity_type, '') <> 'service_session' AND ifnull(entity_type, '') <> 'session_event' AND ifnull(entity_type, '') <> 'work_ownership_event' AND ifnull(entity_type, '') <> 'appointment_reservation' AND ifnull(entity_type, '') <> 'result_template' AND ifnull(entity_type, '') <> 'result_part' AND ifnull(entity_type, '') <> 'answer_list' AND ifnull(entity_type, '') <> 'standard_test' AND ifnull(entity_type, '') <> 'standard_template'
       - |
         SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", actor_staff_id AS "actorStaffId", action, entity_type AS "entityType", entity_id AS "entityId", result, occurred_on AS "occurredOn", received_on AS "receivedOn", metadata
         FROM audit_events
@@ -777,7 +777,7 @@ streams:
           AND (auth.parameter('clinical_workflow') IS NULL OR auth.parameter('clinical_workflow') <> 1)
           AND (auth.parameter('document_workflow') = 1 OR (ifnull(entity_type, '') <> 'library_document' AND ifnull(entity_type, '') <> 'visit_document'))
           AND (auth.parameter('inpatient_workflow') = 1 OR (ifnull(entity_type, '') <> 'inpatient_event' AND ifnull(entity_type, '') <> 'bed_ready_event'))
-          AND (auth.parameter('result_template_workflow') = 1 OR (ifnull(entity_type, '') <> 'result_template' AND ifnull(entity_type, '') <> 'result_part' AND ifnull(entity_type, '') <> 'answer_list'))
+          AND (auth.parameter('result_template_workflow') = 1 OR (ifnull(entity_type, '') <> 'result_template' AND ifnull(entity_type, '') <> 'result_part' AND ifnull(entity_type, '') <> 'answer_list' AND ifnull(entity_type, '') <> 'standard_test' AND ifnull(entity_type, '') <> 'standard_template'))
       - |
         SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", actor_staff_id AS "actorStaffId", action, entity_type AS "entityType", entity_id AS "entityId", result, occurred_on AS "occurredOn", received_on AS "receivedOn", metadata
         FROM audit_events
@@ -786,8 +786,8 @@ streams:
           AND (auth.parameter('clinical_workflow') IS NULL OR auth.parameter('clinical_workflow') <> 1)
           AND (auth.parameter('document_workflow') = 1 OR (ifnull(entity_type, '') <> 'library_document' AND ifnull(entity_type, '') <> 'visit_document'))
           AND (auth.parameter('inpatient_workflow') = 1 OR (ifnull(entity_type, '') <> 'inpatient_event' AND ifnull(entity_type, '') <> 'bed_ready_event'))
-          AND (auth.parameter('result_template_workflow') = 1 OR (ifnull(entity_type, '') <> 'result_template' AND ifnull(entity_type, '') <> 'result_part' AND ifnull(entity_type, '') <> 'answer_list'))
-          AND ifnull(entity_type, '') <> 'location' AND ifnull(entity_type, '') <> 'service_definition' AND ifnull(entity_type, '') <> 'service_offering' AND ifnull(entity_type, '') <> 'practitioner_profile' AND ifnull(entity_type, '') <> 'credential' AND ifnull(entity_type, '') <> 'capability_decision' AND ifnull(entity_type, '') <> 'reviewer_delegation' AND ifnull(entity_type, '') <> 'clinical_authority_bootstrap' AND ifnull(entity_type, '') <> 'authority_snapshot' AND ifnull(entity_type, '') <> 'external_clinical_reviewer' AND ifnull(entity_type, '') <> 'staff_assignment' AND ifnull(entity_type, '') <> 'service_session' AND ifnull(entity_type, '') <> 'session_event' AND ifnull(entity_type, '') <> 'work_ownership_event' AND ifnull(entity_type, '') <> 'appointment_reservation'
+          AND (auth.parameter('result_template_workflow') = 1 OR (ifnull(entity_type, '') <> 'result_template' AND ifnull(entity_type, '') <> 'result_part' AND ifnull(entity_type, '') <> 'answer_list' AND ifnull(entity_type, '') <> 'standard_test' AND ifnull(entity_type, '') <> 'standard_template'))
+          AND ifnull(entity_type, '') <> 'location' AND ifnull(entity_type, '') <> 'service_definition' AND ifnull(entity_type, '') <> 'service_offering' AND ifnull(entity_type, '') <> 'practitioner_profile' AND ifnull(entity_type, '') <> 'credential' AND ifnull(entity_type, '') <> 'capability_decision' AND ifnull(entity_type, '') <> 'reviewer_delegation' AND ifnull(entity_type, '') <> 'clinical_authority_bootstrap' AND ifnull(entity_type, '') <> 'authority_snapshot' AND ifnull(entity_type, '') <> 'external_clinical_reviewer' AND ifnull(entity_type, '') <> 'staff_assignment' AND ifnull(entity_type, '') <> 'service_session' AND ifnull(entity_type, '') <> 'session_event' AND ifnull(entity_type, '') <> 'work_ownership_event' AND ifnull(entity_type, '') <> 'appointment_reservation' AND ifnull(entity_type, '') <> 'result_template' AND ifnull(entity_type, '') <> 'result_part' AND ifnull(entity_type, '') <> 'answer_list' AND ifnull(entity_type, '') <> 'standard_test' AND ifnull(entity_type, '') <> 'standard_template'
   sync_rejections:
     auto_subscribe: true
     queries:
@@ -799,7 +799,7 @@ streams:
           AND auth.parameter('clinical_workflow') = 1
           AND (auth.parameter('document_workflow') = 1 OR (ifnull(entity_type, '') <> 'library_document' AND ifnull(entity_type, '') <> 'visit_document'))
           AND (auth.parameter('inpatient_workflow') = 1 OR (ifnull(entity_type, '') <> 'inpatient_event' AND ifnull(entity_type, '') <> 'bed_ready_event'))
-          AND (auth.parameter('result_template_workflow') = 1 OR (ifnull(entity_type, '') <> 'result_template' AND ifnull(entity_type, '') <> 'result_part' AND ifnull(entity_type, '') <> 'answer_list'))
+          AND (auth.parameter('result_template_workflow') = 1 OR (ifnull(entity_type, '') <> 'result_template' AND ifnull(entity_type, '') <> 'result_part' AND ifnull(entity_type, '') <> 'answer_list' AND ifnull(entity_type, '') <> 'standard_test' AND ifnull(entity_type, '') <> 'standard_template'))
           AND (visibility IS NULL OR visibility = 'facility')
       - |
         SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", entity_type AS "entityType", entity_id AS "entityId", operation, category, reason, attributed_to AS "attributedTo", occurred_on AS "occurredOn", conflicts, refused_record AS "refusedRecord", refused_changes AS "refusedChanges", resolved_on AS "resolvedOn", resolved_by AS "resolvedBy", resolution
@@ -809,7 +809,7 @@ streams:
           AND auth.parameter('clinical_workflow') = 1
           AND (auth.parameter('document_workflow') = 1 OR (ifnull(entity_type, '') <> 'library_document' AND ifnull(entity_type, '') <> 'visit_document'))
           AND (auth.parameter('inpatient_workflow') = 1 OR (ifnull(entity_type, '') <> 'inpatient_event' AND ifnull(entity_type, '') <> 'bed_ready_event'))
-          AND (auth.parameter('result_template_workflow') = 1 OR (ifnull(entity_type, '') <> 'result_template' AND ifnull(entity_type, '') <> 'result_part' AND ifnull(entity_type, '') <> 'answer_list'))
+          AND (auth.parameter('result_template_workflow') = 1 OR (ifnull(entity_type, '') <> 'result_template' AND ifnull(entity_type, '') <> 'result_part' AND ifnull(entity_type, '') <> 'answer_list' AND ifnull(entity_type, '') <> 'standard_test' AND ifnull(entity_type, '') <> 'standard_template'))
           AND (visibility IS NULL OR visibility = 'facility')
           AND category <> 'dependency'
           AND entity_type <> 'location'
@@ -827,6 +827,11 @@ streams:
           AND entity_type <> 'session_event'
           AND entity_type <> 'work_ownership_event'
           AND entity_type <> 'appointment_reservation'
+          AND entity_type <> 'result_template'
+          AND entity_type <> 'result_part'
+          AND entity_type <> 'answer_list'
+          AND entity_type <> 'standard_test'
+          AND entity_type <> 'standard_template'
       - |
         SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", entity_type AS "entityType", entity_id AS "entityId", operation, category, dependencies, visibility, visible_to_staff_ids AS "visibleToStaffIds", reason, attributed_to AS "attributedTo", occurred_on AS "occurredOn", conflicts, refused_record AS "refusedRecord", refused_changes AS "refusedChanges", resolved_on AS "resolvedOn", resolved_by AS "resolvedBy", resolution
         FROM sync_rejections
@@ -835,7 +840,7 @@ streams:
           AND (auth.parameter('clinical_workflow') IS NULL OR auth.parameter('clinical_workflow') <> 1)
           AND (auth.parameter('document_workflow') = 1 OR (ifnull(entity_type, '') <> 'library_document' AND ifnull(entity_type, '') <> 'visit_document'))
           AND (auth.parameter('inpatient_workflow') = 1 OR (ifnull(entity_type, '') <> 'inpatient_event' AND ifnull(entity_type, '') <> 'bed_ready_event'))
-          AND (auth.parameter('result_template_workflow') = 1 OR (ifnull(entity_type, '') <> 'result_template' AND ifnull(entity_type, '') <> 'result_part' AND ifnull(entity_type, '') <> 'answer_list'))
+          AND (auth.parameter('result_template_workflow') = 1 OR (ifnull(entity_type, '') <> 'result_template' AND ifnull(entity_type, '') <> 'result_part' AND ifnull(entity_type, '') <> 'answer_list' AND ifnull(entity_type, '') <> 'standard_test' AND ifnull(entity_type, '') <> 'standard_template'))
           AND (visibility IS NULL OR visibility = 'facility')
       - |
         SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", entity_type AS "entityType", entity_id AS "entityId", operation, category, reason, attributed_to AS "attributedTo", occurred_on AS "occurredOn", conflicts, refused_record AS "refusedRecord", refused_changes AS "refusedChanges", resolved_on AS "resolvedOn", resolved_by AS "resolvedBy", resolution
@@ -845,7 +850,7 @@ streams:
           AND (auth.parameter('clinical_workflow') IS NULL OR auth.parameter('clinical_workflow') <> 1)
           AND (auth.parameter('document_workflow') = 1 OR (ifnull(entity_type, '') <> 'library_document' AND ifnull(entity_type, '') <> 'visit_document'))
           AND (auth.parameter('inpatient_workflow') = 1 OR (ifnull(entity_type, '') <> 'inpatient_event' AND ifnull(entity_type, '') <> 'bed_ready_event'))
-          AND (auth.parameter('result_template_workflow') = 1 OR (ifnull(entity_type, '') <> 'result_template' AND ifnull(entity_type, '') <> 'result_part' AND ifnull(entity_type, '') <> 'answer_list'))
+          AND (auth.parameter('result_template_workflow') = 1 OR (ifnull(entity_type, '') <> 'result_template' AND ifnull(entity_type, '') <> 'result_part' AND ifnull(entity_type, '') <> 'answer_list' AND ifnull(entity_type, '') <> 'standard_test' AND ifnull(entity_type, '') <> 'standard_template'))
           AND (visibility IS NULL OR visibility = 'facility')
           AND category <> 'dependency'
           AND entity_type <> 'location'
@@ -863,6 +868,11 @@ streams:
           AND entity_type <> 'session_event'
           AND entity_type <> 'work_ownership_event'
           AND entity_type <> 'appointment_reservation'
+          AND entity_type <> 'result_template'
+          AND entity_type <> 'result_part'
+          AND entity_type <> 'answer_list'
+          AND entity_type <> 'standard_test'
+          AND entity_type <> 'standard_template'
   pin_setup_codes:
     auto_subscribe: true
     queries:
@@ -1218,21 +1228,7 @@ streams:
         SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", name, status, parts, service_definition_ids AS "serviceDefinitionIds", source, standard_key AS "standardKey", revision
         FROM result_templates
         WHERE facility_id = auth.parameter('facility_id')
-          AND (auth.parameter('facility_contract') IS NULL OR auth.parameter('facility_contract') <> 1)
-          AND auth.parameter('clinical_workflow') = 1
-          AND auth.parameter('result_template_workflow') = 1
-      - |
-        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", name, status, parts, service_definition_ids AS "serviceDefinitionIds", source, standard_key AS "standardKey", revision
-        FROM result_templates
-        WHERE facility_id = auth.parameter('facility_id')
           AND auth.parameter('facility_contract') = 1
-          AND (auth.parameter('clinical_workflow') IS NULL OR auth.parameter('clinical_workflow') <> 1)
-          AND auth.parameter('result_template_workflow') = 1
-      - |
-        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", name, status, parts, service_definition_ids AS "serviceDefinitionIds", source, standard_key AS "standardKey", revision
-        FROM result_templates
-        WHERE facility_id = auth.parameter('facility_id')
-          AND (auth.parameter('facility_contract') IS NULL OR auth.parameter('facility_contract') <> 1)
           AND (auth.parameter('clinical_workflow') IS NULL OR auth.parameter('clinical_workflow') <> 1)
           AND auth.parameter('result_template_workflow') = 1
   result_parts:
@@ -1249,21 +1245,7 @@ streams:
         SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", part, active, revision
         FROM result_parts
         WHERE facility_id = auth.parameter('facility_id')
-          AND (auth.parameter('facility_contract') IS NULL OR auth.parameter('facility_contract') <> 1)
-          AND auth.parameter('clinical_workflow') = 1
-          AND auth.parameter('result_template_workflow') = 1
-      - |
-        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", part, active, revision
-        FROM result_parts
-        WHERE facility_id = auth.parameter('facility_id')
           AND auth.parameter('facility_contract') = 1
-          AND (auth.parameter('clinical_workflow') IS NULL OR auth.parameter('clinical_workflow') <> 1)
-          AND auth.parameter('result_template_workflow') = 1
-      - |
-        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", part, active, revision
-        FROM result_parts
-        WHERE facility_id = auth.parameter('facility_id')
-          AND (auth.parameter('facility_contract') IS NULL OR auth.parameter('facility_contract') <> 1)
           AND (auth.parameter('clinical_workflow') IS NULL OR auth.parameter('clinical_workflow') <> 1)
           AND auth.parameter('result_template_workflow') = 1
   answer_lists:
@@ -1280,20 +1262,40 @@ streams:
         SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", name, answers, active, revision
         FROM answer_lists
         WHERE facility_id = auth.parameter('facility_id')
-          AND (auth.parameter('facility_contract') IS NULL OR auth.parameter('facility_contract') <> 1)
+          AND auth.parameter('facility_contract') = 1
+          AND (auth.parameter('clinical_workflow') IS NULL OR auth.parameter('clinical_workflow') <> 1)
+          AND auth.parameter('result_template_workflow') = 1
+  standard_tests:
+    auto_subscribe: true
+    queries:
+      - |
+        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", key, name, specimen, classification, aliases, concept
+        FROM standard_tests
+        WHERE facility_id = auth.parameter('facility_id')
+          AND auth.parameter('facility_contract') = 1
           AND auth.parameter('clinical_workflow') = 1
           AND auth.parameter('result_template_workflow') = 1
       - |
-        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", name, answers, active, revision
-        FROM answer_lists
+        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", key, name, specimen, classification, aliases, concept
+        FROM standard_tests
         WHERE facility_id = auth.parameter('facility_id')
           AND auth.parameter('facility_contract') = 1
           AND (auth.parameter('clinical_workflow') IS NULL OR auth.parameter('clinical_workflow') <> 1)
           AND auth.parameter('result_template_workflow') = 1
+  standard_templates:
+    auto_subscribe: true
+    queries:
       - |
-        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", name, answers, active, revision
-        FROM answer_lists
+        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", key, name, tests, parts
+        FROM standard_templates
         WHERE facility_id = auth.parameter('facility_id')
-          AND (auth.parameter('facility_contract') IS NULL OR auth.parameter('facility_contract') <> 1)
+          AND auth.parameter('facility_contract') = 1
+          AND auth.parameter('clinical_workflow') = 1
+          AND auth.parameter('result_template_workflow') = 1
+      - |
+        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", key, name, tests, parts
+        FROM standard_templates
+        WHERE facility_id = auth.parameter('facility_id')
+          AND auth.parameter('facility_contract') = 1
           AND (auth.parameter('clinical_workflow') IS NULL OR auth.parameter('clinical_workflow') <> 1)
           AND auth.parameter('result_template_workflow') = 1

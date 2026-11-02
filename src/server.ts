@@ -4,6 +4,7 @@ import { migrate } from './db/migrate.ts';
 import { loadConfig } from './lib/config.ts';
 import { createSigner } from './lib/signing.ts';
 import { startRosterSigning, type RosterSigning } from './roster/rosterSigning.ts';
+import { ensureAllStandardCatalogues } from './clinical/standardCatalogue.ts';
 
 /**
  * The whole server: one process beside PostgreSQL and the PowerSync service.
@@ -34,6 +35,9 @@ const start = async () => {
   if (applied.length > 0) {
     app.log.info({ applied: applied.map((outcome) => `${outcome.version}_${outcome.name}`) }, 'migrations applied');
   }
+  // Every facility gets the current standard tests and templates, so they can be adopted offline.
+  const seeded = await ensureAllStandardCatalogues(sql);
+  app.log.info({ facilities: seeded }, 'standard catalogue up to date');
   if (signer.isEphemeral) {
     app.log.warn(
       { fingerprint: signer.publicKeyFingerprint },

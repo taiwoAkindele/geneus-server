@@ -1,4 +1,4 @@
-import { FACILITY_DOCUMENT_POLICY, HIGH_RISK_PERMISSIONS, OFFLINE_AUTHORIZATION_POLICY, currentFacilityRevisions, facilityHeadIssues, facilityMutationIssues, facilityReferenceIssues, facilityRetirementImpact, hierarchyIssues, unitHierarchyIssues, billingOrganizationIssues, reviewerDecisionIssues, sessionBookingIssues, sessionConflictIssues, sessionRosterIssues, sessionEventIssues, sessionEventHeadIssues, staffPermissions, workOwnershipHeadIssues, workOwnershipIssues, workOwnershipReferenceIssues, type AnyDocument, type FacilityDependency, type FacilityRecords, type RejectionCategory, type UploadMutation, } from '#shared';
+import { FACILITY_DOCUMENT_POLICY, HIGH_RISK_PERMISSIONS, labTestIssues, resultTemplateIssues, OFFLINE_AUTHORIZATION_POLICY, currentFacilityRevisions, facilityHeadIssues, facilityMutationIssues, facilityReferenceIssues, facilityRetirementImpact, hierarchyIssues, unitHierarchyIssues, billingOrganizationIssues, reviewerDecisionIssues, sessionBookingIssues, sessionConflictIssues, sessionRosterIssues, sessionEventIssues, sessionEventHeadIssues, staffPermissions, workOwnershipHeadIssues, workOwnershipIssues, workOwnershipReferenceIssues, type AnyDocument, type FacilityDependency, type FacilityRecords, type RejectionCategory, type UploadMutation, } from '#shared';
 import type { DeviceIdentity } from '../devices/credentials.ts';
 import type { Tx } from '../db/client.ts';
 import { findRecord } from '../db/records.ts';
@@ -86,6 +86,19 @@ const missingDependencies = async (tx: Tx, record: AnyDocument, data: FacilityRe
       ref('staff', record.ownerStaffId);
       ref('staff', record.recipientStaffId);
       break;
+    case 'result_template':
+      for (const id of record.serviceDefinitionIds)
+        ref('service_definition', id);
+      for (const part of record.parts) {
+        ref('result_part', part.libraryPartId);
+        if (part.kind === 'choice')
+          ref('answer_list', part.answerListId);
+      }
+      break;
+    case 'result_part':
+      if (record.part.kind === 'choice')
+        ref('answer_list', record.part.answerListId);
+      break;
     case 'capability_decision':
       for (const id of record.credentialRevisionIds)
         if (['approve', 'restrict'].includes(record.decision))
@@ -165,12 +178,19 @@ export const validateWorkforceRecord = async (tx: Tx, identity: DeviceIdentity, 
     case 'service_definition':
       if (!record.active && data.offerings.some((o) => o.serviceDefinitionId === record.id && o.configuration === 'active'))
         issues.push('Retire or replace active offerings before retiring this definition');
-      // Lab tests are added only through the server's catalogue routes; a device may not create one or recode it.
-      if (record.investigation && !(current?.type === 'service_definition' && current.investigation))
-        issues.push('Add laboratory tests from the investigation catalogue while connected');
+      // A device may add a lab test offline: a standard one must match this facility's standard list exactly,
+      // an own one carries its own local code, and no other active test may already use its names. It is never recoded.
+      if (record.investigation)
+        issues.push(...labTestIssues(record, data.definitions, current ? undefined : await recordsInFacility(tx, identity.facilityId, 'standard_test')));
       if (current?.type === 'service_definition' && (record.concept.system !== current.concept.system || record.concept.code !== current.concept.code))
         issues.push('A catalogue entry keeps its original code');
       break;
+    case 'result_template': {
+      const [templates, parts, lists, standards] = await Promise.all([recordsInFacility(tx, identity.facilityId, 'result_template'), recordsInFacility(tx, identity.facilityId, 'result_part'),
+        recordsInFacility(tx, identity.facilityId, 'answer_list'), recordsInFacility(tx, identity.facilityId, 'standard_template')]);
+      issues = resultTemplateIssues(record, { templates, tests: data.definitions, library: { parts, lists }, standards });
+      break;
+    }
   }
   if ('version' in record && 'previousId' in record && ['credential', 'capability_decision', 'reviewer_delegation', 'staff_assignment', 'service_session'].includes(record.type)) {
     const history = await recordsInFacility(tx, identity.facilityId, record.type as 'credential' | 'capability_decision' | 'reviewer_delegation' | 'staff_assignment' | 'service_session');

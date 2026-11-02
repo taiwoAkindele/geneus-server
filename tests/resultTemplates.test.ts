@@ -117,7 +117,7 @@ describe('server-owned result templates', () => {
     const facts = labPatientFacts(patient, env.createdOn);
     const number = (key: string, value: number, flag?: string) => {
       const part = template.parts.find((p) => p.key === key) as NumberPart;
-      return { kind: 'number' as const, key, value, ...(rangeFor(part, facts) ? { range: rangeFor(part, facts) } : {}), ...(flag ? { flag: flag as 'low' } : {}) };
+      return { kind: 'number' as const, key, label: part.label, ...(part.unit ? { unit: part.unit } : {}), value, ...(rangeFor(part, facts) ? { range: rangeFor(part, facts) } : {}), ...(flag ? { flag: flag as 'low' } : {}) };
     };
     const report = (values: LabReport['items'][number]['values']): LabReport => ({ patient: facts, items: [{ test: item.name, orderItemId: item.id, template: { id: template.id, revision: template.revision }, values }] });
     const results = (r: LabReport) => ({ results: r.items.map((i) => ({ test: i.test, orderItemId: i.orderItemId, result: labItemSummary(i, template.parts) })) });

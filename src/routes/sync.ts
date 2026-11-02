@@ -10,6 +10,7 @@ import { FACILITY_FEATURE_SUPPORT } from '../workforce/compatibility.ts';
 import { assertWorkforceCompatibility } from '../workforce/compatibility.ts';
 import { recordClientVersion } from '../workforce/readiness.ts';
 import { z } from 'zod';
+import { ensureStandardCatalogueOnce } from '../clinical/standardCatalogue.ts';
 
 /**
  * The two calls PowerSync's connector makes, plus the key it verifies with.
@@ -48,6 +49,9 @@ export const registerSyncRoutes = (app: FastifyInstance, sql: Sql, config: Confi
       await assertWorkforceCompatibility(tx, identity.facilityId, { transactionId: null, mutations: [], ...version.data, facilityContractVersion: version.data.facilityContractVersion === 1 ? 1 : undefined }, Date.now());
       await recordClientVersion(tx, identity, version.data, Date.now());
     });
+
+    // A device that adopts standard tests and templates offline needs this facility's copy of the lists.
+    if (version.data.resultTemplateWorkflowVersion === 1) await ensureStandardCatalogueOnce(sql, identity.facilityId);
 
     const minted = mintSyncToken(signer, {
       deviceId: identity.deviceId,

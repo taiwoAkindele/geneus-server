@@ -86,7 +86,7 @@ import { recordClientVersion } from '../workforce/readiness.ts';
  */
 
 /** Written by the server; a device may never insert them. */
-const SERVER_WRITTEN: readonly DocType[] = ['facility', 'device', 'sync_rejection', 'pin_setup_code', 'incoming_transfer', 'inbound_referral', 'result_template', 'result_part', 'answer_list'];
+const SERVER_WRITTEN: readonly DocType[] = ['facility', 'device', 'sync_rejection', 'pin_setup_code', 'incoming_transfer', 'inbound_referral'];
 /** Server-written, but a device may patch the few columns that record what it did with them. */
 const DEVICE_MARKABLE: readonly DocType[] = ['sync_rejection', 'pin_setup_code', 'inbound_referral'];
 /**
