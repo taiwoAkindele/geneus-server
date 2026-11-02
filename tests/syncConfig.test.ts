@@ -52,6 +52,39 @@ describe('sync-config.yaml', () => {
     assert.ok(config.includes("AND auth.parameter('facility_contract') = 1"));
     assert.ok(config.includes("auth.parameter('facility_contract') IS NULL"));
     assert.ok(config.includes("AND auth.parameter('inpatient_workflow') = 1"));
-    assert.ok(config.includes("entity_type <> 'inpatient_event' AND entity_type <> 'bed_ready_event'"));
+    assert.ok(config.includes("ifnull(entity_type, '') <> 'inpatient_event' AND ifnull(entity_type, '') <> 'bed_ready_event'"));
+  });
+
+  // PowerSync expands each query's inner ORs into separate branches and
+  // refuses the whole config at startup when one query needs more than 100
+  // (sync-rules compiler/parser.js) — the service then restarts in a loop.
+  it('keeps every query within PowerSync\'s 100-branch OR expansion limit', () => {
+    /** Top-level OR alternatives in one filter line, e.g. `(a OR b OR (c AND d))` is 3. */
+    const disjuncts = (filter: string): number => {
+      // A parenthesis that wraps the whole filter opens at depth 0 and closes only at the last character.
+      let depth = 0, wrapped = filter.startsWith('('), count = 1;
+      for (let i = 0; i < filter.length; i++) {
+        if (filter[i] === '(') depth++;
+        else if (filter[i] === ')' && --depth === 0 && i < filter.length - 1) wrapped = false;
+      }
+      const body = wrapped ? filter.slice(1, -1) : filter;
+      depth = 0;
+      for (let i = 0; i < body.length; i++) {
+        if (body[i] === '(') depth++;
+        else if (body[i] === ')') depth--;
+        else if (depth === 0 && body.startsWith(' OR ', i)) count++;
+      }
+      return count;
+    };
+    let stream = '';
+    const queries: { stream: string; branches: number }[] = [];
+    for (const line of buildSyncConfig().split('\n')) {
+      const name = line.match(/^  ([a-z_]+):$/)?.[1];
+      if (name) stream = name;
+      else if (line === '      - |') queries.push({ stream, branches: 1 });
+      else if (/^\s+(WHERE|AND) /.test(line)) queries[queries.length - 1].branches *= disjuncts(line.trim().replace(/^(WHERE|AND) /, ''));
+    }
+    assert.ok(queries.length > 0);
+    for (const { stream, branches } of queries) assert.ok(branches <= 100, `a ${stream} query expands to ${branches} OR branches`);
   });
 });

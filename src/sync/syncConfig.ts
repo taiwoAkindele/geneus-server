@@ -46,6 +46,13 @@ export const streamNameFor = (type: DocType): string => TABLE_FOR[type];
 /** Device tokens identify a facility, not the human at a shared device. Evidence uses authenticated private reads. */
 export const syncedTypes = (): DocType[] => (Object.keys(TABLE_FOR) as DocType[]).filter((type) => !RESTRICTED_FACILITY_DOCUMENT_TYPES.some((restricted) => restricted === type));
 
+/**
+ * Null-safe "entity_type is none of these", written without OR: PowerSync
+ * expands every inner OR into separate branches and refuses a query that
+ * needs more than 100, so `entity_type IS NULL OR (...)` would cost a branch.
+ */
+const entityTypeNotIn = (types: readonly string[]): string => types.map((t) => `ifnull(entity_type, '') <> '${t}'`).join(' AND ');
+
 const queryFor = (type: DocType, legacy: boolean, care = true, templates?: boolean): string[] => {
   const lines=[`SELECT ${selectListFor(type,legacy,care,templates).join(', ')}`,`FROM ${TABLE_FOR[type]}`,`WHERE facility_id = auth.parameter('${FACILITY_CLAIM}')`];
   lines.push(legacy ? "  AND (auth.parameter('facility_contract') IS NULL OR auth.parameter('facility_contract') <> 1)" : "  AND auth.parameter('facility_contract') = 1");
@@ -55,13 +62,13 @@ const queryFor = (type: DocType, legacy: boolean, care = true, templates?: boole
   if (type === 'patient') lines.push("  AND (auth.parameter('patient_registration') = 1 OR identity_status = 'identified')");
   if (['inpatient_event', 'bed_ready_event'].includes(type)) lines.push("  AND auth.parameter('inpatient_workflow') = 1");
   if (['library_document','visit_document'].includes(type)) lines.push("  AND auth.parameter('document_workflow') = 1");
-  if(type==='audit_event'||type==='sync_rejection')lines.push("  AND (auth.parameter('document_workflow') = 1 OR entity_type IS NULL OR (entity_type <> 'library_document' AND entity_type <> 'visit_document'))");
-  if (type === 'audit_event' || type === 'sync_rejection') lines.push("  AND (auth.parameter('inpatient_workflow') = 1 OR entity_type IS NULL OR (entity_type <> 'inpatient_event' AND entity_type <> 'bed_ready_event'))");
+  if(type==='audit_event'||type==='sync_rejection')lines.push(`  AND (auth.parameter('document_workflow') = 1 OR (${entityTypeNotIn(['library_document','visit_document'])}))`);
+  if (type === 'audit_event' || type === 'sync_rejection') lines.push(`  AND (auth.parameter('inpatient_workflow') = 1 OR (${entityTypeNotIn(['inpatient_event','bed_ready_event'])}))`);
   if (type === 'staff') lines.push("  AND (auth.parameter('inpatient_workflow') = 1 OR instr(additional_permissions, '\"admission:manage\"') = 0)");
   if (RESULT_TEMPLATE_TYPES.includes(type) || templates === true) lines.push("  AND auth.parameter('result_template_workflow') = 1");
   if (templates === false) lines.push("  AND (auth.parameter('result_template_workflow') IS NULL OR auth.parameter('result_template_workflow') <> 1)");
   if (type === 'staff') lines.push("  AND (auth.parameter('result_template_workflow') = 1 OR instr(additional_permissions, '\"result_template:manage\"') = 0)");
-  if (type === 'audit_event' || type === 'sync_rejection') lines.push(`  AND (auth.parameter('result_template_workflow') = 1 OR entity_type IS NULL OR (${RESULT_TEMPLATE_TYPES.map((t) => `entity_type <> '${t}'`).join(' AND ')}))`);
+  if (type === 'audit_event' || type === 'sync_rejection') lines.push(`  AND (auth.parameter('result_template_workflow') = 1 OR (${entityTypeNotIn(RESULT_TEMPLATE_TYPES)}))`);
   if (type === 'referral' || type === 'inbound_referral') lines.push("  AND (auth.parameter('patient_registration') = 1 OR json_extract(tier1, '$.sex') IS NOT NULL)");
   if (type === 'encounter' || type === 'encounter_entry') lines.push("  AND (auth.parameter('clinical_workflow') = 1 OR workflow_version IS NULL)");
   if(type === 'inbound_referral') lines.push("  AND auth.parameter('clinical_workflow') = 1");
@@ -71,7 +78,7 @@ const queryFor = (type: DocType, legacy: boolean, care = true, templates?: boole
     lines.push("  AND (visibility IS NULL OR visibility = 'facility')");
     if(legacy) lines.push("  AND category <> 'dependency'",...FACILITY_DOCUMENT_TYPES.map((t)=>`  AND entity_type <> '${t}'`));
   }
-  if(legacy && type==='audit_event') lines.push(`  AND (entity_type IS NULL OR (${FACILITY_DOCUMENT_TYPES.map((t)=>`entity_type <> '${t}'`).join(' AND ')}))`);
+  if(legacy && type==='audit_event') lines.push(`  AND ${entityTypeNotIn(FACILITY_DOCUMENT_TYPES)}`);
   if(legacy && ['staff','encounter_entry','clinical_event'].includes(type)) {
     for(const role of ['laboratory_staff','pharmacy_staff']) lines.push(`  AND ${type==='staff'?'role':'actor_role'} <> '${role}'`);
     if(type==='staff') {
