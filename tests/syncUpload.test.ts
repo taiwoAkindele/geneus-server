@@ -427,7 +427,7 @@ describe('POST /sync/upload', () => {
         visitLink: { visits: 'matching', words: ['malaria'], codes: [] },
         fields: [{ id: 'name', type: 'text', label: 'Name', fromVisit: { fact: 'patient_name' } }, { id: 'onset', type: 'date', label: 'Date fever started' }] } };
       assert.deepEqual((await send(a.device.credential, definition)).rejected, []);
-      assert.deepEqual((await findRecord<RegisterDefinition>(db.sql, 'register_definition', 'register:malaria:v1'))?.visitLink, { visits: 'matching', words: ['malaria'], codes: [] });
+      assert.deepEqual((await findRecord<RegisterDefinition>(db.sql, 'register_definition', 'register:malaria:v1'))?.visitLink, { visits: 'matching', words: ['malaria'], codes: [], visitTypes: [] });
       const entry = (id: string, data: Record<string, unknown>): UploadMutation => ({ clientId: clientId(), op: 'put', table: 'register_entry', id, data: { ...envelopeFor(a), createdBy: nurse.id, id, type: 'register_entry', registerId: 'register:malaria', registerVersion: 1, entryDate: '2026-11-03', values: { onset: '2026-11-01' }, ...data } });
       const loose = await send(a.device.credential, entry('entry:loose', {}));
       const filled = await send(a.device.credential, entry('entry:filled', { patientId: owner, encounterId: 'encounter:malaria', values: { name: 'Someone else' } }));
