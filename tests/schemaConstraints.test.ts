@@ -1,6 +1,6 @@
 import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { Patient, RegisterDefinition, Role, type FacilityRegistrationResult } from '#shared';
+import { Patient, RegisterDefinition, Role, type Encounter, type FacilityRegistrationResult } from '#shared';
 import { CHECK_VIOLATION, FOREIGN_KEY_VIOLATION, UNIQUE_VIOLATION } from '../src/db/client.ts';
 import { findRecord, insertRecord } from '../src/db/records.ts';
 import { recordAuditEvent } from '../src/audit/auditEvents.ts';
@@ -161,6 +161,15 @@ describe('schema constraints', () => {
   });
 
   describe('value constraints', () => {
+    it('keeps what a visit is for, and refuses a visit type outside the contract', async () => {
+      const visit = (id: string, visitType: string) => ({ ...envelopeFor(a), id, type: 'encounter', patientId: `${a.facility.id}-000001-K2`, openedOn: '2026-11-04T09:00:00Z', setting: 'facility', visitType });
+      await insertRecord(db.sql, 'encounter', visit('encounter:anc', 'antenatal'));
+      assert.equal((await findRecord<Encounter>(db.sql, 'encounter', 'encounter:anc'))?.visitType, 'antenatal');
+      await assert.rejects(insertRecord(db.sql, 'encounter', visit('encounter:odd', 'surgery')));
+      const error = await refusal(db.sql`INSERT INTO encounters (id, facility_id, schema_version, created_by, created_on, device_id, patient_id, opened_on, visit_type) VALUES ('encounter:raw', ${a.facility.id}, 1, ${a.admin.id}, now(), ${a.device.deviceId}, ${`${a.facility.id}-000001-K2`}, now(), 'surgery')`);
+      assert.equal(error.code, CHECK_VIOLATION);
+    });
+
     it('refuses a shift that ends before it starts', async () => {
       const error = await refusal(
         insertRecord(db.sql, 'roster_shift', {

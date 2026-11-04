@@ -95,28 +95,28 @@ streams:
     auto_subscribe: true
     queries:
       - |
-        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", workflow_version AS "workflowVersion", patient_id AS "patientId", opened_on AS "openedOn", setting, appointment_id AS "appointmentId", collect_later_reason AS "collectLaterReason"
+        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", workflow_version AS "workflowVersion", patient_id AS "patientId", opened_on AS "openedOn", setting, appointment_id AS "appointmentId", collect_later_reason AS "collectLaterReason", visit_type AS "visitType"
         FROM encounters
         WHERE facility_id = auth.parameter('facility_id')
           AND auth.parameter('facility_contract') = 1
           AND auth.parameter('clinical_workflow') = 1
           AND (auth.parameter('clinical_workflow') = 1 OR workflow_version IS NULL)
       - |
-        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", patient_id AS "patientId", opened_on AS "openedOn", setting, appointment_id AS "appointmentId", collect_later_reason AS "collectLaterReason"
+        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", patient_id AS "patientId", opened_on AS "openedOn", setting, appointment_id AS "appointmentId", collect_later_reason AS "collectLaterReason", visit_type AS "visitType"
         FROM encounters
         WHERE facility_id = auth.parameter('facility_id')
           AND (auth.parameter('facility_contract') IS NULL OR auth.parameter('facility_contract') <> 1)
           AND auth.parameter('clinical_workflow') = 1
           AND (auth.parameter('clinical_workflow') = 1 OR workflow_version IS NULL)
       - |
-        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", patient_id AS "patientId", opened_on AS "openedOn", setting, appointment_id AS "appointmentId", collect_later_reason AS "collectLaterReason"
+        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", patient_id AS "patientId", opened_on AS "openedOn", setting, appointment_id AS "appointmentId", collect_later_reason AS "collectLaterReason", visit_type AS "visitType"
         FROM encounters
         WHERE facility_id = auth.parameter('facility_id')
           AND auth.parameter('facility_contract') = 1
           AND (auth.parameter('clinical_workflow') IS NULL OR auth.parameter('clinical_workflow') <> 1)
           AND (auth.parameter('clinical_workflow') = 1 OR workflow_version IS NULL)
       - |
-        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", patient_id AS "patientId", opened_on AS "openedOn", setting, appointment_id AS "appointmentId", collect_later_reason AS "collectLaterReason"
+        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", patient_id AS "patientId", opened_on AS "openedOn", setting, appointment_id AS "appointmentId", collect_later_reason AS "collectLaterReason", visit_type AS "visitType"
         FROM encounters
         WHERE facility_id = auth.parameter('facility_id')
           AND (auth.parameter('facility_contract') IS NULL OR auth.parameter('facility_contract') <> 1)
