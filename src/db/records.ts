@@ -59,7 +59,7 @@ const JSONB_COLUMNS: Partial<Record<DocType, readonly string[]>> = {
   facility: ['workforce_policy'],
   appointment: ['charge_ids', 'activity', 'allocation'],
   staff: ['additional_roles', 'additional_permissions'],
-  register_definition: ['fields'],
+  register_definition: ['fields', 'visit_link'],
   register_entry: ['values'],
   encounter_entry: ['values', 'actor_context', 'lab_report'],
   clinical_event: ['values', 'actor_context'],

@@ -384,25 +384,25 @@ streams:
     auto_subscribe: true
     queries:
       - |
-        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", register_id AS "registerId", version, name, category, description, status, fields
+        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", register_id AS "registerId", version, name, category, description, status, fields, visit_link AS "visitLink"
         FROM register_definitions
         WHERE facility_id = auth.parameter('facility_id')
           AND auth.parameter('facility_contract') = 1
           AND auth.parameter('clinical_workflow') = 1
       - |
-        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", register_id AS "registerId", version, name, category, description, status, fields
+        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", register_id AS "registerId", version, name, category, description, status, fields, visit_link AS "visitLink"
         FROM register_definitions
         WHERE facility_id = auth.parameter('facility_id')
           AND (auth.parameter('facility_contract') IS NULL OR auth.parameter('facility_contract') <> 1)
           AND auth.parameter('clinical_workflow') = 1
       - |
-        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", register_id AS "registerId", version, name, category, description, status, fields
+        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", register_id AS "registerId", version, name, category, description, status, fields, visit_link AS "visitLink"
         FROM register_definitions
         WHERE facility_id = auth.parameter('facility_id')
           AND auth.parameter('facility_contract') = 1
           AND (auth.parameter('clinical_workflow') IS NULL OR auth.parameter('clinical_workflow') <> 1)
       - |
-        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", register_id AS "registerId", version, name, category, description, status, fields
+        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", register_id AS "registerId", version, name, category, description, status, fields, visit_link AS "visitLink"
         FROM register_definitions
         WHERE facility_id = auth.parameter('facility_id')
           AND (auth.parameter('facility_contract') IS NULL OR auth.parameter('facility_contract') <> 1)
@@ -411,25 +411,25 @@ streams:
     auto_subscribe: true
     queries:
       - |
-        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", register_id AS "registerId", register_version AS "registerVersion", entry_date AS "entryDate", setting, patient_id AS "patientId", values
+        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", register_id AS "registerId", register_version AS "registerVersion", entry_date AS "entryDate", setting, patient_id AS "patientId", encounter_id AS "encounterId", values
         FROM register_entries
         WHERE facility_id = auth.parameter('facility_id')
           AND auth.parameter('facility_contract') = 1
           AND auth.parameter('clinical_workflow') = 1
       - |
-        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", register_id AS "registerId", register_version AS "registerVersion", entry_date AS "entryDate", setting, patient_id AS "patientId", values
+        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", register_id AS "registerId", register_version AS "registerVersion", entry_date AS "entryDate", setting, patient_id AS "patientId", encounter_id AS "encounterId", values
         FROM register_entries
         WHERE facility_id = auth.parameter('facility_id')
           AND (auth.parameter('facility_contract') IS NULL OR auth.parameter('facility_contract') <> 1)
           AND auth.parameter('clinical_workflow') = 1
       - |
-        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", register_id AS "registerId", register_version AS "registerVersion", entry_date AS "entryDate", setting, patient_id AS "patientId", values
+        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", register_id AS "registerId", register_version AS "registerVersion", entry_date AS "entryDate", setting, patient_id AS "patientId", encounter_id AS "encounterId", values
         FROM register_entries
         WHERE facility_id = auth.parameter('facility_id')
           AND auth.parameter('facility_contract') = 1
           AND (auth.parameter('clinical_workflow') IS NULL OR auth.parameter('clinical_workflow') <> 1)
       - |
-        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", register_id AS "registerId", register_version AS "registerVersion", entry_date AS "entryDate", setting, patient_id AS "patientId", values
+        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", register_id AS "registerId", register_version AS "registerVersion", entry_date AS "entryDate", setting, patient_id AS "patientId", encounter_id AS "encounterId", values
         FROM register_entries
         WHERE facility_id = auth.parameter('facility_id')
           AND (auth.parameter('facility_contract') IS NULL OR auth.parameter('facility_contract') <> 1)
