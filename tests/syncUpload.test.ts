@@ -1,8 +1,8 @@
 import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import type { FastifyInstance } from 'fastify';
-import type { FacilityRegistrationResult, Patient, Staff, SyncRejection, UploadMutation } from '#shared';
-import { findRecord } from '../src/db/records.ts';
+import type { FacilityRegistrationResult, Patient, RegisterDefinition, RegisterEntry, Staff, SyncRejection, UploadMutation } from '#shared';
+import { findRecord, insertRecord } from '../src/db/records.ts';
 import { enrollDevice, issueEnrollmentCode } from '../src/devices/enrollment.ts';
 import {
   addStaff,
@@ -417,6 +417,27 @@ describe('POST /sync/upload', () => {
 
       assert.equal(collision.rejected[0]?.category, 'conflict');
       assert.deepEqual(next.rejected, []);
+    });
+
+    it('takes a visit-linked register, and only entries completing one of its own visits', async () => {
+      const owner = patientId(a, '000070'), other = patientId(a, '000071');
+      await send(a.device.credential, patientPut(a, nurse, '000070'), patientPut(a, nurse, '000071'));
+      await insertRecord(db.sql, 'encounter', { ...envelopeFor(a), createdBy: nurse.id, id: 'encounter:malaria', type: 'encounter', patientId: owner, openedOn: new Date().toISOString(), setting: 'facility' });
+      const definition: UploadMutation = { clientId: clientId(), op: 'put', table: 'register_definition', id: 'register:malaria:v1', data: { ...envelopeFor(a), createdBy: records.id, id: 'register:malaria:v1', type: 'register_definition', registerId: 'register:malaria', version: 1, name: 'Malaria', category: 'Disease', status: 'published',
+        visitLink: { visits: 'matching', words: ['malaria'], codes: [] },
+        fields: [{ id: 'name', type: 'text', label: 'Name', fromVisit: { fact: 'patient_name' } }, { id: 'onset', type: 'date', label: 'Date fever started' }] } };
+      assert.deepEqual((await send(a.device.credential, definition)).rejected, []);
+      assert.deepEqual((await findRecord<RegisterDefinition>(db.sql, 'register_definition', 'register:malaria:v1'))?.visitLink, { visits: 'matching', words: ['malaria'], codes: [] });
+      const entry = (id: string, data: Record<string, unknown>): UploadMutation => ({ clientId: clientId(), op: 'put', table: 'register_entry', id, data: { ...envelopeFor(a), createdBy: nurse.id, id, type: 'register_entry', registerId: 'register:malaria', registerVersion: 1, entryDate: '2026-11-03', values: { onset: '2026-11-01' }, ...data } });
+      const loose = await send(a.device.credential, entry('entry:loose', {}));
+      const filled = await send(a.device.credential, entry('entry:filled', { patientId: owner, encounterId: 'encounter:malaria', values: { name: 'Someone else' } }));
+      const wrongPatient = await send(a.device.credential, entry('entry:wrong', { patientId: other, encounterId: 'encounter:malaria' }));
+      const complete = await send(a.device.credential, entry('entry:complete', { patientId: owner, encounterId: 'encounter:malaria' }));
+      assert.match(loose.rejected[0]?.reason ?? '', /fills from visits/);
+      assert.match(filled.rejected[0]?.reason ?? '', /not recorded by staff/);
+      assert.match(wrongPatient.rejected[0]?.reason ?? '', /same patient and facility/);
+      assert.deepEqual(complete.rejected, []);
+      assert.equal((await findRecord<RegisterEntry>(db.sql, 'register_entry', 'entry:complete'))?.encounterId, 'encounter:malaria');
     });
 
     it('lets the later administrative change win on staff, and audits it', async () => {

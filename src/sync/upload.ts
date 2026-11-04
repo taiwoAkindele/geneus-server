@@ -16,6 +16,7 @@ import {
   sameAppointmentTime,
   validateRegisterEntry,
   registerDefinitionIssues,
+  registerEntryLinkIssues,
   paymentPermission,
   rolesFor,
   staffPermissions,
@@ -498,7 +499,12 @@ const evaluatePut = async ({ tx, identity, uploadedAt }: Context, mutation: Uplo
     const issues = validateRegisterEntry(definition.fields, record.values);
     const known = new Set(definition.fields.filter((field) => field.type !== 'section').map((field) => field.id));
     if (Object.keys(record.values).some((field) => !known.has(field))) issues.push('The entry includes a field outside its saved register version');
+    issues.push(...registerEntryLinkIssues(definition, record));
     if (issues.length) return refuse('validation', issues.join('; '));
+    if (record.encounterId) {
+      const encounter = await findRecord<Encounter>(tx, 'encounter', record.encounterId);
+      if (!encounter || encounter.facilityId !== record.facilityId || encounter.patientId !== record.patientId) return refuse('validation', 'A register entry must name a visit belonging to the same patient and facility');
+    }
   }
 
   if (record.type === 'handoff' && record.encounterId) {
