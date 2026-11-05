@@ -1,6 +1,7 @@
 import { careWorkflowIssues, chargeOrderIssues, routeReferral } from '../clinical/careWorkflow.ts';
 import { labReportUploadIssues } from '../clinical/labReports.ts';
 import { inpatientUploadIssues, inpatientLocationIssues } from '../clinical/inpatient.ts';
+import { wardUploadIssues, dischargeReadinessIssues } from '../clinical/wardCare.ts';
 import { clinicalDocumentIssues } from '../documents/validation.ts';
 import { isDeepStrictEqual } from 'node:util';
 import type { ZodType } from 'zod';
@@ -102,6 +103,7 @@ const APPEND_ONLY: readonly DocType[] = [
   'encounter_entry',
   'clinical_event',
   'inpatient_event', 'bed_ready_event',
+  'ward_care_event',
   'library_document','visit_document',
   'charge',
   'payment',
@@ -134,6 +136,7 @@ const PUT_PERMISSION: Partial<Record<DocType, Permission>> = {
   visit: 'visit:create',
   encounter: 'encounter:record',
   encounter_entry: 'encounter:record',
+  ward_care_event: 'encounter:record',
   clinical_event: 'encounter:record',
   inpatient_event: 'admission:manage', bed_ready_event: 'admission:manage',
   library_document:'encounter:record',visit_document:'encounter:record',
@@ -381,7 +384,16 @@ const evaluatePut = async ({ tx, identity, uploadedAt }: Context, mutation: Uplo
     if (issues.length) return refuse('validation', issues.join(' '));
   }
   const staff = await findStaffInFacility(tx, identity.facilityId, record.createdBy);
-  const historical = (record.type === 'encounter_entry' || record.type === 'clinical_event') && await historicalReviewValid(tx, record, identity.deviceId, uploadedAt);
+  if (staff === undefined) return refuse('identity', describeDenial({ kind: 'not_member', staffId: record.createdBy }));
+  const historical = (record.type === 'encounter_entry' || record.type === 'clinical_event' || record.type === 'ward_care_event') && await historicalReviewValid(tx, record, identity.deviceId, uploadedAt);
+  if (record.type === 'encounter' || record.type === 'encounter_entry' || record.type === 'ward_care_event') {
+    const issues = await wardUploadIssues(tx, record, historical, staffPermissions(staff));
+    if (issues.length) return refuse('conflict', issues.join('; '));
+  }
+  if (record.type === 'inpatient_event') {
+    const issues = await dischargeReadinessIssues(tx, record);
+    if (issues.length) return refuse('validation', issues.join('; '));
+  }
   const permission = record.type === 'payment' ? paymentPermission(record) : PUT_PERMISSION[table];
   if (!staff) return refuse('identity', describeDenial({ kind: 'not_member', staffId: record.createdBy }));
   if (!staff.active && !historical) return refuse('authorization', describeDenial({ kind: 'deactivated', staffId: record.createdBy }));
@@ -535,7 +547,7 @@ const evaluatePut = async ({ tx, identity, uploadedAt }: Context, mutation: Uplo
     }
   }
 
-  if (record.type === 'encounter_entry' || record.type === 'clinical_event') {
+  if (record.type === 'encounter_entry' || record.type === 'clinical_event' || record.type === 'ward_care_event') {
     const denial = await clinicalAuthorityRefusal(tx, identity, record, uploadedAt);
     if (denial) return denial;
   }
@@ -553,7 +565,7 @@ const evaluatePut = async ({ tx, identity, uploadedAt }: Context, mutation: Uplo
   const failure = await attempt(tx, (sp) => insertRecord(sp, table, toWrite));
   if (!failure && record.type === 'referral') await routeReferral(tx, record);
   if (!failure && record.type === 'appointment') await recordReservation(tx, record, uploadedAt);
-  if (!failure && historical && (record.type === 'encounter_entry' || record.type === 'clinical_event')) await completeHistoricalReview(tx, record, identity.deviceId, uploadedAt);
+  if (!failure && historical && (record.type === 'encounter_entry' || record.type === 'clinical_event' || record.type === 'ward_care_event')) await completeHistoricalReview(tx, record, identity.deviceId, uploadedAt);
   if (!failure && table === 'staff') await recordAuditEvent(tx, {
     facilityId: identity.facilityId, deviceId: identity.deviceId, actorStaffId: record.createdBy,
     action: 'create', entityType: 'staff', entityId: record.id,

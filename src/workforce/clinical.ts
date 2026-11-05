@@ -1,5 +1,5 @@
 import { createPublicKey, verify, type JsonWebKey } from 'node:crypto';
-import { AuthoritySnapshot, assessDelayedClinicalTime, authoritySignaturePayload, clinicalActivityIssues, clinicalEventActions, encounterClinicalActions, workforceEnforcementActive, OFFLINE_AUTHORIZATION_POLICY, scopeAllows, intervalContains, ClinicalAction, parseDocument, projectClinicalAuthority, type AuditEvent, type ClinicalEvent, type EncounterEntry, type Facility, type Staff, type SyncRejection, } from '#shared';
+import { clinicalPerformedOn, clinicalRecordActions, type ClinicalRecord, AuthoritySnapshot, assessDelayedClinicalTime, authoritySignaturePayload, clinicalActivityIssues, workforceEnforcementActive, OFFLINE_AUTHORIZATION_POLICY, scopeAllows, intervalContains, ClinicalAction, parseDocument, projectClinicalAuthority, type AuditEvent, type EncounterEntry, type Facility, type Staff, type SyncRejection, } from '#shared';
 import type { Tx } from '../db/client.ts';
 import type { DeviceIdentity } from '../devices/credentials.ts';
 import { findRecord } from '../db/records.ts';
@@ -15,15 +15,14 @@ const verifiedAuthority = async (tx: Tx, id: string): Promise<AuthoritySnapshot 
   const [key] = await tx`SELECT public_jwk FROM workforce_signing_keys WHERE id=${proof.keyId} AND trusted`;
   return key && verify(null, Buffer.from(authoritySignaturePayload(proof)), createPublicKey({ key: key.public_jwk as JsonWebKey, format: 'jwk' }), Buffer.from(proof.signature, 'base64')) ? proof : undefined;
 };
-const actionsFor = async (tx: Tx, record: EncounterEntry | ClinicalEvent) => record.type === 'clinical_event' ? clinicalEventActions(record)
-  : encounterClinicalActions(record, record.amends ? await findRecord<EncounterEntry>(tx, 'encounter_entry', record.amends) : undefined);
-const reviewCovers = async (tx: Tx, reviewer: Staff, record: EncounterEntry | ClinicalEvent, deviceId: string, now: number): Promise<boolean> => {
+const actionsFor = async (tx: Tx, record: ClinicalRecord) => clinicalRecordActions(record, record.type === 'encounter_entry' && record.amends ? await findRecord<EncounterEntry>(tx, 'encounter_entry', record.amends) : undefined);
+const reviewCovers = async (tx: Tx, reviewer: Staff, record: ClinicalRecord, deviceId: string, now: number): Promise<boolean> => {
   if (!reviewer.active || reviewer.permission !== 'read_write' || reviewer.staffId === record.createdBy || reviewer.facilityId !== record.facilityId || !record.actorContext)
     return false;
   const proof = await deriveAuthority(tx, reviewer, deviceId, now);
   return (await actionsFor(tx, record)).every((action) => proof.snapshot.reviewScopes.some((g) => intervalContains(g, now) && scopeAllows(g.scope, action, record.actorContext!.offeringId)));
 };
-export const historicalReviewValid = async (tx: Tx, record: EncounterEntry | ClinicalEvent, deviceId: string, now: number): Promise<boolean> => {
+export const historicalReviewValid = async (tx: Tx, record: ClinicalRecord, deviceId: string, now: number): Promise<boolean> => {
   const reviews = await tx`SELECT * FROM workforce_historical_reviews WHERE facility_id=${record.facilityId} AND payload_hash=${workforcePayloadHash(record)} AND expires_on>${new Date(now).toISOString()}`;
   for (const review of reviews) {
     const reviewer = await findRecord<Staff>(tx, 'staff', review.reviewed_by as string);
@@ -33,19 +32,19 @@ export const historicalReviewValid = async (tx: Tx, record: EncounterEntry | Cli
   return false;
 };
 export const approveHistoricalReview = async (tx: Tx, identity: DeviceIdentity, reviewer: Staff, rejection: SyncRejection, reason: string, now: number): Promise<string> => {
-  if (rejection.facilityId !== identity.facilityId || rejection.operation !== 'put' || !rejection.refusedRecord || !['encounter_entry', 'clinical_event'].includes(rejection.entityType))
+  if (rejection.facilityId !== identity.facilityId || rejection.operation !== 'put' || !rejection.refusedRecord || !['encounter_entry', 'clinical_event', 'ward_care_event'].includes(rejection.entityType))
     throw new Error('Select an original refused clinical entry in this facility');
   return approveHistoricalSource(tx,identity,reviewer,rejection.refusedRecord,reason,now,rejection.id);
 };
 export const approveHistoricalSource = async(tx:Tx,identity:DeviceIdentity,reviewer:Staff,input:unknown,reason:string,now:number,rejectionId?:string):Promise<string>=>{
   const parsed = parseDocument(input);
-  if (!parsed.success || !['encounter_entry', 'clinical_event'].includes(parsed.data.type))
+  if (!parsed.success || !['encounter_entry', 'clinical_event', 'ward_care_event'].includes(parsed.data.type))
     throw new Error('Original reported care is not a valid source record');
-  const record = parsed.data as EncounterEntry | ClinicalEvent;
+  const record = parsed.data as ClinicalRecord;
   if (!await reviewCovers(tx, reviewer, record, identity.deviceId, now))
     throw new Error('Independent accepted reviewer scope is required for every reported action');
   const originalProof = record.actorContext && await verifiedAuthority(tx, record.actorContext.authoritySnapshotId);
-  const at = Date.parse(record.createdOn);
+  const at = Date.parse(clinicalPerformedOn(record));
   if (!originalProof || originalProof.staffId !== record.createdBy || originalProof.facilityId !== identity.facilityId || at < Date.parse(originalProof.issuedOn) || at > now + 300000
     || !(await actionsFor(tx, record)).every((action) => originalProof.grants.some((g) => intervalContains(g, at) && scopeAllows(g.scope, action, record.actorContext!.offeringId))))
     throw new Error('Historical review cannot invent a missing accepted clinical grant or backdate proof');
@@ -61,7 +60,7 @@ export const approveHistoricalSource = async(tx:Tx,identity:DeviceIdentity,revie
   await recordAuditEvent(tx, { facilityId: identity.facilityId, deviceId: identity.deviceId, actorStaffId: reviewer.staffId, action: 'update', entityType: rejectionId?'sync_rejection':record.type, entityId: rejectionId||record.id, metadata: { historicalReviewId: id, disposition: 'authorized_exact_resubmission' } });
   return id;
 };
-export const completeHistoricalReview = async (tx: Tx, record: EncounterEntry | ClinicalEvent, deviceId: string, now: number): Promise<void> => {
+export const completeHistoricalReview = async (tx: Tx, record: ClinicalRecord, deviceId: string, now: number): Promise<void> => {
   const [review] = await tx`SELECT * FROM workforce_historical_reviews WHERE facility_id=${record.facilityId} AND payload_hash=${workforcePayloadHash(record)}
     AND expires_on>${new Date(now).toISOString()} ORDER BY reviewed_on DESC LIMIT 1`;
   if (!review)
@@ -99,7 +98,7 @@ export const clinicalAttestationRefusal = async (tx: Tx, identity: DeviceIdentit
   return !Number.isFinite(performed) || performed > now + 300000 || now - performed > OFFLINE_AUTHORIZATION_POLICY.generalMs ? { category: 'authorization', reason: 'Witness time is outside trusted offline bounds' } : undefined;
 };
 /** Historical proofs are loaded from our immutable rows; no proof/verified flag from the upload is trusted. */
-export const clinicalAuthorityRefusal = async (tx: Tx, identity: DeviceIdentity, record: EncounterEntry | ClinicalEvent, now: number): Promise<WorkforceRefusal | undefined> => {
+export const clinicalAuthorityRefusal = async (tx: Tx, identity: DeviceIdentity, record: ClinicalRecord, now: number): Promise<WorkforceRefusal | undefined> => {
   const facility = await findRecord<Facility>(tx, 'facility', identity.facilityId);
   if (!workforceEnforcementActive(facility?.workforcePolicy, now))
     return undefined;
@@ -110,16 +109,16 @@ export const clinicalAuthorityRefusal = async (tx: Tx, identity: DeviceIdentity,
   const accepted = await verifiedAuthority(tx, actorContext.authoritySnapshotId);
   if (!staff || staff.facilityId !== identity.facilityId || !accepted || accepted.staffId !== staff.staffId || accepted.facilityId !== identity.facilityId)
     return { category: 'authorization', reason: 'Clinical authority must belong to the attributed worker and facility' };
-  const performed = Date.parse(record.createdOn);
+  const performed = Date.parse(clinicalPerformedOn(record));
   const reviewed = await historicalReviewValid(tx, record, identity.deviceId, now);
   const time = assessDelayedClinicalTime({
-    performedOn: record.createdOn, receivedOn: new Date(now).toISOString(), lastTrustedServerOn: accepted.issuedOn,
+    performedOn: clinicalPerformedOn(record), receivedOn: new Date(now).toISOString(), lastTrustedServerOn: accepted.issuedOn,
     maximumClockSkewMs: 300000, maximumOfflineMs: OFFLINE_AUTHORIZATION_POLICY.generalMs, authorityExpiresOn: accepted.expiresOn
   });
   if (time === 'invalid_time' || time !== 'current' && !reviewed)
     return { category: 'authorization', reason: time === 'invalid_time' ? 'Clinical time is outside trusted bounds; retain this reported care for review' : 'Delayed clinical authority requires independent historical review; reported care is retained in reconciliation' };
   const original = record.type === 'encounter_entry' && record.amends ? await findRecord<EncounterEntry>(tx, 'encounter_entry', record.amends) : undefined;
-  const actions = record.type === 'encounter_entry' ? encounterClinicalActions(record, original) : clinicalEventActions(record);
+  const actions = clinicalRecordActions(record, original);
   const witnesses = await tx`SELECT * FROM audit_events WHERE facility_id=${identity.facilityId}
     AND metadata->>'kind'='workforce_attestation' AND metadata->>'recordId'=${record.id} AND metadata->>'payloadHash'=${workforcePayloadHash(record)}`;
   const source = serverContext(staff, identity.deviceId, performed);

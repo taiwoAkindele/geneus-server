@@ -33,7 +33,11 @@ describe('sync-config.yaml', () => {
         `${table} is not filtered to the token's facility`,
       );
     }
-    assert.equal((config.match(/auto_subscribe: true/g) ?? []).length, syncedTypes().length);
+    assert.equal((config.match(/auto_subscribe: true/g) ?? []).length, syncedTypes().length + 3);
+    assert.ok(config.includes('  sync_rejections_legacy:'));
+    for (const type of ['audit_events','sync_rejections']) {
+      assert.ok(config.includes(`  ${type}_ward_care:`));
+    }
   });
 
   it('selects every contract field of every type, and never a column the contract does not know', () => {
@@ -85,6 +89,8 @@ describe('sync-config.yaml', () => {
       else if (/^\s+(WHERE|AND) /.test(line)) queries[queries.length - 1].branches *= disjuncts(line.trim().replace(/^(WHERE|AND) /, ''));
     }
     assert.ok(queries.length > 0);
-    for (const { stream, branches } of queries) assert.ok(branches <= 100, `a ${stream} query expands to ${branches} OR branches`);
+    const totals = new Map<string, number>();
+    for (const { stream, branches } of queries) totals.set(stream, (totals.get(stream) ?? 0) + branches);
+    for (const [stream, branches] of totals) assert.ok(branches <= 100, `the ${stream} stream expands to ${branches} OR branches across all its queries`);
   });
 });

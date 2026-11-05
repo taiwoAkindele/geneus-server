@@ -58,7 +58,7 @@ export const registerWorkforceRoutes = (app: FastifyInstance, sql: Sql, mailer: 
     if (!staff)
       return reply.code(403).send({ error: 'private_verification_required', message: 'Verify the reviewing staff contact first' } satisfies ApiErrorBody);
     const parsed = parseDocument(request.body);
-    if (!parsed.success || !['encounter_entry', 'clinical_event'].includes(parsed.data.type) || parsed.data.facilityId !== identity.facilityId)
+    if (!parsed.success || !['encounter_entry', 'clinical_event', 'ward_care_event'].includes(parsed.data.type) || parsed.data.facilityId !== identity.facilityId)
       return reply.code(400).send({ error: 'invalid_request', message: 'Provide a valid clinical entry in this facility' } satisfies ApiErrorBody);
     return { recordId: parsed.data.id, payloadHash: workforcePayloadHash(parsed.data) };
   });

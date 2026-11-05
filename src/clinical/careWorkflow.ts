@@ -8,7 +8,7 @@ export const careWorkflowIssues = async (tx: Tx, entry: EncounterEntry): Promise
   if (encounter?.workflowVersion === 1 && entry.workflowVersion !== 1) return ['This consultation requires the current clinical workflow'];
   const rows = await tx`SELECT * FROM encounter_entries WHERE facility_id=${entry.facilityId} AND encounter_id=${entry.encounterId} ORDER BY created_on,id`;
   const prior = effectiveEncounterEntries(rows.map((row) => fromRow<EncounterEntry>('encounter_entry', row)));
-  const issues = careEntryIssues(entry, prior);
+  const issues = careEntryIssues(entry, prior, Boolean(encounter?.inpatientContext));
   if (issues.length) return issues;
   if (entry.step === 'lab_results' && entry.labReport) {
     const reportIssues = await labReportUploadIssues(tx, entry, entry.labReport, ENCOUNTER_STEP_VALUES.lab_results.parse(entry.values).results);

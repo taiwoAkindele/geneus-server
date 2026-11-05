@@ -10,6 +10,17 @@
 
 **Version:** 2.0 · **Owner:** Solo founder-builder · **Supersedes:** 1.1 (CouchDB)
 
+### Continuing inpatient care (5 November 2026)
+
+Migration 0028 links internal encounter sessions to the original admission and
+adds immutable `ward_care_events` for completion, order decisions, administrations
+and discharge summaries. Upload rechecks patient/stay membership, clinical scope,
+exact predecessors, closure and discharge readiness under the existing locks.
+`wardCareVersion: 1` negotiates `ward_care: 1`; older clients do not receive ward
+sessions or new event/audit/rejection types. Generated streams split ward evidence
+and legacy rejection queries to respect PowerSync's aggregate bucket limit. See
+[implementation, verification and release order](../docs/INPATIENT-CARE-IMPLEMENTATION-2026-11-05.md).
+
 ### Admissions and wards foundation (31 October 2026)
 
 Migration 0021 adds immutable inpatient and bed-readiness events. The existing locked upload path enforces admission/request/visit links, exact predecessors, one active admission across linked patient IDs, bed availability and post-departure/transfer cleaning. Operational location changes cannot invalidate reserved, occupied or unclean beds. Policy 11 adds explicit admission management while retaining existing signed clinical authority. New streams are gated by a negotiated inpatient-workflow claim; old clients continue using their existing projections. See [implementation and release order](../docs/INPATIENT-FOUNDATION.md).
