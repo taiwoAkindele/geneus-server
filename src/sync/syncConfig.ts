@@ -3,7 +3,7 @@ import { snakeCase, TABLE_FOR } from '../db/records.ts';
 
 /**
  * The PowerSync Sync Streams definition, generated from the contract so the
- * two can never drift: one stream per synced record type, every column the
+ * two can never drift: facility-filtered streams per synced record type, every column the
  * contract names, filtered to the facility in the device's token. This is the
  * download half of facility isolation (the upload half is src/sync/upload.ts).
  *
@@ -53,13 +53,20 @@ export const syncedTypes = (): DocType[] => (Object.keys(TABLE_FOR) as DocType[]
  */
 const entityTypeNotIn = (types: readonly string[]): string => types.map((t) => `ifnull(entity_type, '') <> '${t}'`).join(' AND ');
 
-const queryFor = (type: DocType, legacy: boolean, care = true, templates?: boolean): string[] => {
+const queryFor = (type: DocType, legacy: boolean, care = true, templates?: boolean, wardOnly = false): string[] => {
   const lines=[`SELECT ${selectListFor(type,legacy,care,templates).join(', ')}`,`FROM ${TABLE_FOR[type]}`,`WHERE facility_id = auth.parameter('${FACILITY_CLAIM}')`];
   lines.push(legacy ? "  AND (auth.parameter('facility_contract') IS NULL OR auth.parameter('facility_contract') <> 1)" : "  AND auth.parameter('facility_contract') = 1");
   lines.push(care ? "  AND auth.parameter('clinical_workflow') = 1" : "  AND (auth.parameter('clinical_workflow') IS NULL OR auth.parameter('clinical_workflow') <> 1)");
   // Legacy screens assume complete demographics; they receive this record
   // only after identification, while upgraded clients can provide care now.
   if (type === 'patient') lines.push("  AND (auth.parameter('patient_registration') = 1 OR identity_status = 'identified')");
+  if (type === 'ward_care_event') lines.push("  AND auth.parameter('ward_care') = 1");
+  // Separate the new entity branch to stay below PowerSync's OR expansion limit.
+  if (type === 'audit_event' || type === 'sync_rejection') lines.push(...(wardOnly
+    ? ["  AND auth.parameter('ward_care') = 1", "  AND entity_type = 'ward_care_event'"]
+    : ["  AND ifnull(entity_type, '') <> 'ward_care_event'"]));
+  if (type === 'encounter') lines.push("  AND (inpatient_context IS NULL OR auth.parameter('ward_care') = 1)");
+  if (type === 'encounter_entry') lines.push("  AND (admission_id IS NULL OR auth.parameter('ward_care') = 1)");
   if (['inpatient_event', 'bed_ready_event'].includes(type)) lines.push("  AND auth.parameter('inpatient_workflow') = 1");
   if (['library_document','visit_document'].includes(type)) lines.push("  AND auth.parameter('document_workflow') = 1");
   if(type==='audit_event'||type==='sync_rejection')lines.push(`  AND (auth.parameter('document_workflow') = 1 OR (${entityTypeNotIn(['library_document','visit_document'])}))`);
@@ -92,7 +99,7 @@ const queryFor = (type: DocType, legacy: boolean, care = true, templates?: boole
 export const buildSyncConfig = (): string => {
   const lines: string[] = [
     '# GENERATED from the shared contract by `npm run sync:config` — do not edit by hand.',
-    '# One stream per synced record type, every contract column aliased to its',
+    '# Facility-filtered streams, every contract column aliased to its',
     '# contract name, filtered to the facility in the device\'s sync token. See',
     '# src/sync/syncConfig.ts for why it is generated and SCHEMA.md §6 for the rule.',
     'config:',
@@ -109,10 +116,20 @@ export const buildSyncConfig = (): string => {
     } else {
       lines.push('    queries:');
       for (const care of [true,false]) for (const legacy of [false,true]) {
+        if (type === 'sync_rejection' && legacy) continue;
         // Only the current clinical workflow can negotiate result templates.
         const split = Boolean(TEMPLATE_FIELDS[type]) && care && !legacy;
         for (const templates of split ? [true, false] : [undefined]) lines.push('      - |', ...queryFor(type,legacy,care,templates).map((line)=>`        ${line}`));
       }
+    }
+    if (type === 'sync_rejection') {
+      lines.push(`  ${streamNameFor(type)}_legacy:`, '    auto_subscribe: true', '    queries:');
+      for (const care of [true, false]) lines.push('      - |', ...queryFor(type,true,care).map((line)=>`        ${line}`));
+    }
+    // PowerSync limits total buckets per stream, including all its queries.
+    // Ward-capable clients always negotiate the current facility/care contracts.
+    if (type === 'audit_event' || type === 'sync_rejection') {
+      lines.push(`  ${streamNameFor(type)}_ward_care:`, '    auto_subscribe: true', '    queries:', '      - |', ...queryFor(type,false,true,undefined,true).map((line)=>`        ${line}`));
     }
   }
 

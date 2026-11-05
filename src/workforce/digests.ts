@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 /** Bind reviews/acknowledgements to the entire normalized record, including its original author. */
-const instantFields = new Set(['createdOn', 'updatedOn', 'issuedOn', 'expiresOn', 'startsAt', 'endsAt', 'checkedOn', 'occurredOn', 'effectiveOn']);
+const instantFields = new Set(['createdOn', 'updatedOn', 'issuedOn', 'expiresOn', 'startsAt', 'endsAt', 'checkedOn', 'occurredOn', 'performedOn', 'effectiveOn']);
 const canonical = (value: unknown, root = true): unknown => {
   if (Array.isArray(value))
     return value.map((v) => canonical(v, false));
