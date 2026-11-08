@@ -30,7 +30,7 @@ export const orderWorkforceMutations = (mutations: readonly UploadMutation[]): U
     : Array.isArray(value) ? value.flatMap(references) : value && typeof value === 'object' ? Object.values(value).flatMap(references) : [];
   while (pending.length) {
     const ownBusinessField = (m: UploadMutation) => m.table === 'unit' ? 'unitId' : m.table === 'staff_assignment' ? 'assignmentId' : m.table === 'service_session' ? 'sessionId' : '';
-    const index = pending.findIndex((m) => !references(Object.fromEntries(Object.entries(m.data).filter(([key]) => !['id', ...(m.table === 'ward_care_event' ? [] : ['values']), 'refusedRecord', 'refusedChanges', 'metadata', ownBusinessField(m), ...(isWitness(m) ? ['entityId'] : [])].includes(key))))
+    const index = pending.findIndex((m) => !references(Object.fromEntries(Object.entries(m.data).filter(([key]) => !['id', ...(m.table === 'ward_care_event' || (m.table === 'encounter_entry' && m.data.pharmacyVersion === 1) ? [] : ['values']), 'refusedRecord', 'refusedChanges', 'metadata', ownBusinessField(m), ...(isWitness(m) ? ['entityId'] : [])].includes(key))))
       .some((id) => pending.some((p) => p !== m && (p.id === id || Boolean(ownBusinessField(p)) && p.data[ownBusinessField(p)] === id))));
     if (index < 0) {
       result.push(...pending);

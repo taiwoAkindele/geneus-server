@@ -468,3 +468,16 @@ Final facility-workspace validation: 306 web tests, 414 server/shared tests incl
 ## Clinical Documents (31 October 2026)
 
 Migration 0022 adds immutable PostgreSQL document bytes and append-only library/visit metadata. Bounded authenticated binary routes handle bytes; clinical metadata remains authorized through the existing sync upload, ledger, facility lock, audit and reconciliation path. Only metadata is published to PowerSync, gated by document workflow 1. Server rechecks staff access, file integrity, exact versions and active inpatient references. No new process, dependency or document-specific permission. Deploy server/migration, streams, then PWA. See [Clinical Documents](../docs/CLINICAL-DOCUMENTS.md) for cache, transport, backup and release limits.
+
+
+## Pharmacy atomic supplies (8 November 2026)
+
+Migration 0029 adds optional pharmacy/source metadata and per-line predecessor,
+price-once and companion uniqueness constraints. The upload savepoint validates
+the signed prescription or discharge summary and derives all stock movements,
+quantity-based charges and return reductions before commit. Exact client companion
+reuploads acknowledge existing accepted rows; forged or orphan companions fail.
+Existing clinical dispensing authority covers only these derived effects, without
+granting manual billing or stock permissions. Pharmacy workflow 1 negotiation and
+a dedicated stream isolate partial supplies from older clients. See
+[design, operational limits and rollout](../docs/PHARMACY-STOCK-BILLING-2026-11-08.md).

@@ -130,56 +130,74 @@ streams:
     auto_subscribe: true
     queries:
       - |
-        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", workflow_version AS "workflowVersion", encounter_id AS "encounterId", admission_id AS "admissionId", performed_on AS "performedOn", late_reason AS "lateReason", patient_id AS "patientId", step, actor_role AS "actorRole", actor_context AS "actorContext", amends, values, lab_report AS "labReport"
+        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", pharmacy_version AS "pharmacyVersion", workflow_version AS "workflowVersion", encounter_id AS "encounterId", admission_id AS "admissionId", performed_on AS "performedOn", late_reason AS "lateReason", patient_id AS "patientId", step, actor_role AS "actorRole", actor_context AS "actorContext", amends, values, lab_report AS "labReport"
         FROM encounter_entries
         WHERE facility_id = auth.parameter('facility_id')
           AND auth.parameter('facility_contract') = 1
           AND auth.parameter('clinical_workflow') = 1
+          AND pharmacy_version IS NULL
           AND (admission_id IS NULL OR auth.parameter('ward_care') = 1)
           AND auth.parameter('result_template_workflow') = 1
           AND (auth.parameter('clinical_workflow') = 1 OR workflow_version IS NULL)
           AND (auth.parameter('clinical_workflow') = 1 OR (step <> 'investigation_review' AND step <> 'result_review' AND step <> 'prescription' AND step <> 'injection_order' AND step <> 'disposition'))
       - |
-        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", workflow_version AS "workflowVersion", encounter_id AS "encounterId", admission_id AS "admissionId", performed_on AS "performedOn", late_reason AS "lateReason", patient_id AS "patientId", step, actor_role AS "actorRole", actor_context AS "actorContext", amends, values
+        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", pharmacy_version AS "pharmacyVersion", workflow_version AS "workflowVersion", encounter_id AS "encounterId", admission_id AS "admissionId", performed_on AS "performedOn", late_reason AS "lateReason", patient_id AS "patientId", step, actor_role AS "actorRole", actor_context AS "actorContext", amends, values
         FROM encounter_entries
         WHERE facility_id = auth.parameter('facility_id')
           AND auth.parameter('facility_contract') = 1
           AND auth.parameter('clinical_workflow') = 1
+          AND pharmacy_version IS NULL
           AND (admission_id IS NULL OR auth.parameter('ward_care') = 1)
           AND (auth.parameter('result_template_workflow') IS NULL OR auth.parameter('result_template_workflow') <> 1)
           AND (auth.parameter('clinical_workflow') = 1 OR workflow_version IS NULL)
           AND (auth.parameter('clinical_workflow') = 1 OR (step <> 'investigation_review' AND step <> 'result_review' AND step <> 'prescription' AND step <> 'injection_order' AND step <> 'disposition'))
       - |
-        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", encounter_id AS "encounterId", admission_id AS "admissionId", performed_on AS "performedOn", late_reason AS "lateReason", patient_id AS "patientId", step, actor_role AS "actorRole", amends, values
+        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", pharmacy_version AS "pharmacyVersion", encounter_id AS "encounterId", admission_id AS "admissionId", performed_on AS "performedOn", late_reason AS "lateReason", patient_id AS "patientId", step, actor_role AS "actorRole", amends, values
         FROM encounter_entries
         WHERE facility_id = auth.parameter('facility_id')
           AND (auth.parameter('facility_contract') IS NULL OR auth.parameter('facility_contract') <> 1)
           AND auth.parameter('clinical_workflow') = 1
+          AND pharmacy_version IS NULL
           AND (admission_id IS NULL OR auth.parameter('ward_care') = 1)
           AND (auth.parameter('clinical_workflow') = 1 OR workflow_version IS NULL)
           AND (auth.parameter('clinical_workflow') = 1 OR (step <> 'investigation_review' AND step <> 'result_review' AND step <> 'prescription' AND step <> 'injection_order' AND step <> 'disposition'))
           AND actor_role <> 'laboratory_staff'
           AND actor_role <> 'pharmacy_staff'
       - |
-        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", encounter_id AS "encounterId", admission_id AS "admissionId", performed_on AS "performedOn", late_reason AS "lateReason", patient_id AS "patientId", step, actor_role AS "actorRole", actor_context AS "actorContext", amends, values
+        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", pharmacy_version AS "pharmacyVersion", encounter_id AS "encounterId", admission_id AS "admissionId", performed_on AS "performedOn", late_reason AS "lateReason", patient_id AS "patientId", step, actor_role AS "actorRole", actor_context AS "actorContext", amends, values
         FROM encounter_entries
         WHERE facility_id = auth.parameter('facility_id')
           AND auth.parameter('facility_contract') = 1
           AND (auth.parameter('clinical_workflow') IS NULL OR auth.parameter('clinical_workflow') <> 1)
+          AND pharmacy_version IS NULL
           AND (admission_id IS NULL OR auth.parameter('ward_care') = 1)
           AND (auth.parameter('clinical_workflow') = 1 OR workflow_version IS NULL)
           AND (auth.parameter('clinical_workflow') = 1 OR (step <> 'investigation_review' AND step <> 'result_review' AND step <> 'prescription' AND step <> 'injection_order' AND step <> 'disposition'))
       - |
-        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", encounter_id AS "encounterId", admission_id AS "admissionId", performed_on AS "performedOn", late_reason AS "lateReason", patient_id AS "patientId", step, actor_role AS "actorRole", amends, values
+        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", pharmacy_version AS "pharmacyVersion", encounter_id AS "encounterId", admission_id AS "admissionId", performed_on AS "performedOn", late_reason AS "lateReason", patient_id AS "patientId", step, actor_role AS "actorRole", amends, values
         FROM encounter_entries
         WHERE facility_id = auth.parameter('facility_id')
           AND (auth.parameter('facility_contract') IS NULL OR auth.parameter('facility_contract') <> 1)
           AND (auth.parameter('clinical_workflow') IS NULL OR auth.parameter('clinical_workflow') <> 1)
+          AND pharmacy_version IS NULL
           AND (admission_id IS NULL OR auth.parameter('ward_care') = 1)
           AND (auth.parameter('clinical_workflow') = 1 OR workflow_version IS NULL)
           AND (auth.parameter('clinical_workflow') = 1 OR (step <> 'investigation_review' AND step <> 'result_review' AND step <> 'prescription' AND step <> 'injection_order' AND step <> 'disposition'))
           AND actor_role <> 'laboratory_staff'
           AND actor_role <> 'pharmacy_staff'
+  encounter_entries_pharmacy:
+    auto_subscribe: true
+    queries:
+      - |
+        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", pharmacy_version AS "pharmacyVersion", workflow_version AS "workflowVersion", encounter_id AS "encounterId", admission_id AS "admissionId", performed_on AS "performedOn", late_reason AS "lateReason", patient_id AS "patientId", step, actor_role AS "actorRole", actor_context AS "actorContext", amends, values
+        FROM encounter_entries
+        WHERE facility_id = auth.parameter('facility_id')
+          AND auth.parameter('facility_contract') = 1
+          AND auth.parameter('clinical_workflow') = 1
+          AND pharmacy_version = 1 AND auth.parameter('pharmacy_workflow') = 1
+          AND (admission_id IS NULL OR auth.parameter('ward_care') = 1)
+          AND (auth.parameter('clinical_workflow') = 1 OR workflow_version IS NULL)
+          AND (auth.parameter('clinical_workflow') = 1 OR (step <> 'investigation_review' AND step <> 'result_review' AND step <> 'prescription' AND step <> 'injection_order' AND step <> 'disposition'))
   ward_care_events:
     auto_subscribe: true
     queries:
@@ -544,25 +562,25 @@ streams:
     auto_subscribe: true
     queries:
       - |
-        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", name, category, unit_of_measure AS "unitOfMeasure", quantity_on_hand AS "quantityOnHand", reorder_level AS "reorderLevel"
+        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", fee_item_id AS "feeItemId", name, category, unit_of_measure AS "unitOfMeasure", quantity_on_hand AS "quantityOnHand", reorder_level AS "reorderLevel"
         FROM stock_items
         WHERE facility_id = auth.parameter('facility_id')
           AND auth.parameter('facility_contract') = 1
           AND auth.parameter('clinical_workflow') = 1
       - |
-        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", name, category, unit_of_measure AS "unitOfMeasure", quantity_on_hand AS "quantityOnHand", reorder_level AS "reorderLevel"
+        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", fee_item_id AS "feeItemId", name, category, unit_of_measure AS "unitOfMeasure", quantity_on_hand AS "quantityOnHand", reorder_level AS "reorderLevel"
         FROM stock_items
         WHERE facility_id = auth.parameter('facility_id')
           AND (auth.parameter('facility_contract') IS NULL OR auth.parameter('facility_contract') <> 1)
           AND auth.parameter('clinical_workflow') = 1
       - |
-        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", name, category, unit_of_measure AS "unitOfMeasure", quantity_on_hand AS "quantityOnHand", reorder_level AS "reorderLevel"
+        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", fee_item_id AS "feeItemId", name, category, unit_of_measure AS "unitOfMeasure", quantity_on_hand AS "quantityOnHand", reorder_level AS "reorderLevel"
         FROM stock_items
         WHERE facility_id = auth.parameter('facility_id')
           AND auth.parameter('facility_contract') = 1
           AND (auth.parameter('clinical_workflow') IS NULL OR auth.parameter('clinical_workflow') <> 1)
       - |
-        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", name, category, unit_of_measure AS "unitOfMeasure", quantity_on_hand AS "quantityOnHand", reorder_level AS "reorderLevel"
+        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", fee_item_id AS "feeItemId", name, category, unit_of_measure AS "unitOfMeasure", quantity_on_hand AS "quantityOnHand", reorder_level AS "reorderLevel"
         FROM stock_items
         WHERE facility_id = auth.parameter('facility_id')
           AND (auth.parameter('facility_contract') IS NULL OR auth.parameter('facility_contract') <> 1)
@@ -571,25 +589,25 @@ streams:
     auto_subscribe: true
     queries:
       - |
-        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", item_id AS "itemId", change, reason, moved_on AS "movedOn", note
+        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", dispense_entry_id AS "dispenseEntryId", item_id AS "itemId", change, reason, moved_on AS "movedOn", note
         FROM stock_movements
         WHERE facility_id = auth.parameter('facility_id')
           AND auth.parameter('facility_contract') = 1
           AND auth.parameter('clinical_workflow') = 1
       - |
-        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", item_id AS "itemId", change, reason, moved_on AS "movedOn", note
+        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", dispense_entry_id AS "dispenseEntryId", item_id AS "itemId", change, reason, moved_on AS "movedOn", note
         FROM stock_movements
         WHERE facility_id = auth.parameter('facility_id')
           AND (auth.parameter('facility_contract') IS NULL OR auth.parameter('facility_contract') <> 1)
           AND auth.parameter('clinical_workflow') = 1
       - |
-        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", item_id AS "itemId", change, reason, moved_on AS "movedOn", note
+        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", dispense_entry_id AS "dispenseEntryId", item_id AS "itemId", change, reason, moved_on AS "movedOn", note
         FROM stock_movements
         WHERE facility_id = auth.parameter('facility_id')
           AND auth.parameter('facility_contract') = 1
           AND (auth.parameter('clinical_workflow') IS NULL OR auth.parameter('clinical_workflow') <> 1)
       - |
-        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", item_id AS "itemId", change, reason, moved_on AS "movedOn", note
+        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", dispense_entry_id AS "dispenseEntryId", item_id AS "itemId", change, reason, moved_on AS "movedOn", note
         FROM stock_movements
         WHERE facility_id = auth.parameter('facility_id')
           AND (auth.parameter('facility_contract') IS NULL OR auth.parameter('facility_contract') <> 1)
@@ -1011,25 +1029,25 @@ streams:
     auto_subscribe: true
     queries:
       - |
-        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", order_item_id AS "orderItemId", order_entry_id AS "orderEntryId", patient_id AS "patientId", fee_item_id AS "feeItemId", description, category, department_id AS "departmentId", list_price_minor AS "listPriceMinor", amount_minor AS "amountMinor", currency, exemption_reason AS "exemptionReason", appointment_id AS "appointmentId", encounter_id AS "encounterId"
+        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", dispense_entry_id AS "dispenseEntryId", order_item_id AS "orderItemId", order_entry_id AS "orderEntryId", patient_id AS "patientId", fee_item_id AS "feeItemId", description, category, department_id AS "departmentId", list_price_minor AS "listPriceMinor", amount_minor AS "amountMinor", currency, exemption_reason AS "exemptionReason", appointment_id AS "appointmentId", encounter_id AS "encounterId"
         FROM charges
         WHERE facility_id = auth.parameter('facility_id')
           AND auth.parameter('facility_contract') = 1
           AND auth.parameter('clinical_workflow') = 1
       - |
-        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", patient_id AS "patientId", fee_item_id AS "feeItemId", description, category, department_id AS "departmentId", list_price_minor AS "listPriceMinor", amount_minor AS "amountMinor", currency, exemption_reason AS "exemptionReason", appointment_id AS "appointmentId", encounter_id AS "encounterId"
+        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", dispense_entry_id AS "dispenseEntryId", patient_id AS "patientId", fee_item_id AS "feeItemId", description, category, department_id AS "departmentId", list_price_minor AS "listPriceMinor", amount_minor AS "amountMinor", currency, exemption_reason AS "exemptionReason", appointment_id AS "appointmentId", encounter_id AS "encounterId"
         FROM charges
         WHERE facility_id = auth.parameter('facility_id')
           AND (auth.parameter('facility_contract') IS NULL OR auth.parameter('facility_contract') <> 1)
           AND auth.parameter('clinical_workflow') = 1
       - |
-        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", patient_id AS "patientId", fee_item_id AS "feeItemId", description, category, department_id AS "departmentId", list_price_minor AS "listPriceMinor", amount_minor AS "amountMinor", currency, exemption_reason AS "exemptionReason", appointment_id AS "appointmentId", encounter_id AS "encounterId"
+        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", dispense_entry_id AS "dispenseEntryId", patient_id AS "patientId", fee_item_id AS "feeItemId", description, category, department_id AS "departmentId", list_price_minor AS "listPriceMinor", amount_minor AS "amountMinor", currency, exemption_reason AS "exemptionReason", appointment_id AS "appointmentId", encounter_id AS "encounterId"
         FROM charges
         WHERE facility_id = auth.parameter('facility_id')
           AND auth.parameter('facility_contract') = 1
           AND (auth.parameter('clinical_workflow') IS NULL OR auth.parameter('clinical_workflow') <> 1)
       - |
-        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", patient_id AS "patientId", fee_item_id AS "feeItemId", description, category, department_id AS "departmentId", list_price_minor AS "listPriceMinor", amount_minor AS "amountMinor", currency, exemption_reason AS "exemptionReason", appointment_id AS "appointmentId", encounter_id AS "encounterId"
+        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", dispense_entry_id AS "dispenseEntryId", patient_id AS "patientId", fee_item_id AS "feeItemId", description, category, department_id AS "departmentId", list_price_minor AS "listPriceMinor", amount_minor AS "amountMinor", currency, exemption_reason AS "exemptionReason", appointment_id AS "appointmentId", encounter_id AS "encounterId"
         FROM charges
         WHERE facility_id = auth.parameter('facility_id')
           AND (auth.parameter('facility_contract') IS NULL OR auth.parameter('facility_contract') <> 1)
@@ -1065,25 +1083,25 @@ streams:
     auto_subscribe: true
     queries:
       - |
-        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", patient_id AS "patientId", charge_id AS "chargeId", kind, amount_minor AS "amountMinor", reason
+        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", dispense_entry_id AS "dispenseEntryId", patient_id AS "patientId", charge_id AS "chargeId", kind, amount_minor AS "amountMinor", reason
         FROM billing_adjustments
         WHERE facility_id = auth.parameter('facility_id')
           AND auth.parameter('facility_contract') = 1
           AND auth.parameter('clinical_workflow') = 1
       - |
-        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", patient_id AS "patientId", charge_id AS "chargeId", kind, amount_minor AS "amountMinor", reason
+        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", dispense_entry_id AS "dispenseEntryId", patient_id AS "patientId", charge_id AS "chargeId", kind, amount_minor AS "amountMinor", reason
         FROM billing_adjustments
         WHERE facility_id = auth.parameter('facility_id')
           AND (auth.parameter('facility_contract') IS NULL OR auth.parameter('facility_contract') <> 1)
           AND auth.parameter('clinical_workflow') = 1
       - |
-        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", patient_id AS "patientId", charge_id AS "chargeId", kind, amount_minor AS "amountMinor", reason
+        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", dispense_entry_id AS "dispenseEntryId", patient_id AS "patientId", charge_id AS "chargeId", kind, amount_minor AS "amountMinor", reason
         FROM billing_adjustments
         WHERE facility_id = auth.parameter('facility_id')
           AND auth.parameter('facility_contract') = 1
           AND (auth.parameter('clinical_workflow') IS NULL OR auth.parameter('clinical_workflow') <> 1)
       - |
-        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", patient_id AS "patientId", charge_id AS "chargeId", kind, amount_minor AS "amountMinor", reason
+        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", dispense_entry_id AS "dispenseEntryId", patient_id AS "patientId", charge_id AS "chargeId", kind, amount_minor AS "amountMinor", reason
         FROM billing_adjustments
         WHERE facility_id = auth.parameter('facility_id')
           AND (auth.parameter('facility_contract') IS NULL OR auth.parameter('facility_contract') <> 1)
