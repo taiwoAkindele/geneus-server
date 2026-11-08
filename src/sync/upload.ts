@@ -2,6 +2,7 @@ import { careWorkflowIssues, chargeOrderIssues, routeReferral } from '../clinica
 import { labReportUploadIssues } from '../clinical/labReports.ts';
 import { inpatientUploadIssues, inpatientLocationIssues } from '../clinical/inpatient.ts';
 import { wardUploadIssues, dischargeReadinessIssues } from '../clinical/wardCare.ts';
+import { pharmacyUpload, pharmacyCompanionMatches } from '../clinical/pharmacy.ts';
 import { clinicalDocumentIssues } from '../documents/validation.ts';
 import { isDeepStrictEqual } from 'node:util';
 import type { ZodType } from 'zod';
@@ -364,6 +365,7 @@ const evaluatePut = async ({ tx, identity, uploadedAt }: Context, mutation: Uplo
   if (record.type === 'patient' && record.identityStatus === 'identified' && record.provisionalReason) return refuse('validation', 'Identification history must follow a provisional registration');
 
   if (record.facilityId !== identity.facilityId) return refuse('identity', `facilityId ${record.facilityId} is not this device's facility`);
+  if ('dispenseEntryId' in record && record.dispenseEntryId) return await pharmacyCompanionMatches(tx, record) ? undefined : refuse('validation', 'This stock or billing entry must match its accepted pharmacy supply');
   if (record.deviceId !== identity.deviceId) return refuse('identity', `deviceId ${record.deviceId} is not this device`);
   if (!record.createdBy) return refuse('identity', 'A record must identify its author');
 
@@ -438,6 +440,10 @@ const evaluatePut = async ({ tx, identity, uploadedAt }: Context, mutation: Uplo
   }
   if (record.type === 'charge') { const issues = await chargeOrderIssues(tx, record); if (issues.length) return refuse('validation', issues.join('. ')); }
   if (record.type === 'encounter_entry') {
+    if (record.step === 'dispense' && record.pharmacyVersion !== 1) {
+      const [tracked] = await tx`SELECT id FROM encounter_entries WHERE facility_id=${record.facilityId} AND encounter_id=${record.encounterId} AND pharmacy_version=1 LIMIT 1`;
+      if (tracked) return refuse('conflict', 'This prescription uses quantity-based dispensing. Upgrade and open Pharmacy before another supply');
+    }
     // Serialise repeat saves, closure and corrections for the same encounter.
     await tx`SELECT id FROM encounters WHERE facility_id = ${identity.facilityId} AND id = ${record.encounterId} FOR UPDATE`;
     // The stamp names the role the server knows, never one the device asserts (PRD §9.8.5).
@@ -448,7 +454,7 @@ const evaluatePut = async ({ tx, identity, uploadedAt }: Context, mutation: Uplo
     if (careIssues.length) return refuse('validation', careIssues.join('. '));
     const closed = await closedEncounterRefusal(tx, record);
     if (closed) return closed;
-    if (record.step !== 'amendment' && !(REPEATABLE_STEPS as readonly string[]).includes(record.step)) {
+    if (record.step !== 'amendment' && record.pharmacyVersion !== 1 && !(REPEATABLE_STEPS as readonly string[]).includes(record.step)) {
       const [saved] = await tx`SELECT id FROM encounter_entries WHERE facility_id = ${record.facilityId} AND encounter_id = ${record.encounterId} AND step = ${record.step} LIMIT 1`;
       if (saved) return refuse('conflict', 'This section is already saved. Add an amendment instead');
     }
@@ -562,7 +568,15 @@ const evaluatePut = async ({ tx, identity, uploadedAt }: Context, mutation: Uplo
 
   // Server clock on audit events the device recorded offline.
   const toWrite = table === 'audit_event' ? { ...record, receivedOn: new Date(uploadedAt).toISOString() } : record;
-  const failure = await attempt(tx, (sp) => insertRecord(sp, table, toWrite));
+  const pharmacy = record.type === 'encounter_entry' && record.pharmacyVersion === 1 ? await pharmacyUpload(tx, record) : undefined;
+  if (pharmacy?.issues.length) return refuse('conflict', pharmacy.issues.join('; '));
+  // Dispensing authority covers only companions derived from this exact validated
+  // supply. It does not grant manual stock adjustments, charges or waivers.
+  if (pharmacy && !historical && !staffPermissions(staff).includes('clinical:dispense')) return refuse('authorization', 'This pharmacy action requires dispensing authority');
+  const failure = await attempt(tx, async (sp) => {
+    await insertRecord(sp, table, toWrite);
+    for (const child of pharmacy?.effects ?? []) await insertRecord(sp, child.type, child);
+  });
   if (!failure && record.type === 'referral') await routeReferral(tx, record);
   if (!failure && record.type === 'appointment') await recordReservation(tx, record, uploadedAt);
   if (!failure && historical && (record.type === 'encounter_entry' || record.type === 'clinical_event' || record.type === 'ward_care_event')) await completeHistoricalReview(tx, record, identity.deviceId, uploadedAt);

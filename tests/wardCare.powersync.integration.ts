@@ -11,7 +11,8 @@ import { buildApp } from '../src/app.ts';
 import { buildSyncConfig } from '../src/sync/syncConfig.ts';
 import { writeFile } from 'node:fs/promises';
 import { insertRecord } from '../src/db/records.ts';
-import { POLICY_VERSION, UploadResponse, type UploadMutation } from '#shared';
+import { POLICY_VERSION, UploadResponse, EncounterEntry, dispensingSummary, pharmacyChargeId, pharmacyMovementId, type UploadMutation } from '#shared';
+import { pharmacyRecords } from '../src/clinical/pharmacy.ts';
 import { config, signer, registerScratchFacility, scratchDatabase, envelopeFor, clientId } from './postgres.ts';
 import { readFirstCheckpoint, waitForRow } from './powersyncClient.ts';
 
@@ -54,7 +55,7 @@ test('two enrolled devices receive accepted ward care, legacy tokens exclude it,
   const code = await app.inject({ method:'POST',url:'/devices/codes',headers:{authorization:`Bearer ${a.device.credential}`},payload:{issuedBy:a.admin.id} }); assert.equal(code.statusCode,201);
   const enrollment = await app.inject({method:'POST',url:'/devices',payload:{code:code.json().code,deviceId:secondId,deviceLabel:'Synthetic receiving device'}}); assert.equal(enrollment.statusCode,201);
   const second = enrollment.json() as { credential: string; deviceId: string };
-  const versions = {wardCareVersion:1,inpatientWorkflowVersion:1,clinicalWorkflowVersion:1,facilityContractVersion:1,schemaVersion:5,policyVersion:POLICY_VERSION};
+  const versions = {pharmacyWorkflowVersion:1,wardCareVersion:1,inpatientWorkflowVersion:1,clinicalWorkflowVersion:1,facilityContractVersion:1,schemaVersion:5,policyVersion:POLICY_VERSION};
   const token = async (credential: string, modern = true) => {
     const response=await app.inject({method:'POST',url:'/sync/token',headers:{authorization:`Bearer ${credential}`},payload:modern?versions:{}}); assert.equal(response.statusCode,200); return response.json().token as string;
   };
@@ -90,6 +91,22 @@ test('two enrolled devices receive accepted ward care, legacy tokens exclude it,
   const eventId='ward:stack-complete';
   await upload(a.device.credential,[put('ward_care_event',eventId,{patientId,encounterId:sessionId,admissionId,occurredOn:new Date().toISOString(),values:{kind:'complete'}})]);
   assert.ok((await waitForRow(endpoint,tokenB,(r)=>r.table==='ward_care_events'&&r.id===eventId)).found,'New ward events cross the negotiated stream');
+  // A quantity-based supply and its atomic companions must reach the other device together.
+  await insertRecord(source.sql,'fee_item',{...base,id:'fee:stack-medicine',type:'fee_item',name:'Synthetic medicine',category:'other',amountMinor:100,currency:'NGN',chargeWhen:'when_ordered',active:true,exemptions:[]});
+  await insertRecord(source.sql,'stock_item',{...base,id:'stock:stack-medicine',type:'stock_item',name:'Synthetic medicine',category:'drug',unitOfMeasure:'tablets',quantityOnHand:100});
+  const prescription=EncounterEntry.parse({...base,id:'rx:stack-medicine',type:'encounter_entry',patientId,encounterId:sourceId,workflowVersion:1,actorRole:'facility_admin',step:'prescription',values:{decision:'prescribed',prescription:[{lineId:'line:stack-medicine',drug:'Synthetic medicine',dose:'Recorded instructions',quantity:20,unitOfMeasure:'tablets'}]}});
+  await insertRecord(source.sql,'encounter_entry',prescription);
+  const supply=EncounterEntry.parse({...base,id:'supply:stack-medicine',type:'encounter_entry',patientId,encounterId:sourceId,workflowVersion:1,pharmacyVersion:1,actorRole:'facility_admin',step:'dispense',values:{supply:{prescriptionEntryId:prescription.id,lineId:'line:stack-medicine',action:'supply',complete:false,quantity:5,unit:'tablets',source:'stock',stockItemId:'stock:stack-medicine',billing:'charge',feeItemId:'fee:stack-medicine',unitPriceMinor:100,currency:'NGN',chargedMinor:500},lines:[{drug:'Synthetic medicine',dispensed:false,reason:'Pending'}]}});
+  const pharmacyData=await pharmacyRecords(source.sql as never,prescription);
+  supply.values.lines=dispensingSummary(prescription,pharmacyData.entries,supply);
+  const supplyMutation=put('encounter_entry',supply.id,supply);
+  await upload(a.device.credential,[supplyMutation]);
+  assert.ok((await waitForRow(endpoint,tokenB,(r)=>r.table==='encounter_entries'&&r.id===supply.id)).found,'The receiving device receives quantity-based dispensing');
+  assert.ok((await waitForRow(endpoint,tokenB,(r)=>r.table==='charges'&&r.id===pharmacyChargeId(supply.id))).found,'The receiving device receives its exact quantity-based bill');
+  assert.ok((await waitForRow(endpoint,tokenB,(r)=>r.table==='stock_movements'&&r.id===pharmacyMovementId(supply.id))).found,'The receiving device receives its one stock deduction');
+  assert.equal((await upload(a.device.credential,[supplyMutation])).duplicates,1);
+  assert.equal((await readFirstCheckpoint(endpoint,legacy)).rows.some((r)=>r.id===supply.id),false,'Legacy clients must not interpret partial supply as fully dispensed');
+  assert.equal((await readFirstCheckpoint(endpoint,external)).rows.some((r)=>r.id===supply.id||r.id===pharmacyChargeId(supply.id)),false,'Pharmacy remains facility isolated');
   const tables=await source.sql<{tablename:string}[]>`SELECT tablename FROM pg_tables WHERE schemaname='public' ORDER BY tablename`;
   const counts=async(sql: typeof source.sql)=>Object.fromEntries(await Promise.all(tables.map(async({tablename})=>{const [r]=await sql`SELECT count(*)::int AS n FROM ${sql(tablename)}`;return[tablename,r.n];})));
   await exec('docker',['exec','-e','PGPASSWORD=devpassword','geneus-postgres','pg_dump','-U','geneus','-d',sourceName,'-Fc','-f',dumpPath],{windowsHide:true,timeout:30000});

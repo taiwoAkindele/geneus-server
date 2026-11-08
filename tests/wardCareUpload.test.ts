@@ -1,15 +1,16 @@
 import { before, after, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { EncounterEntry, WardCareEvent, dispensingSummary, prescriptionLines, pharmacyChargeId } from '#shared';
 import type { FastifyInstance } from 'fastify';
 import { POLICY_VERSION, type FacilityRegistrationResult, type Staff, type UploadMutation, type InpatientEvent } from '#shared';
 import { insertRecord } from '../src/db/records.ts';
 import { addStaff, clientId, envelopeFor, registerScratchFacility, scratchDatabase, testApp, upload, type ScratchDatabase } from './postgres.ts';
 
 describe('continuing inpatient care upload and PostgreSQL invariants', () => {
-  let db: ScratchDatabase, app: FastifyInstance, facility: FacilityRegistrationResult, doctor: Staff, cashier: Staff;
+  let db: ScratchDatabase, app: FastifyInstance, facility: FacilityRegistrationResult, doctor: Staff, cashier: Staff, pharmacist: Staff;
   let sequence = 0;
   const put = (table: UploadMutation['table'], id: string, data: Record<string, unknown>, actor = doctor): UploadMutation => ({ clientId: clientId(), op: 'put', table, id, data: { ...envelopeFor(facility), createdBy: actor.id, id, type: table, ...data } });
-  const send = (...mutations: UploadMutation[]) => upload(app, facility.device.credential, { wardCareVersion: 1, inpatientWorkflowVersion: 1, clinicalWorkflowVersion: 1, facilityContractVersion: 1, schemaVersion: 5, policyVersion: POLICY_VERSION, transactionId: 1, mutations });
+  const send = (...mutations: UploadMutation[]) => upload(app, facility.device.credential, { pharmacyWorkflowVersion: 1, wardCareVersion: 1, inpatientWorkflowVersion: 1, clinicalWorkflowVersion: 1, facilityContractVersion: 1, schemaVersion: 5, policyVersion: POLICY_VERSION, transactionId: 1, mutations });
   before(async () => {
     db = await scratchDatabase(); app = testApp(db.sql); facility = await registerScratchFacility(db.sql); doctor = await addStaff(db.sql, facility, { role: 'doctor' }); cashier = await addStaff(db.sql, facility, { role: 'cashier' });
     await insertRecord(db.sql, 'unit', { ...envelopeFor(facility), id: 'unit:ward', type: 'unit', unitId: 'WARD', name: 'Ward team' });
@@ -35,6 +36,24 @@ describe('continuing inpatient care upload and PostgreSQL invariants', () => {
     const noteId = `note:${n}`, rxId = `rx:${n}`, orderId = `order:${n}`;
     return { n, base, confirm, arrived, patientId, sourceId, sessionId, requestId, admissionId, session, entry, event, noteId, rxId, orderId };
   };
+  it('lets a pharmacist supply signed discharge medicines after departure without creating another visit', async () => {
+    pharmacist = await addStaff(db.sql, facility, { role: 'pharmacy_staff' });
+    const c = await newStay();
+    c.session.data.inpatientContext = { admissionId: c.admissionId, purpose: 'discharge' };
+    assert.deepEqual((await send(c.session)).rejected, []);
+    const summaryMutation = c.event(`summary:pharmacy:${c.n}`, { kind: 'discharge', admissionReason: 'Recorded reason', diagnoses: 'Recorded diagnosis', course: 'Recorded care', instructions: 'Reviewed instructions', takeHome: [{ drug: 'Synthetic take-home medicine', dose: 'Recorded instructions', quantity: 20, unitOfMeasure: 'tablets' }], sourceEntryIds: [c.requestId], sourceWardEventIds: [], patientName: 'Synthetic inpatient', patientIdentifier: c.patientId, admittedOn: c.confirm.createdOn });
+    assert.deepEqual((await send(summaryMutation, c.event(`complete:pharmacy:${c.n}`, { kind: 'complete' }))).rejected, []);
+    const summary = WardCareEvent.parse(summaryMutation.data);
+    assert.deepEqual((await send(put('inpatient_event', `${c.admissionId}:left`, { ...c.arrived, id: `${c.admissionId}:left`, previousId: c.arrived.id, action: 'discharge', departureException: 'Actual departure recorded' }))).rejected, []);
+    const feeId = `fee:take-home:${c.n}`;
+    await insertRecord(db.sql, 'fee_item', { ...c.base, id: feeId, type: 'fee_item', name: 'Synthetic take-home medicine', category: 'other', amountMinor: 100, currency: 'NGN', chargeWhen: 'when_ordered', active: true });
+    const record = EncounterEntry.parse({ ...c.base, createdBy: pharmacist.id, createdOn: new Date().toISOString(), schemaVersion: 5, id: `supply:take-home:${c.n}`, type: 'encounter_entry', actorRole: 'pharmacy_staff', workflowVersion: 1, pharmacyVersion: 1, patientId: c.patientId, encounterId: c.sessionId, admissionId: c.admissionId, step: 'dispense', values: { lines: [{ drug: 'Synthetic take-home medicine', dispensed: false, reason: 'Pending' }], supply: { prescriptionEntryId: summary.id, lineId: prescriptionLines(summary)[0].lineId, action: 'supply', complete: false, quantity: 5, unit: 'tablets', source: 'untracked', billing: 'charge', feeItemId: feeId, unitPriceMinor: 100, currency: 'NGN', chargedMinor: 500 } } });
+    record.values.lines = dispensingSummary(summary, [], record);
+    assert.deepEqual((await send({ clientId: clientId(), op: 'put', table: 'encounter_entry', id: record.id, data: record })).rejected, []);
+    const [charge] = await db.sql`SELECT amount_minor FROM charges WHERE id=${pharmacyChargeId(record.id)}`;
+    assert.equal(Number(charge.amount_minor), 500);
+    assert.equal((await db.sql`SELECT id FROM encounters WHERE patient_id=${c.patientId}`).length, 2);
+  });
   const withOrder = async () => {
     const c = await newStay();
     const order = c.event(c.orderId, { kind: 'medication', orderId: c.orderId, action: 'start', sourceEntryId: c.rxId, lineId: 'line:one' });

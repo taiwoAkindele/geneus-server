@@ -53,13 +53,14 @@ export const syncedTypes = (): DocType[] => (Object.keys(TABLE_FOR) as DocType[]
  */
 const entityTypeNotIn = (types: readonly string[]): string => types.map((t) => `ifnull(entity_type, '') <> '${t}'`).join(' AND ');
 
-const queryFor = (type: DocType, legacy: boolean, care = true, templates?: boolean, wardOnly = false): string[] => {
+const queryFor = (type: DocType, legacy: boolean, care = true, templates?: boolean, wardOnly = false, pharmacyOnly = false): string[] => {
   const lines=[`SELECT ${selectListFor(type,legacy,care,templates).join(', ')}`,`FROM ${TABLE_FOR[type]}`,`WHERE facility_id = auth.parameter('${FACILITY_CLAIM}')`];
   lines.push(legacy ? "  AND (auth.parameter('facility_contract') IS NULL OR auth.parameter('facility_contract') <> 1)" : "  AND auth.parameter('facility_contract') = 1");
   lines.push(care ? "  AND auth.parameter('clinical_workflow') = 1" : "  AND (auth.parameter('clinical_workflow') IS NULL OR auth.parameter('clinical_workflow') <> 1)");
   // Legacy screens assume complete demographics; they receive this record
   // only after identification, while upgraded clients can provide care now.
   if (type === 'patient') lines.push("  AND (auth.parameter('patient_registration') = 1 OR identity_status = 'identified')");
+  if (type === 'encounter_entry') lines.push(pharmacyOnly ? "  AND pharmacy_version = 1 AND auth.parameter('pharmacy_workflow') = 1" : '  AND pharmacy_version IS NULL');
   if (type === 'ward_care_event') lines.push("  AND auth.parameter('ward_care') = 1");
   // Separate the new entity branch to stay below PowerSync's OR expansion limit.
   if (type === 'audit_event' || type === 'sync_rejection') lines.push(...(wardOnly
@@ -126,6 +127,7 @@ export const buildSyncConfig = (): string => {
       lines.push(`  ${streamNameFor(type)}_legacy:`, '    auto_subscribe: true', '    queries:');
       for (const care of [true, false]) lines.push('      - |', ...queryFor(type,true,care).map((line)=>`        ${line}`));
     }
+    if (type === 'encounter_entry') lines.push(`  ${streamNameFor(type)}_pharmacy:`, '    auto_subscribe: true', '    queries:', '      - |', ...queryFor(type,false,true,undefined,false,true).map((line)=>`        ${line}`));
     // PowerSync limits total buckets per stream, including all its queries.
     // Ward-capable clients always negotiate the current facility/care contracts.
     if (type === 'audit_event' || type === 'sync_rejection') {
