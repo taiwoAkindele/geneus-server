@@ -113,6 +113,17 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
     return { versions };
   });
 
+  /**
+   * Versions without their prices, for an administrator who activates or ends
+   * contracts but does not read them: the decision needs the version, dates and
+   * status, never the tariff.
+   */
+  app.post('/insurance/contracts/summaries', async (request, reply) => {
+    const who = await verified(request, reply, 'insurance_contract:activate'); if (!who) return;
+    const versions = await contractVersions(sql, who.identity.facilityId);
+    return { versions: versions.map((v) => ({ id: v.id, contractId: v.contractId, version: v.version, status: v.status, payerId: v.terms.payerId, effectiveFrom: v.terms.effectiveFrom, effectiveTo: v.terms.effectiveTo, endedOn: v.endedOn, endReason: v.endReason, activatedOn: v.activatedOn })) };
+  });
+
   app.post('/insurance/contracts/draft', async (request, reply) => {
     const who = await verified(request, reply, 'insurance_contract:manage'); if (!who) return;
     const body = DraftSave.safeParse(request.body); if (!body.success) return invalid(reply, 'Send the contract terms to save');

@@ -7,6 +7,7 @@ import { insertRecord } from '../src/db/records.ts';
 import { buildSyncConfig } from '../src/sync/syncConfig.ts';
 import { availableOnCharge } from '../src/billing/ledger.ts';
 import { chargePositions, chargesById } from '../src/insurance/coverage.ts';
+import { setInsuranceEnabled } from '../src/insurance/enablement.ts';
 import { addStaff, asDevice, clientId, envelopeFor, lastCodeSentTo, registerScratchFacility, scratchDatabase, testApp, upload, type ScratchDatabase } from './postgres.ts';
 
 /**
@@ -94,7 +95,17 @@ describe('insurance foundation', () => {
       const t = await token();
       assert.equal(t.statusCode, 200, t.body);
       assert.equal(t.json().insuranceWorkflowVersion, undefined, 'a capable device gets no insurance records yet');
-      await db.sql`UPDATE facilities SET insurance_enabled = true WHERE id = ${f.facility.id}`;
+      // Enabling is an operator's audited decision, and needs the hospital's time zone.
+      await assert.rejects(setInsuranceEnabled(db.sql, { facilityId: f.facility.id, enabled: true, operator: 'synthetic-operator', governanceReference: 'synthetic:approval' }), /time zone/);
+      await assert.rejects(setInsuranceEnabled(db.sql, { facilityId: f.facility.id, enabled: true, operator: ' ', governanceReference: 'synthetic:approval', timeZone: TZ }), /operator/);
+      const status = await setInsuranceEnabled(db.sql, { facilityId: f.facility.id, enabled: true, operator: 'synthetic-operator', governanceReference: 'synthetic:approval', timeZone: TZ });
+      assert.equal(status.enabled, true);
+      assert.equal(status.timeZone, TZ);
+      await assert.rejects(setInsuranceEnabled(db.sql, { facilityId: f.facility.id, enabled: true, operator: 'synthetic-operator', governanceReference: 'synthetic:approval', timeZone: 'Europe/London' }), /separate reviewed change/, 'a recorded time zone is never silently changed');
+      const [command] = await db.sql`SELECT operator, governance_reference, enabled FROM insurance_operator_commands WHERE facility_id = ${f.facility.id}`;
+      assert.deepEqual([command.operator, command.governance_reference, command.enabled], ['synthetic-operator', 'synthetic:approval', true]);
+      assert.ok((await db.sql`SELECT 1 FROM audit_events WHERE metadata->>'context' = 'insurance_enabled'`).length, 'the switch is audited');
+      await assert.rejects(db.sql`DELETE FROM insurance_operator_commands`, 'the record of switches is permanent');
     });
     it('refuses contract access to a staff id the device merely asserts', async () => {
       const response = await app.inject({ method: 'POST', url: '/insurance/contracts/list', headers: { ...asDevice(f.device.credential), 'x-actor-staff-id': officer.id }, payload: {} });
@@ -129,6 +140,8 @@ describe('insurance foundation', () => {
     });
     it('refuses activation without a recorded hospital time zone', async () => {
       await ready();
+      // Only reachable if the time zone were removed behind the operator's back; activation still refuses.
+      await db.sql`UPDATE facilities SET time_zone = NULL WHERE id = ${f.facility.id}`;
       assert.equal((await activate('contract:payer:synthetic-a:v1')).json().error, 'timezone_required');
       await db.sql`UPDATE facilities SET time_zone = ${TZ} WHERE id = ${f.facility.id}`;
     });
