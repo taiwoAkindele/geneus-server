@@ -145,7 +145,7 @@ describe('staff editing and combined authorization', () => {
     const saved = await findRecord<Staff>(db.sql, 'staff', target.id);
     assert.equal(saved?.loginAccess, 'always');
     assert.equal(saved?.role, 'cashier');
-    assert.deepEqual(saved && staffPermissions(saved), ['payment:receive']);
+    assert.deepEqual(saved && staffPermissions(saved), ['payment:receive', 'coverage:elect_self_pay']);
   });
   it('requires access-assignment permission rather than name management to grant 24-hour access', async () => {
     const target = await addStaff(db.sql, facility, { role: 'nurse' });

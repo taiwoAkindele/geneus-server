@@ -57,6 +57,7 @@ import type { DeviceIdentity } from '../devices/credentials.ts';
 import { describeDenial, findStaffInFacility, staffDenial } from '../auth/staffAuthorization.ts';
 import { keepsAdministrator } from '../staff/access.ts';
 import { availableOnCharge } from '../billing/ledger.ts';
+import { flagInsuredOverpayment, insuranceUploadIssues } from '../insurance/uploadChecks.ts';
 import { claimMutation, recordRejection } from './ledger.ts';
 import { stockMovementIssue } from '../inventory/validation.ts';
 import { validateWorkforceRecord, workforceType } from '../workforce/validation.ts';
@@ -89,7 +90,9 @@ import { recordClientVersion } from '../workforce/readiness.ts';
  */
 
 /** Written by the server; a device may never insert them. */
-const SERVER_WRITTEN: readonly DocType[] = ['facility', 'device', 'sync_rejection', 'pin_setup_code', 'incoming_transfer', 'inbound_referral'];
+const SERVER_WRITTEN: readonly DocType[] = ['facility', 'device', 'sync_rejection', 'pin_setup_code', 'incoming_transfer', 'inbound_referral',
+  // Insurance configuration, confirmed splits and refunds are decided online by verified staff (routes/insurance.ts).
+  'payer', 'cover_schedule', 'coverage_allocation', 'refund'];
 /** Server-written, but a device may patch the few columns that record what it did with them. */
 const DEVICE_MARKABLE: readonly DocType[] = ['sync_rejection', 'pin_setup_code', 'inbound_referral'];
 /**
@@ -110,6 +113,7 @@ const APPEND_ONLY: readonly DocType[] = [
   'payment',
   'billing_adjustment',
   'patient_identity_event',
+  'patient_cover', 'cover_check', 'coverage_election',
 ];
 /** Never patched: a change is a new version (SCHEMA.md §11.2). */
 const IMMUTABLE_PER_VERSION: readonly DocType[] = ['register_definition'];
@@ -155,6 +159,8 @@ const PUT_PERMISSION: Partial<Record<DocType, Permission>> = {
   charge: 'charge:create',
   billing_adjustment: 'payment:waive',
   billing_department: 'fee_item:manage',
+  patient_cover: 'cover:record',
+  cover_check: 'cover:verify',
   // A payment's permission depends on what it does — see paymentPermission.
 };
 
@@ -396,7 +402,9 @@ const evaluatePut = async ({ tx, identity, uploadedAt }: Context, mutation: Uplo
     const issues = await dischargeReadinessIssues(tx, record);
     if (issues.length) return refuse('validation', issues.join('; '));
   }
-  const permission = record.type === 'payment' ? paymentPermission(record) : PUT_PERMISSION[table];
+  const permission = record.type === 'payment' ? paymentPermission(record)
+    : record.type === 'coverage_election' ? (record.kind === 'self_pay' ? 'coverage:elect_self_pay' : 'cover:record')
+    : PUT_PERMISSION[table];
   if (!staff) return refuse('identity', describeDenial({ kind: 'not_member', staffId: record.createdBy }));
   if (!staff.active && !historical) return refuse('authorization', describeDenial({ kind: 'deactivated', staffId: record.createdBy }));
   if (permission && !historical) {
@@ -544,6 +552,11 @@ const evaluatePut = async ({ tx, identity, uploadedAt }: Context, mutation: Uplo
     if (refusal) return refusal;
   }
 
+  if (record.type === 'patient_cover' || record.type === 'cover_check' || record.type === 'coverage_election') {
+    const issues = await insuranceUploadIssues(tx, record);
+    if (issues.length) return refuse('validation', issues.join('; '));
+  }
+
   if (record.type === 'billing_adjustment') {
     const [charge] = await tx<{ patient_id: string }[]>`SELECT patient_id FROM charges
       WHERE facility_id = ${record.facilityId} AND id = ${record.chargeId} FOR UPDATE`;
@@ -578,6 +591,7 @@ const evaluatePut = async ({ tx, identity, uploadedAt }: Context, mutation: Uplo
     for (const child of pharmacy?.effects ?? []) await insertRecord(sp, child.type, child);
   });
   if (!failure && record.type === 'referral') await routeReferral(tx, record);
+  if (!failure && record.type === 'payment') await flagInsuredOverpayment(tx, record);
   if (!failure && record.type === 'appointment') await recordReservation(tx, record, uploadedAt);
   if (!failure && historical && (record.type === 'encounter_entry' || record.type === 'clinical_event' || record.type === 'ward_care_event')) await completeHistoricalReview(tx, record, identity.deviceId, uploadedAt);
   if (!failure && table === 'staff') await recordAuditEvent(tx, {

@@ -9,6 +9,7 @@ import { processUpload } from '../sync/upload.ts';
 import { FACILITY_FEATURE_SUPPORT } from '../workforce/compatibility.ts';
 import { assertWorkforceCompatibility } from '../workforce/compatibility.ts';
 import { recordClientVersion } from '../workforce/readiness.ts';
+import { insuranceEnabled } from '../insurance/contracts.ts';
 import { z } from 'zod';
 import { ensureStandardCatalogueOnce } from '../clinical/standardCatalogue.ts';
 
@@ -37,7 +38,7 @@ export const registerSyncRoutes = (app: FastifyInstance, sql: Sql, config: Confi
     const identity = await authenticateDevice(sql, request, reply);
     if (!identity) return;
 
-    const version = z.object({ pharmacyWorkflowVersion: z.literal(1).optional(), wardCareVersion: z.literal(1).optional(), resultTemplateWorkflowVersion: z.literal(1).optional(), documentWorkflowVersion:z.literal(1).optional(),inpatientWorkflowVersion: z.literal(1).optional(), clinicalWorkflowVersion: z.literal(1).optional(), facilityContractVersion: z.number().int().optional(), schemaVersion: z.number().int().optional(), policyVersion: z.number().int().optional(), pendingMutationCount: z.number().int().nonnegative().optional() }).safeParse(request.body ?? {});
+    const version = z.object({ insuranceWorkflowVersion: z.literal(1).optional(), pharmacyWorkflowVersion: z.literal(1).optional(), wardCareVersion: z.literal(1).optional(), resultTemplateWorkflowVersion: z.literal(1).optional(), documentWorkflowVersion:z.literal(1).optional(),inpatientWorkflowVersion: z.literal(1).optional(), clinicalWorkflowVersion: z.literal(1).optional(), facilityContractVersion: z.number().int().optional(), schemaVersion: z.number().int().optional(), policyVersion: z.number().int().optional(), pendingMutationCount: z.number().int().nonnegative().optional() }).safeParse(request.body ?? {});
     if (!version.success) return reply.code(400).send({ error: 'invalid_request', message: 'Invalid client compatibility metadata' } satisfies ApiErrorBody);
     if (version.data.pharmacyWorkflowVersion === 1 && (version.data.clinicalWorkflowVersion !== 1 || version.data.facilityContractVersion !== 1 || (version.data.schemaVersion ?? 0) < 5 || (version.data.policyVersion ?? 0) < 13)) return reply.code(409).send({ error: 'upgrade_required', message: 'Pharmacy requires the current clinical contract' });
     if (version.data.wardCareVersion === 1 && (version.data.inpatientWorkflowVersion !== 1 || version.data.clinicalWorkflowVersion !== 1 || version.data.facilityContractVersion !== 1 || (version.data.schemaVersion ?? 0) < 5 || (version.data.policyVersion ?? 0) < 13)) return reply.code(409).send({ error: 'upgrade_required', message: 'Ward care requires the current inpatient and clinical contracts' });
@@ -45,6 +46,7 @@ export const registerSyncRoutes = (app: FastifyInstance, sql: Sql, config: Confi
     if (version.data.inpatientWorkflowVersion === 1 && (version.data.facilityContractVersion !== 1 || (version.data.schemaVersion ?? 0) < 5 || (version.data.policyVersion ?? 0) < 11)) return reply.code(409).send({ error: 'upgrade_required', message: 'Admissions require facility contract 1, schema 5 and policy 11' } satisfies ApiErrorBody);
     if (version.data.resultTemplateWorkflowVersion === 1 && (version.data.clinicalWorkflowVersion !== 1 || version.data.facilityContractVersion !== 1 || (version.data.schemaVersion ?? 0) < 5 || (version.data.policyVersion ?? 0) < 13)) return reply.code(409).send({ error: 'upgrade_required', message: 'Result templates require the current clinical workflow, facility contract 1, schema 5 and policy 13' } satisfies ApiErrorBody);
     if (version.data.clinicalWorkflowVersion === 1 && (version.data.facilityContractVersion !== 1 || (version.data.schemaVersion ?? 0) < 4 || (version.data.policyVersion ?? 0) < 10)) return reply.code(409).send({ error: 'upgrade_required', message: 'The current clinical workflow requires facility contract 1, schema 4 and policy 10' } satisfies ApiErrorBody);
+    if (version.data.insuranceWorkflowVersion === 1 && (version.data.facilityContractVersion !== 1 || (version.data.schemaVersion ?? 0) < 5 || (version.data.policyVersion ?? 0) < 14)) return reply.code(409).send({ error: 'upgrade_required', message: 'Insurance requires facility contract 1, schema 5 and policy 14' } satisfies ApiErrorBody);
     if (version.data.facilityContractVersion !== undefined && version.data.facilityContractVersion !== 1) return reply.code(409).send({ error: 'upgrade_required', message: 'This server supports facility contract version one' } satisfies ApiErrorBody);
     await sql.begin(async (tx) => {
       await tx`SELECT id FROM facilities WHERE id=${identity.facilityId} FOR UPDATE`;
@@ -55,6 +57,8 @@ export const registerSyncRoutes = (app: FastifyInstance, sql: Sql, config: Confi
     // A device that adopts standard tests and templates offline needs this facility's copy of the lists.
     if (version.data.resultTemplateWorkflowVersion === 1) await ensureStandardCatalogueOnce(sql, identity.facilityId);
 
+    // A capable device is recorded for readiness above; it receives insurance records only once an operator enables the hospital.
+    const insurance = version.data.insuranceWorkflowVersion === 1 && await insuranceEnabled(sql, identity.facilityId) ? 1 as const : undefined;
     const minted = mintSyncToken(signer, {
       deviceId: identity.deviceId,
       facilityId: identity.facilityId,
@@ -68,6 +72,7 @@ export const registerSyncRoutes = (app: FastifyInstance, sql: Sql, config: Confi
       pharmacyWorkflowVersion: version.data.pharmacyWorkflowVersion,
       documentWorkflowVersion: version.data.documentWorkflowVersion,
       resultTemplateWorkflowVersion: version.data.resultTemplateWorkflowVersion,
+      insuranceWorkflowVersion: insurance,
     });
     await touchDevice(sql, identity.deviceId);
 
@@ -82,6 +87,7 @@ export const registerSyncRoutes = (app: FastifyInstance, sql: Sql, config: Confi
       inpatientWorkflowVersion: version.data.inpatientWorkflowVersion,
       documentWorkflowVersion: version.data.documentWorkflowVersion,
       resultTemplateWorkflowVersion: version.data.resultTemplateWorkflowVersion,
+      insuranceWorkflowVersion: insurance,
     };
     return response;
   });

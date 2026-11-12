@@ -677,6 +677,7 @@ streams:
           AND auth.parameter('clinical_workflow') = 1
           AND (auth.parameter('inpatient_workflow') = 1 OR instr(additional_permissions, '"admission:manage"') = 0)
           AND (auth.parameter('result_template_workflow') = 1 OR instr(additional_permissions, '"result_template:manage"') = 0)
+          AND (auth.parameter('insurance_workflow') = 1 OR (role <> 'insurance_officer' AND instr(additional_roles, 'insurance_officer') = 0 AND instr(additional_permissions, '"payment:refund"') = 0 AND instr(additional_permissions, '"insurance_contract:read"') = 0 AND instr(additional_permissions, '"insurance_contract:manage"') = 0 AND instr(additional_permissions, '"insurance_contract:activate"') = 0 AND instr(additional_permissions, '"cover:record"') = 0 AND instr(additional_permissions, '"cover:verify"') = 0 AND instr(additional_permissions, '"coverage:elect_self_pay"') = 0 AND instr(additional_permissions, '"coverage:confirm"') = 0))
       - |
         SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", staff_id AS "staffId", full_name AS "fullName", role, additional_roles AS "additionalRoles", additional_permissions AS "additionalPermissions", permission, login_access AS "loginAccess", active
         FROM staff
@@ -685,6 +686,7 @@ streams:
           AND auth.parameter('clinical_workflow') = 1
           AND (auth.parameter('inpatient_workflow') = 1 OR instr(additional_permissions, '"admission:manage"') = 0)
           AND (auth.parameter('result_template_workflow') = 1 OR instr(additional_permissions, '"result_template:manage"') = 0)
+          AND (auth.parameter('insurance_workflow') = 1 OR (role <> 'insurance_officer' AND instr(additional_roles, 'insurance_officer') = 0 AND instr(additional_permissions, '"payment:refund"') = 0 AND instr(additional_permissions, '"insurance_contract:read"') = 0 AND instr(additional_permissions, '"insurance_contract:manage"') = 0 AND instr(additional_permissions, '"insurance_contract:activate"') = 0 AND instr(additional_permissions, '"cover:record"') = 0 AND instr(additional_permissions, '"cover:verify"') = 0 AND instr(additional_permissions, '"coverage:elect_self_pay"') = 0 AND instr(additional_permissions, '"coverage:confirm"') = 0))
           AND role <> 'laboratory_staff'
           AND role <> 'pharmacy_staff'
           AND instr(additional_roles, 'laboratory_staff') = 0
@@ -718,6 +720,7 @@ streams:
           AND (auth.parameter('clinical_workflow') IS NULL OR auth.parameter('clinical_workflow') <> 1)
           AND (auth.parameter('inpatient_workflow') = 1 OR instr(additional_permissions, '"admission:manage"') = 0)
           AND (auth.parameter('result_template_workflow') = 1 OR instr(additional_permissions, '"result_template:manage"') = 0)
+          AND (auth.parameter('insurance_workflow') = 1 OR (role <> 'insurance_officer' AND instr(additional_roles, 'insurance_officer') = 0 AND instr(additional_permissions, '"payment:refund"') = 0 AND instr(additional_permissions, '"insurance_contract:read"') = 0 AND instr(additional_permissions, '"insurance_contract:manage"') = 0 AND instr(additional_permissions, '"insurance_contract:activate"') = 0 AND instr(additional_permissions, '"cover:record"') = 0 AND instr(additional_permissions, '"cover:verify"') = 0 AND instr(additional_permissions, '"coverage:elect_self_pay"') = 0 AND instr(additional_permissions, '"coverage:confirm"') = 0))
       - |
         SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", staff_id AS "staffId", full_name AS "fullName", role, additional_roles AS "additionalRoles", additional_permissions AS "additionalPermissions", permission, login_access AS "loginAccess", active
         FROM staff
@@ -726,6 +729,7 @@ streams:
           AND (auth.parameter('clinical_workflow') IS NULL OR auth.parameter('clinical_workflow') <> 1)
           AND (auth.parameter('inpatient_workflow') = 1 OR instr(additional_permissions, '"admission:manage"') = 0)
           AND (auth.parameter('result_template_workflow') = 1 OR instr(additional_permissions, '"result_template:manage"') = 0)
+          AND (auth.parameter('insurance_workflow') = 1 OR (role <> 'insurance_officer' AND instr(additional_roles, 'insurance_officer') = 0 AND instr(additional_permissions, '"payment:refund"') = 0 AND instr(additional_permissions, '"insurance_contract:read"') = 0 AND instr(additional_permissions, '"insurance_contract:manage"') = 0 AND instr(additional_permissions, '"insurance_contract:activate"') = 0 AND instr(additional_permissions, '"cover:record"') = 0 AND instr(additional_permissions, '"cover:verify"') = 0 AND instr(additional_permissions, '"coverage:elect_self_pay"') = 0 AND instr(additional_permissions, '"coverage:confirm"') = 0))
           AND role <> 'laboratory_staff'
           AND role <> 'pharmacy_staff'
           AND instr(additional_roles, 'laboratory_staff') = 0
@@ -818,6 +822,7 @@ streams:
           AND (auth.parameter('document_workflow') = 1 OR (ifnull(entity_type, '') <> 'library_document' AND ifnull(entity_type, '') <> 'visit_document'))
           AND (auth.parameter('inpatient_workflow') = 1 OR (ifnull(entity_type, '') <> 'inpatient_event' AND ifnull(entity_type, '') <> 'bed_ready_event'))
           AND (auth.parameter('result_template_workflow') = 1 OR (ifnull(entity_type, '') <> 'result_template' AND ifnull(entity_type, '') <> 'result_part' AND ifnull(entity_type, '') <> 'answer_list' AND ifnull(entity_type, '') <> 'standard_test' AND ifnull(entity_type, '') <> 'standard_template'))
+          AND ifnull(entity_type, '') <> 'payer' AND ifnull(entity_type, '') <> 'cover_schedule' AND ifnull(entity_type, '') <> 'patient_cover' AND ifnull(entity_type, '') <> 'cover_check' AND ifnull(entity_type, '') <> 'coverage_election' AND ifnull(entity_type, '') <> 'coverage_allocation' AND ifnull(entity_type, '') <> 'refund'
       - |
         SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", actor_staff_id AS "actorStaffId", action, entity_type AS "entityType", entity_id AS "entityId", result, occurred_on AS "occurredOn", received_on AS "receivedOn", metadata
         FROM audit_events
@@ -828,6 +833,7 @@ streams:
           AND (auth.parameter('document_workflow') = 1 OR (ifnull(entity_type, '') <> 'library_document' AND ifnull(entity_type, '') <> 'visit_document'))
           AND (auth.parameter('inpatient_workflow') = 1 OR (ifnull(entity_type, '') <> 'inpatient_event' AND ifnull(entity_type, '') <> 'bed_ready_event'))
           AND (auth.parameter('result_template_workflow') = 1 OR (ifnull(entity_type, '') <> 'result_template' AND ifnull(entity_type, '') <> 'result_part' AND ifnull(entity_type, '') <> 'answer_list' AND ifnull(entity_type, '') <> 'standard_test' AND ifnull(entity_type, '') <> 'standard_template'))
+          AND ifnull(entity_type, '') <> 'payer' AND ifnull(entity_type, '') <> 'cover_schedule' AND ifnull(entity_type, '') <> 'patient_cover' AND ifnull(entity_type, '') <> 'cover_check' AND ifnull(entity_type, '') <> 'coverage_election' AND ifnull(entity_type, '') <> 'coverage_allocation' AND ifnull(entity_type, '') <> 'refund'
           AND ifnull(entity_type, '') <> 'location' AND ifnull(entity_type, '') <> 'service_definition' AND ifnull(entity_type, '') <> 'service_offering' AND ifnull(entity_type, '') <> 'practitioner_profile' AND ifnull(entity_type, '') <> 'credential' AND ifnull(entity_type, '') <> 'capability_decision' AND ifnull(entity_type, '') <> 'reviewer_delegation' AND ifnull(entity_type, '') <> 'clinical_authority_bootstrap' AND ifnull(entity_type, '') <> 'authority_snapshot' AND ifnull(entity_type, '') <> 'external_clinical_reviewer' AND ifnull(entity_type, '') <> 'staff_assignment' AND ifnull(entity_type, '') <> 'service_session' AND ifnull(entity_type, '') <> 'session_event' AND ifnull(entity_type, '') <> 'work_ownership_event' AND ifnull(entity_type, '') <> 'appointment_reservation' AND ifnull(entity_type, '') <> 'result_template' AND ifnull(entity_type, '') <> 'result_part' AND ifnull(entity_type, '') <> 'answer_list' AND ifnull(entity_type, '') <> 'standard_test' AND ifnull(entity_type, '') <> 'standard_template'
       - |
         SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", actor_staff_id AS "actorStaffId", action, entity_type AS "entityType", entity_id AS "entityId", result, occurred_on AS "occurredOn", received_on AS "receivedOn", metadata
@@ -839,6 +845,7 @@ streams:
           AND (auth.parameter('document_workflow') = 1 OR (ifnull(entity_type, '') <> 'library_document' AND ifnull(entity_type, '') <> 'visit_document'))
           AND (auth.parameter('inpatient_workflow') = 1 OR (ifnull(entity_type, '') <> 'inpatient_event' AND ifnull(entity_type, '') <> 'bed_ready_event'))
           AND (auth.parameter('result_template_workflow') = 1 OR (ifnull(entity_type, '') <> 'result_template' AND ifnull(entity_type, '') <> 'result_part' AND ifnull(entity_type, '') <> 'answer_list' AND ifnull(entity_type, '') <> 'standard_test' AND ifnull(entity_type, '') <> 'standard_template'))
+          AND ifnull(entity_type, '') <> 'payer' AND ifnull(entity_type, '') <> 'cover_schedule' AND ifnull(entity_type, '') <> 'patient_cover' AND ifnull(entity_type, '') <> 'cover_check' AND ifnull(entity_type, '') <> 'coverage_election' AND ifnull(entity_type, '') <> 'coverage_allocation' AND ifnull(entity_type, '') <> 'refund'
       - |
         SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", actor_staff_id AS "actorStaffId", action, entity_type AS "entityType", entity_id AS "entityId", result, occurred_on AS "occurredOn", received_on AS "receivedOn", metadata
         FROM audit_events
@@ -849,7 +856,67 @@ streams:
           AND (auth.parameter('document_workflow') = 1 OR (ifnull(entity_type, '') <> 'library_document' AND ifnull(entity_type, '') <> 'visit_document'))
           AND (auth.parameter('inpatient_workflow') = 1 OR (ifnull(entity_type, '') <> 'inpatient_event' AND ifnull(entity_type, '') <> 'bed_ready_event'))
           AND (auth.parameter('result_template_workflow') = 1 OR (ifnull(entity_type, '') <> 'result_template' AND ifnull(entity_type, '') <> 'result_part' AND ifnull(entity_type, '') <> 'answer_list' AND ifnull(entity_type, '') <> 'standard_test' AND ifnull(entity_type, '') <> 'standard_template'))
+          AND ifnull(entity_type, '') <> 'payer' AND ifnull(entity_type, '') <> 'cover_schedule' AND ifnull(entity_type, '') <> 'patient_cover' AND ifnull(entity_type, '') <> 'cover_check' AND ifnull(entity_type, '') <> 'coverage_election' AND ifnull(entity_type, '') <> 'coverage_allocation' AND ifnull(entity_type, '') <> 'refund'
           AND ifnull(entity_type, '') <> 'location' AND ifnull(entity_type, '') <> 'service_definition' AND ifnull(entity_type, '') <> 'service_offering' AND ifnull(entity_type, '') <> 'practitioner_profile' AND ifnull(entity_type, '') <> 'credential' AND ifnull(entity_type, '') <> 'capability_decision' AND ifnull(entity_type, '') <> 'reviewer_delegation' AND ifnull(entity_type, '') <> 'clinical_authority_bootstrap' AND ifnull(entity_type, '') <> 'authority_snapshot' AND ifnull(entity_type, '') <> 'external_clinical_reviewer' AND ifnull(entity_type, '') <> 'staff_assignment' AND ifnull(entity_type, '') <> 'service_session' AND ifnull(entity_type, '') <> 'session_event' AND ifnull(entity_type, '') <> 'work_ownership_event' AND ifnull(entity_type, '') <> 'appointment_reservation' AND ifnull(entity_type, '') <> 'result_template' AND ifnull(entity_type, '') <> 'result_part' AND ifnull(entity_type, '') <> 'answer_list' AND ifnull(entity_type, '') <> 'standard_test' AND ifnull(entity_type, '') <> 'standard_template'
+  audit_events_insurance:
+    auto_subscribe: true
+    queries:
+      - |
+        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", actor_staff_id AS "actorStaffId", action, entity_type AS "entityType", entity_id AS "entityId", result, occurred_on AS "occurredOn", received_on AS "receivedOn", metadata
+        FROM audit_events
+        WHERE facility_id = auth.parameter('facility_id')
+          AND auth.parameter('facility_contract') = 1
+          AND auth.parameter('clinical_workflow') = 1
+          AND auth.parameter('insurance_workflow') = 1
+          AND entity_type = 'payer'
+      - |
+        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", actor_staff_id AS "actorStaffId", action, entity_type AS "entityType", entity_id AS "entityId", result, occurred_on AS "occurredOn", received_on AS "receivedOn", metadata
+        FROM audit_events
+        WHERE facility_id = auth.parameter('facility_id')
+          AND auth.parameter('facility_contract') = 1
+          AND auth.parameter('clinical_workflow') = 1
+          AND auth.parameter('insurance_workflow') = 1
+          AND entity_type = 'cover_schedule'
+      - |
+        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", actor_staff_id AS "actorStaffId", action, entity_type AS "entityType", entity_id AS "entityId", result, occurred_on AS "occurredOn", received_on AS "receivedOn", metadata
+        FROM audit_events
+        WHERE facility_id = auth.parameter('facility_id')
+          AND auth.parameter('facility_contract') = 1
+          AND auth.parameter('clinical_workflow') = 1
+          AND auth.parameter('insurance_workflow') = 1
+          AND entity_type = 'patient_cover'
+      - |
+        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", actor_staff_id AS "actorStaffId", action, entity_type AS "entityType", entity_id AS "entityId", result, occurred_on AS "occurredOn", received_on AS "receivedOn", metadata
+        FROM audit_events
+        WHERE facility_id = auth.parameter('facility_id')
+          AND auth.parameter('facility_contract') = 1
+          AND auth.parameter('clinical_workflow') = 1
+          AND auth.parameter('insurance_workflow') = 1
+          AND entity_type = 'cover_check'
+      - |
+        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", actor_staff_id AS "actorStaffId", action, entity_type AS "entityType", entity_id AS "entityId", result, occurred_on AS "occurredOn", received_on AS "receivedOn", metadata
+        FROM audit_events
+        WHERE facility_id = auth.parameter('facility_id')
+          AND auth.parameter('facility_contract') = 1
+          AND auth.parameter('clinical_workflow') = 1
+          AND auth.parameter('insurance_workflow') = 1
+          AND entity_type = 'coverage_election'
+      - |
+        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", actor_staff_id AS "actorStaffId", action, entity_type AS "entityType", entity_id AS "entityId", result, occurred_on AS "occurredOn", received_on AS "receivedOn", metadata
+        FROM audit_events
+        WHERE facility_id = auth.parameter('facility_id')
+          AND auth.parameter('facility_contract') = 1
+          AND auth.parameter('clinical_workflow') = 1
+          AND auth.parameter('insurance_workflow') = 1
+          AND entity_type = 'coverage_allocation'
+      - |
+        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", actor_staff_id AS "actorStaffId", action, entity_type AS "entityType", entity_id AS "entityId", result, occurred_on AS "occurredOn", received_on AS "receivedOn", metadata
+        FROM audit_events
+        WHERE facility_id = auth.parameter('facility_id')
+          AND auth.parameter('facility_contract') = 1
+          AND auth.parameter('clinical_workflow') = 1
+          AND auth.parameter('insurance_workflow') = 1
+          AND entity_type = 'refund'
   audit_events_ward_care:
     auto_subscribe: true
     queries:
@@ -864,6 +931,7 @@ streams:
           AND (auth.parameter('document_workflow') = 1 OR (ifnull(entity_type, '') <> 'library_document' AND ifnull(entity_type, '') <> 'visit_document'))
           AND (auth.parameter('inpatient_workflow') = 1 OR (ifnull(entity_type, '') <> 'inpatient_event' AND ifnull(entity_type, '') <> 'bed_ready_event'))
           AND (auth.parameter('result_template_workflow') = 1 OR (ifnull(entity_type, '') <> 'result_template' AND ifnull(entity_type, '') <> 'result_part' AND ifnull(entity_type, '') <> 'answer_list' AND ifnull(entity_type, '') <> 'standard_test' AND ifnull(entity_type, '') <> 'standard_template'))
+          AND ifnull(entity_type, '') <> 'payer' AND ifnull(entity_type, '') <> 'cover_schedule' AND ifnull(entity_type, '') <> 'patient_cover' AND ifnull(entity_type, '') <> 'cover_check' AND ifnull(entity_type, '') <> 'coverage_election' AND ifnull(entity_type, '') <> 'coverage_allocation' AND ifnull(entity_type, '') <> 'refund'
   sync_rejections:
     auto_subscribe: true
     queries:
@@ -877,6 +945,7 @@ streams:
           AND (auth.parameter('document_workflow') = 1 OR (ifnull(entity_type, '') <> 'library_document' AND ifnull(entity_type, '') <> 'visit_document'))
           AND (auth.parameter('inpatient_workflow') = 1 OR (ifnull(entity_type, '') <> 'inpatient_event' AND ifnull(entity_type, '') <> 'bed_ready_event'))
           AND (auth.parameter('result_template_workflow') = 1 OR (ifnull(entity_type, '') <> 'result_template' AND ifnull(entity_type, '') <> 'result_part' AND ifnull(entity_type, '') <> 'answer_list' AND ifnull(entity_type, '') <> 'standard_test' AND ifnull(entity_type, '') <> 'standard_template'))
+          AND ifnull(entity_type, '') <> 'payer' AND ifnull(entity_type, '') <> 'cover_schedule' AND ifnull(entity_type, '') <> 'patient_cover' AND ifnull(entity_type, '') <> 'cover_check' AND ifnull(entity_type, '') <> 'coverage_election' AND ifnull(entity_type, '') <> 'coverage_allocation' AND ifnull(entity_type, '') <> 'refund'
           AND (visibility IS NULL OR visibility = 'facility')
       - |
         SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", entity_type AS "entityType", entity_id AS "entityId", operation, category, dependencies, visibility, visible_to_staff_ids AS "visibleToStaffIds", reason, attributed_to AS "attributedTo", occurred_on AS "occurredOn", conflicts, refused_record AS "refusedRecord", refused_changes AS "refusedChanges", resolved_on AS "resolvedOn", resolved_by AS "resolvedBy", resolution
@@ -888,6 +957,7 @@ streams:
           AND (auth.parameter('document_workflow') = 1 OR (ifnull(entity_type, '') <> 'library_document' AND ifnull(entity_type, '') <> 'visit_document'))
           AND (auth.parameter('inpatient_workflow') = 1 OR (ifnull(entity_type, '') <> 'inpatient_event' AND ifnull(entity_type, '') <> 'bed_ready_event'))
           AND (auth.parameter('result_template_workflow') = 1 OR (ifnull(entity_type, '') <> 'result_template' AND ifnull(entity_type, '') <> 'result_part' AND ifnull(entity_type, '') <> 'answer_list' AND ifnull(entity_type, '') <> 'standard_test' AND ifnull(entity_type, '') <> 'standard_template'))
+          AND ifnull(entity_type, '') <> 'payer' AND ifnull(entity_type, '') <> 'cover_schedule' AND ifnull(entity_type, '') <> 'patient_cover' AND ifnull(entity_type, '') <> 'cover_check' AND ifnull(entity_type, '') <> 'coverage_election' AND ifnull(entity_type, '') <> 'coverage_allocation' AND ifnull(entity_type, '') <> 'refund'
           AND (visibility IS NULL OR visibility = 'facility')
   sync_rejections_legacy:
     auto_subscribe: true
@@ -902,6 +972,7 @@ streams:
           AND (auth.parameter('document_workflow') = 1 OR (ifnull(entity_type, '') <> 'library_document' AND ifnull(entity_type, '') <> 'visit_document'))
           AND (auth.parameter('inpatient_workflow') = 1 OR (ifnull(entity_type, '') <> 'inpatient_event' AND ifnull(entity_type, '') <> 'bed_ready_event'))
           AND (auth.parameter('result_template_workflow') = 1 OR (ifnull(entity_type, '') <> 'result_template' AND ifnull(entity_type, '') <> 'result_part' AND ifnull(entity_type, '') <> 'answer_list' AND ifnull(entity_type, '') <> 'standard_test' AND ifnull(entity_type, '') <> 'standard_template'))
+          AND ifnull(entity_type, '') <> 'payer' AND ifnull(entity_type, '') <> 'cover_schedule' AND ifnull(entity_type, '') <> 'patient_cover' AND ifnull(entity_type, '') <> 'cover_check' AND ifnull(entity_type, '') <> 'coverage_election' AND ifnull(entity_type, '') <> 'coverage_allocation' AND ifnull(entity_type, '') <> 'refund'
           AND (visibility IS NULL OR visibility = 'facility')
           AND category <> 'dependency'
           AND entity_type <> 'location'
@@ -934,6 +1005,7 @@ streams:
           AND (auth.parameter('document_workflow') = 1 OR (ifnull(entity_type, '') <> 'library_document' AND ifnull(entity_type, '') <> 'visit_document'))
           AND (auth.parameter('inpatient_workflow') = 1 OR (ifnull(entity_type, '') <> 'inpatient_event' AND ifnull(entity_type, '') <> 'bed_ready_event'))
           AND (auth.parameter('result_template_workflow') = 1 OR (ifnull(entity_type, '') <> 'result_template' AND ifnull(entity_type, '') <> 'result_part' AND ifnull(entity_type, '') <> 'answer_list' AND ifnull(entity_type, '') <> 'standard_test' AND ifnull(entity_type, '') <> 'standard_template'))
+          AND ifnull(entity_type, '') <> 'payer' AND ifnull(entity_type, '') <> 'cover_schedule' AND ifnull(entity_type, '') <> 'patient_cover' AND ifnull(entity_type, '') <> 'cover_check' AND ifnull(entity_type, '') <> 'coverage_election' AND ifnull(entity_type, '') <> 'coverage_allocation' AND ifnull(entity_type, '') <> 'refund'
           AND (visibility IS NULL OR visibility = 'facility')
           AND category <> 'dependency'
           AND entity_type <> 'location'
@@ -956,6 +1028,72 @@ streams:
           AND entity_type <> 'answer_list'
           AND entity_type <> 'standard_test'
           AND entity_type <> 'standard_template'
+  sync_rejections_insurance:
+    auto_subscribe: true
+    queries:
+      - |
+        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", entity_type AS "entityType", entity_id AS "entityId", operation, category, dependencies, visibility, visible_to_staff_ids AS "visibleToStaffIds", reason, attributed_to AS "attributedTo", occurred_on AS "occurredOn", conflicts, refused_record AS "refusedRecord", refused_changes AS "refusedChanges", resolved_on AS "resolvedOn", resolved_by AS "resolvedBy", resolution
+        FROM sync_rejections
+        WHERE facility_id = auth.parameter('facility_id')
+          AND auth.parameter('facility_contract') = 1
+          AND auth.parameter('clinical_workflow') = 1
+          AND auth.parameter('insurance_workflow') = 1
+          AND entity_type = 'payer'
+          AND (visibility IS NULL OR visibility = 'facility')
+      - |
+        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", entity_type AS "entityType", entity_id AS "entityId", operation, category, dependencies, visibility, visible_to_staff_ids AS "visibleToStaffIds", reason, attributed_to AS "attributedTo", occurred_on AS "occurredOn", conflicts, refused_record AS "refusedRecord", refused_changes AS "refusedChanges", resolved_on AS "resolvedOn", resolved_by AS "resolvedBy", resolution
+        FROM sync_rejections
+        WHERE facility_id = auth.parameter('facility_id')
+          AND auth.parameter('facility_contract') = 1
+          AND auth.parameter('clinical_workflow') = 1
+          AND auth.parameter('insurance_workflow') = 1
+          AND entity_type = 'cover_schedule'
+          AND (visibility IS NULL OR visibility = 'facility')
+      - |
+        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", entity_type AS "entityType", entity_id AS "entityId", operation, category, dependencies, visibility, visible_to_staff_ids AS "visibleToStaffIds", reason, attributed_to AS "attributedTo", occurred_on AS "occurredOn", conflicts, refused_record AS "refusedRecord", refused_changes AS "refusedChanges", resolved_on AS "resolvedOn", resolved_by AS "resolvedBy", resolution
+        FROM sync_rejections
+        WHERE facility_id = auth.parameter('facility_id')
+          AND auth.parameter('facility_contract') = 1
+          AND auth.parameter('clinical_workflow') = 1
+          AND auth.parameter('insurance_workflow') = 1
+          AND entity_type = 'patient_cover'
+          AND (visibility IS NULL OR visibility = 'facility')
+      - |
+        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", entity_type AS "entityType", entity_id AS "entityId", operation, category, dependencies, visibility, visible_to_staff_ids AS "visibleToStaffIds", reason, attributed_to AS "attributedTo", occurred_on AS "occurredOn", conflicts, refused_record AS "refusedRecord", refused_changes AS "refusedChanges", resolved_on AS "resolvedOn", resolved_by AS "resolvedBy", resolution
+        FROM sync_rejections
+        WHERE facility_id = auth.parameter('facility_id')
+          AND auth.parameter('facility_contract') = 1
+          AND auth.parameter('clinical_workflow') = 1
+          AND auth.parameter('insurance_workflow') = 1
+          AND entity_type = 'cover_check'
+          AND (visibility IS NULL OR visibility = 'facility')
+      - |
+        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", entity_type AS "entityType", entity_id AS "entityId", operation, category, dependencies, visibility, visible_to_staff_ids AS "visibleToStaffIds", reason, attributed_to AS "attributedTo", occurred_on AS "occurredOn", conflicts, refused_record AS "refusedRecord", refused_changes AS "refusedChanges", resolved_on AS "resolvedOn", resolved_by AS "resolvedBy", resolution
+        FROM sync_rejections
+        WHERE facility_id = auth.parameter('facility_id')
+          AND auth.parameter('facility_contract') = 1
+          AND auth.parameter('clinical_workflow') = 1
+          AND auth.parameter('insurance_workflow') = 1
+          AND entity_type = 'coverage_election'
+          AND (visibility IS NULL OR visibility = 'facility')
+      - |
+        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", entity_type AS "entityType", entity_id AS "entityId", operation, category, dependencies, visibility, visible_to_staff_ids AS "visibleToStaffIds", reason, attributed_to AS "attributedTo", occurred_on AS "occurredOn", conflicts, refused_record AS "refusedRecord", refused_changes AS "refusedChanges", resolved_on AS "resolvedOn", resolved_by AS "resolvedBy", resolution
+        FROM sync_rejections
+        WHERE facility_id = auth.parameter('facility_id')
+          AND auth.parameter('facility_contract') = 1
+          AND auth.parameter('clinical_workflow') = 1
+          AND auth.parameter('insurance_workflow') = 1
+          AND entity_type = 'coverage_allocation'
+          AND (visibility IS NULL OR visibility = 'facility')
+      - |
+        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", entity_type AS "entityType", entity_id AS "entityId", operation, category, dependencies, visibility, visible_to_staff_ids AS "visibleToStaffIds", reason, attributed_to AS "attributedTo", occurred_on AS "occurredOn", conflicts, refused_record AS "refusedRecord", refused_changes AS "refusedChanges", resolved_on AS "resolvedOn", resolved_by AS "resolvedBy", resolution
+        FROM sync_rejections
+        WHERE facility_id = auth.parameter('facility_id')
+          AND auth.parameter('facility_contract') = 1
+          AND auth.parameter('clinical_workflow') = 1
+          AND auth.parameter('insurance_workflow') = 1
+          AND entity_type = 'refund'
+          AND (visibility IS NULL OR visibility = 'facility')
   sync_rejections_ward_care:
     auto_subscribe: true
     queries:
@@ -970,6 +1108,7 @@ streams:
           AND (auth.parameter('document_workflow') = 1 OR (ifnull(entity_type, '') <> 'library_document' AND ifnull(entity_type, '') <> 'visit_document'))
           AND (auth.parameter('inpatient_workflow') = 1 OR (ifnull(entity_type, '') <> 'inpatient_event' AND ifnull(entity_type, '') <> 'bed_ready_event'))
           AND (auth.parameter('result_template_workflow') = 1 OR (ifnull(entity_type, '') <> 'result_template' AND ifnull(entity_type, '') <> 'result_part' AND ifnull(entity_type, '') <> 'answer_list' AND ifnull(entity_type, '') <> 'standard_test' AND ifnull(entity_type, '') <> 'standard_template'))
+          AND ifnull(entity_type, '') <> 'payer' AND ifnull(entity_type, '') <> 'cover_schedule' AND ifnull(entity_type, '') <> 'patient_cover' AND ifnull(entity_type, '') <> 'cover_check' AND ifnull(entity_type, '') <> 'coverage_election' AND ifnull(entity_type, '') <> 'coverage_allocation' AND ifnull(entity_type, '') <> 'refund'
           AND (visibility IS NULL OR visibility = 'facility')
   pin_setup_codes:
     auto_subscribe: true
@@ -1397,3 +1536,73 @@ streams:
           AND auth.parameter('facility_contract') = 1
           AND (auth.parameter('clinical_workflow') IS NULL OR auth.parameter('clinical_workflow') <> 1)
           AND auth.parameter('result_template_workflow') = 1
+  refunds:
+    auto_subscribe: true
+    queries:
+      - |
+        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", patient_id AS "patientId", refund_number AS "refundNumber", method, amount_minor AS "amountMinor", currency, allocations, reason, reference
+        FROM refunds
+        WHERE facility_id = auth.parameter('facility_id')
+          AND auth.parameter('facility_contract') = 1
+          AND auth.parameter('clinical_workflow') = 1
+          AND auth.parameter('insurance_workflow') = 1
+  payers:
+    auto_subscribe: true
+    queries:
+      - |
+        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", name, kind, code, active
+        FROM payers
+        WHERE facility_id = auth.parameter('facility_id')
+          AND auth.parameter('facility_contract') = 1
+          AND auth.parameter('clinical_workflow') = 1
+          AND auth.parameter('insurance_workflow') = 1
+  cover_schedules:
+    auto_subscribe: true
+    queries:
+      - |
+        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", payer_id AS "payerId", contract_id AS "contractId", contract_version_id AS "contractVersionId", contract_version AS "contractVersion", plan_code AS "planCode", plan_name AS "planName", currency, effective_from AS "effectiveFrom", effective_to AS "effectiveTo", ended_on AS "endedOn", self_pay_election AS "selfPayElection", calculation_version AS "calculationVersion", items, categories
+        FROM cover_schedules
+        WHERE facility_id = auth.parameter('facility_id')
+          AND auth.parameter('facility_contract') = 1
+          AND auth.parameter('clinical_workflow') = 1
+          AND auth.parameter('insurance_workflow') = 1
+  patient_covers:
+    auto_subscribe: true
+    queries:
+      - |
+        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", patient_id AS "patientId", payer_id AS "payerId", plan_code AS "planCode", enrollee_number AS "enrolleeNumber", relationship, principal_name AS "principalName", valid_from AS "validFrom", valid_to AS "validTo", active, replaces
+        FROM patient_covers
+        WHERE facility_id = auth.parameter('facility_id')
+          AND auth.parameter('facility_contract') = 1
+          AND auth.parameter('clinical_workflow') = 1
+          AND auth.parameter('insurance_workflow') = 1
+  cover_checks:
+    auto_subscribe: true
+    queries:
+      - |
+        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", patient_id AS "patientId", cover_id AS "coverId", method, reference, result, covers_from AS "coversFrom", covers_to AS "coversTo", note
+        FROM cover_checks
+        WHERE facility_id = auth.parameter('facility_id')
+          AND auth.parameter('facility_contract') = 1
+          AND auth.parameter('clinical_workflow') = 1
+          AND auth.parameter('insurance_workflow') = 1
+  coverage_elections:
+    auto_subscribe: true
+    queries:
+      - |
+        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", patient_id AS "patientId", kind, cover_id AS "coverId", charge_ids AS "chargeIds", reason, cover_check_id AS "coverCheckId", patient_agreed AS "patientAgreed", note
+        FROM coverage_elections
+        WHERE facility_id = auth.parameter('facility_id')
+          AND auth.parameter('facility_contract') = 1
+          AND auth.parameter('clinical_workflow') = 1
+          AND auth.parameter('insurance_workflow') = 1
+  coverage_allocations:
+    auto_subscribe: true
+    queries:
+      - |
+        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", patient_id AS "patientId", charge_id AS "chargeId", state, payer_id AS "payerId", arrangement, patient_share_minor AS "patientShareMinor", currency, basis, supersedes
+        FROM coverage_allocations
+        WHERE facility_id = auth.parameter('facility_id')
+          AND auth.parameter('facility_contract') = 1
+          AND auth.parameter('clinical_workflow') = 1
+          AND auth.parameter('insurance_workflow') = 1
