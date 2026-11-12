@@ -47,6 +47,8 @@ export const TABLE_FOR: Record<DocType, string> = {
   work_ownership_event: 'work_ownership_events', appointment_reservation: 'appointment_reservations',
   result_template: 'result_templates', result_part: 'result_parts', answer_list: 'answer_lists',
   standard_test: 'standard_tests', standard_template: 'standard_templates',
+  refund: 'refunds', payer: 'payers', cover_schedule: 'cover_schedules', patient_cover: 'patient_covers',
+  cover_check: 'cover_checks', coverage_election: 'coverage_elections', coverage_allocation: 'coverage_allocations',
 };
 
 /**
@@ -79,6 +81,7 @@ const JSONB_COLUMNS: Partial<Record<DocType, readonly string[]>> = {
   service_session: ['participants', 'resources', 'roster_shift_ids'],
   result_template: ['parts', 'service_definition_ids'], result_part: ['part'], answer_list: ['answers'],
   standard_test: ['aliases', 'concept'], standard_template: ['tests', 'parts'],
+  refund: ['allocations'], cover_schedule: ['items', 'categories'], coverage_election: ['charge_ids'],
 };
 
 export const snakeCase = (key: string): string => key.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`);

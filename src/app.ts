@@ -14,6 +14,7 @@ import { registerStaffRoutes } from './routes/staff.ts';
 import { registerSyncRoutes } from './routes/sync.ts';
 import { registerPatientRoutes } from './routes/patients.ts';
 import { registerWorkforceRoutes } from './routes/workforce.ts';
+import { registerInsuranceRoutes } from './routes/insurance.ts';
 import { billingRawBodies, registerBillingRoutes } from './routes/billing.ts';
 import type { PaystackFetch } from './billing/paystack.ts';
 import { createRateLimiter } from './lib/rateLimit.ts';
@@ -163,6 +164,7 @@ export const buildApp = ({ config, sql, signer, mailer: givenMailer, paystackFet
   registerPatientRoutes(app, sql);
   registerDocumentRoutes(app,sql);
   registerWorkforceRoutes(app, sql, mailer);
+  registerInsuranceRoutes(app, sql);
   const startedOn = new Date().toISOString();
 
   /**
