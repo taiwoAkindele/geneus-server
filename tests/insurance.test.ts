@@ -480,8 +480,10 @@ describe('insurance foundation', () => {
       assert.equal((await draftTerms()).revision, draft.revision);
       assert.equal((await importTariff({ requestKey: key, lines: lines.slice(0, 1) })).json().error, 'request_reused');
       const [audit] = await db.sql`SELECT metadata FROM audit_events WHERE metadata->>'context' = 'insurance_tariff_imported'`;
-      assert.equal(audit.metadata.sha256, source.sha256);
-      assert.equal(audit.metadata.fileName, source.fileName);
+      assert.equal(audit.metadata.reportedFileSha256, source.sha256, 'the file checksum is kept only as reported by the browser');
+      assert.match(first.json().payloadSha256, /^[0-9a-f]{64}$/);
+      assert.equal(audit.metadata.payloadSha256, first.json().payloadSha256, 'the audit holds the server checksum of what it applied');
+      assert.notEqual(audit.metadata.payloadSha256, source.sha256);
       assert.equal((await db.sql`SELECT 1 FROM audit_events WHERE metadata->>'context' = 'insurance_tariff_imported'`).length, 1, 'a replay is not audited twice');
     });
     it('needs the current draft revision, and replace makes the sheet the whole tariff', async () => {

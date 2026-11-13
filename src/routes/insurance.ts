@@ -394,11 +394,13 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
     const body = TariffImport.safeParse(request.body);
     if (!body.success) return invalid(reply, body.error.issues.slice(0, 20).map((i) => i.message).join('; '));
     try {
-      const result = await sql.begin((tx) => once(tx, who, body.data.requestKey, 'import_tariff', body.data, () => applyTariffImport(tx, who.identity.facilityId, who.staff.id, body.data)));
+      // The server's own checksum of exactly what it validated and applied: the evidence, unlike the file checksum the browser reports.
+      const payloadSha256 = createHash('sha256').update(JSON.stringify({ payerId: body.data.payerId, mode: body.data.mode, lines: body.data.lines.map((l) => [l.feeItemId, l.unitMinor, l.payerCode ?? null, l.sourceRow]) })).digest('hex');
+      const result = await sql.begin((tx) => once(tx, who, body.data.requestKey, 'import_tariff', body.data, async () => ({ ...(await applyTariffImport(tx, who.identity.facilityId, who.staff.id, body.data)), payloadSha256 })));
       if ('conflict' in result) return reply.code(409).send({ error: 'request_reused', message: 'This request key was already used for a different action' } satisfies ApiErrorBody);
       if (!result.replayed) await recordAuditEvent(sql, { facilityId: who.identity.facilityId, deviceId: who.identity.deviceId, actorStaffId: who.staff.id, action: 'update', entityType: 'payer', entityId: body.data.payerId, metadata: {
         context: 'insurance_tariff_imported', contractVersionId: result.response.contractVersionId, revision: result.response.revision, mode: body.data.mode,
-        fileName: body.data.source.fileName, sha256: body.data.source.sha256, rows: body.data.source.rows, lines: body.data.lines.length,
+        payloadSha256, reportedFileName: body.data.source.fileName, reportedFileSha256: body.data.source.sha256, reportedRows: body.data.source.rows, lines: body.data.lines.length,
         added: result.response.added, changed: result.response.changed, unchanged: result.response.unchanged, removed: result.response.removed, ...(body.data.source.templateId ? { templateId: body.data.source.templateId } : {}),
       } });
       return result.response;
