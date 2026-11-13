@@ -23,7 +23,7 @@ import { buildSyncConfig } from '../src/sync/syncConfig.ts';
 import { insertRecord } from '../src/db/records.ts';
 import { issueEnrollmentCode } from '../src/devices/enrollment.ts';
 import { issuePinSetupCode } from '../src/staff/pinSetupCodes.ts';
-import { setInsuranceEnabled } from '../src/insurance/enablement.ts';
+import { setInsuranceState } from '../src/insurance/enablement.ts';
 import { chargePositions, chargesById } from '../src/insurance/coverage.ts';
 import { config, signer, addStaff, envelopeFor, registerScratchFacility, scratchDatabase } from '../tests/postgres.ts';
 import type { EmailMessage } from '../src/lib/email.ts';
@@ -90,8 +90,10 @@ try {
   for (const [id, n, feeItemId, category, amount] of charges) {
     await insertRecord(source.sql, 'charge', { ...base, id, type: 'charge', patientId: patient(n), feeItemId, category, description: feeItemId === 'fee:lab' ? 'Malaria RDT' : 'General consultation', listPriceMinor: amount, amountMinor: amount, currency: 'NGN' } as Partial<Charge>);
   }
-  // Switched on the way an operator would: audited, with the time zone recorded.
-  await setInsuranceEnabled(source.sql, { facilityId: f.facility.id, enabled: true, operator: 'staging-harness', governanceReference: 'staging:synthetic-hospital', timeZone: 'Africa/Lagos' });
+  // Setup the way an operator would: audited, with the time zone recorded. Billing is activated later, after readiness.
+  await setInsuranceState(source.sql, { facilityId: f.facility.id, state: 'setup', operator: 'staging-harness', governanceReference: 'staging:synthetic-hospital', timeZone: 'Africa/Lagos' });
+  // The time zone is recorded; the hospital administrator then starts setup from the app.
+  await setInsuranceState(source.sql, { facilityId: f.facility.id, state: 'off', operator: 'staging-harness', governanceReference: 'staging:synthetic-hospital' });
   const enrollment = await issueEnrollmentCode(source.sql, f.facility.id, f.admin.id, f.device.deviceId);
   // The harness device reports itself synced with insurance support, so activation waits only on real devices.
   const reportReady = async () => {
@@ -129,6 +131,7 @@ try {
       if (url.pathname === '/refunds') return send(await source.sql`SELECT id, refund_number, amount_minor, allocations FROM refunds WHERE facility_id = ${f.facility.id}`);
       if (url.pathname === '/devices') return send(await source.sql`SELECT d.id, d.status, v.insurance_version, v.pending_mutation_count, v.recorded_on FROM devices d LEFT JOIN workforce_client_versions v ON v.device_id = d.id WHERE d.facility_id = ${f.facility.id}`);
       if (url.pathname === '/ready' && request.method === 'POST') { await reportReady(); return send({ ok: true }); }
+      if (url.pathname === '/activate-billing' && request.method === 'POST') { await reportReady(); return send(await setInsuranceState(source.sql, { facilityId: f.facility.id, state: 'active', operator: 'staging-harness', governanceReference: 'staging:billing-activation' })); }
       if (url.pathname === '/enrollment-code' && request.method === 'POST') return send(await issueEnrollmentCode(source.sql, f.facility.id, f.admin.id, f.device.deviceId));
       // Ends every verified staff session, to exercise expiry and renewal in the real app.
       if (url.pathname === '/expire-sessions' && request.method === 'POST') { await source.sql`UPDATE workforce_private_sessions SET expires_on = now() - interval '1 second' WHERE facility_id = ${f.facility.id}`; return send({ ok: true }); }

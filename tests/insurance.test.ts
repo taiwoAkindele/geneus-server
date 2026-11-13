@@ -1,13 +1,13 @@
 import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { POLICY_VERSION, PayerContractTerms, computeAllocation, serviceDateOf, type FacilityRegistrationResult, type Staff, type UploadMutation } from '#shared';
 import { insertRecord } from '../src/db/records.ts';
 import { buildSyncConfig } from '../src/sync/syncConfig.ts';
 import { availableOnCharge } from '../src/billing/ledger.ts';
 import { chargePositions, chargesById } from '../src/insurance/coverage.ts';
-import { setInsuranceEnabled } from '../src/insurance/enablement.ts';
+import { setInsuranceState } from '../src/insurance/enablement.ts';
 import { addStaff, asDevice, clientId, envelopeFor, lastCodeSentTo, registerScratchFacility, scratchDatabase, testApp, upload, type ScratchDatabase } from './postgres.ts';
 
 /**
@@ -78,7 +78,7 @@ describe('insurance foundation', () => {
       await db.sql`INSERT INTO staff_contacts (facility_id, staff_id, email, verified_on) VALUES (${f.facility.id}, ${s.id}, ${email}, now())`;
     }
     const admin = { ...envelopeFor(f), schemaVersion: 5 };
-    for (const n of ['000001', '000002', '000003']) await insertRecord(db.sql, 'patient', { ...admin, id: patient(n), patientId: patient(n), type: 'patient', fullName: `Synthetic patient ${n}`, address: 'Synthetic address', sex: 'female', ageYears: 30 });
+    for (const n of ['000001', '000002', '000003', '000004']) await insertRecord(db.sql, 'patient', { ...admin, id: patient(n), patientId: patient(n), type: 'patient', fullName: `Synthetic patient ${n}`, address: 'Synthetic address', sex: 'female', ageYears: 30 });
     for (const [id, category, amountMinor] of [['fee:consult', 'consultation', 5_000], ['fee:capt', 'registration', 1_500], ['fee:proc', 'procedure', 20_000], ['fee:nobill', 'consultation', 3_000]] as const) {
       await insertRecord(db.sql, 'fee_item', { ...admin, id, type: 'fee_item', name: id, category, amountMinor, currency: 'NGN', chargeWhen: 'when_ordered' });
     }
@@ -95,17 +95,29 @@ describe('insurance foundation', () => {
       const t = await token();
       assert.equal(t.statusCode, 200, t.body);
       assert.equal(t.json().insuranceWorkflowVersion, undefined, 'a capable device gets no insurance records yet');
-      // Enabling is an operator's audited decision, and needs the hospital's time zone.
-      await assert.rejects(setInsuranceEnabled(db.sql, { facilityId: f.facility.id, enabled: true, operator: 'synthetic-operator', governanceReference: 'synthetic:approval' }), /time zone/);
-      await assert.rejects(setInsuranceEnabled(db.sql, { facilityId: f.facility.id, enabled: true, operator: ' ', governanceReference: 'synthetic:approval', timeZone: TZ }), /operator/);
-      const status = await setInsuranceEnabled(db.sql, { facilityId: f.facility.id, enabled: true, operator: 'synthetic-operator', governanceReference: 'synthetic:approval', timeZone: TZ });
-      assert.equal(status.enabled, true);
+      // Operator commands are audited decisions that need the hospital's time zone.
+      const op = (state: 'off' | 'setup' | 'active', extra: Record<string, unknown> = {}) => setInsuranceState(db.sql, { facilityId: f.facility.id, state, operator: 'synthetic-operator', governanceReference: 'synthetic:approval', ...extra });
+      await assert.rejects(op('setup'), /time zone/);
+      await assert.rejects(op('setup', { operator: ' ', timeZone: TZ }), /operator/);
+      const status = await op('setup', { timeZone: TZ });
+      assert.equal(status.state, 'setup');
       assert.equal(status.timeZone, TZ);
-      await assert.rejects(setInsuranceEnabled(db.sql, { facilityId: f.facility.id, enabled: true, operator: 'synthetic-operator', governanceReference: 'synthetic:approval', timeZone: 'Europe/London' }), /separate reviewed change/, 'a recorded time zone is never silently changed');
-      const [command] = await db.sql`SELECT operator, governance_reference, enabled FROM insurance_operator_commands WHERE facility_id = ${f.facility.id}`;
-      assert.deepEqual([command.operator, command.governance_reference, command.enabled], ['synthetic-operator', 'synthetic:approval', true]);
-      assert.ok((await db.sql`SELECT 1 FROM audit_events WHERE metadata->>'context' = 'insurance_enabled'`).length, 'the switch is audited');
+      await assert.rejects(op('setup', { timeZone: 'Europe/London' }), /separate reviewed change/, 'a recorded time zone is never silently changed');
+      await assert.rejects(op('active'), /not ready/, 'billing cannot be activated before readiness');
+      const [command] = await db.sql`SELECT operator, governance_reference, state FROM insurance_operator_commands WHERE facility_id = ${f.facility.id}`;
+      assert.deepEqual([command.operator, command.governance_reference, command.state], ['synthetic-operator', 'synthetic:approval', 'setup']);
+      assert.ok((await db.sql`SELECT 1 FROM audit_events WHERE metadata->>'context' = 'insurance_state'`).length, 'the switch is audited');
       await assert.rejects(db.sql`DELETE FROM insurance_operator_commands`, 'the record of switches is permanent');
+      const t2 = await token();
+      assert.equal(t2.json().insuranceWorkflowVersion, 1, 'setup delivers insurance configuration records');
+      assert.equal(t2.json().insuranceBillingActive, false, 'but tells the device billing is not active');
+      assert.equal((await call('/billing/refunds', { id: `refund:${randomUUID()}`, patientId: patient('000001'), method: 'cash', currency: 'NGN', allocations: [{ chargeId: 'x', amountMinor: 1 }], reason: 'Synthetic' }, supervisor.id)).json().error, 'insurance_billing_inactive');
+    });
+    it('lets a hospital administrator leave and re-enter setup, never activate billing', async () => {
+      assert.deepEqual((await call('/insurance/setup', { state: 'off' }, f.admin.id)).json(), { state: 'off' });
+      assert.deepEqual((await call('/insurance/setup', { state: 'setup' }, f.admin.id)).json(), { state: 'setup' });
+      assert.equal((await call('/insurance/setup', { state: 'active' }, f.admin.id)).statusCode, 400, 'active is not a choice here');
+      assert.equal((await call('/insurance/setup', { state: 'off' }, officer.id)).statusCode, 403, 'the officer does not switch insurance');
     });
     it('refuses contract access to a staff id the device merely asserts', async () => {
       const response = await app.inject({ method: 'POST', url: '/insurance/contracts/list', headers: { ...asDevice(f.device.credential), 'x-actor-staff-id': officer.id }, payload: {} });
@@ -181,6 +193,30 @@ describe('insurance foundation', () => {
       const [schedule] = await db.sql<{ items: unknown; categories: unknown }[]>`SELECT items, categories FROM cover_schedules`;
       const synced = JSON.stringify(schedule);
       assert.ok(synced.includes('"amountMinor":400') && !synced.includes('4000'), 'the schedule carries the patient amount, never the tariff');
+    });
+  });
+
+  describe('setup never touches a bill; activation applies only from its effective moment', () => {
+    it('records cover during setup without changing any bill, and activation never reclassifies charges raised before it', async () => {
+      await send([cover('cover:setup', '000004'), check('check:setup', 'cover:setup', '000004')]);
+      await charge('charge:setup', 'fee:consult', 'consultation', 5_000, '000004');
+      assert.equal(await balance('charge:setup'), 5_000, 'setup: billed as cash');
+      const status = await (await call('/insurance/setup/status/officer', {}, officer.id)).json();
+      assert.equal(status.state, 'setup');
+      assert.ok(status.items.find((i: { kind: string }) => i.kind === 'active_contract').ok);
+      await ready();
+      const activated = await setInsuranceState(db.sql, { facilityId: f.facility.id, state: 'active', operator: 'synthetic-operator', governanceReference: 'synthetic:activation' });
+      assert.equal(activated.state, 'active');
+      assert.equal(await balance('charge:setup'), 5_000, 'a charge raised before activation stays as billed');
+      assert.equal((await confirm(['charge:setup'])).json().outcomes[0].reason, 'outside_billing_period', 'and cover cannot be applied to it retrospectively');
+      await charge('charge:while-active', 'fee:consult', 'consultation', 5_000, '000004');
+      assert.equal(await balance('charge:while-active'), 400, 'a charge raised after activation: the verified cover applies');
+      const t = (await token()).json();
+      assert.equal(t.insuranceBillingActive, true);
+      assert.equal(t.insuranceBillingPeriods.length, 1);
+      assert.equal(t.insuranceBillingPeriods[0].to, undefined);
+      await assert.rejects(db.sql`DELETE FROM insurance_billing_periods`, 'billing periods are permanent');
+      assert.equal((await call('/insurance/setup', { state: 'off' }, f.admin.id)).json().error, 'billing_active', 'only an operator changes active billing');
     });
   });
 
@@ -365,6 +401,136 @@ describe('insurance foundation', () => {
     });
   });
 
+  describe('supporting documents and submission settings', () => {
+    const pdf = Buffer.from('%PDF-1.4\n% synthetic contract\n1 0 obj << >> endobj\ntrailer << >>\n%%EOF\n');
+    const upload = (bytes: Buffer, meta: Record<string, unknown>, staffId = officer.id) => app.inject({
+      method: 'POST', url: '/insurance/documents', payload: bytes,
+      headers: { ...asDevice(f.device.credential), 'x-workforce-access': tokens.get(staffId) ?? '', 'content-type': 'application/octet-stream',
+        'x-file-sha256': createHash('sha256').update(bytes).digest('hex'), 'x-document-meta': encodeURIComponent(JSON.stringify(meta)) },
+    });
+    const meta = { payerId: 'payer:synthetic-a', documentType: 'contract', title: 'Synthetic provider agreement', fileName: 'agreement.pdf' };
+    it('stores a PDF as evidence, refuses content that is not what it claims, and keeps versions', async () => {
+      const first = await upload(pdf, meta);
+      assert.equal(first.statusCode, 201, first.body);
+      assert.deepEqual([first.json().version, first.json().verification, first.json().mimeType], [1, 'unverified', 'application/pdf']);
+      const fake = Buffer.from('=HYPERLINK("http://example.org") not a pdf');
+      assert.equal((await upload(fake, { ...meta, fileName: 'evil.pdf' })).statusCode, 400, 'content is sniffed, not trusted');
+      assert.equal((await upload(pdf, { ...meta, payerId: 'payer:unknown' })).statusCode, 409);
+      const second = await upload(pdf, { ...meta, replaces: first.json().id, title: 'Synthetic agreement, amended' });
+      assert.equal(second.json().version, 2);
+      assert.equal((await upload(pdf, { ...meta, replaces: first.json().id })).statusCode, 409, 'a version is replaced once');
+    });
+    it('lets only contract readers list or download documents, and audits downloads', async () => {
+      const list = await call('/insurance/documents/list', { payerId: 'payer:synthetic-a' }, officer.id);
+      assert.equal(list.json().documents.length, 2);
+      assert.equal(JSON.stringify(list.json()).includes('content'), false, 'listing never carries file contents');
+      for (const who of [supervisor.id, cashier.id, f.admin.id]) assert.equal((await call('/insurance/documents/list', {}, who)).statusCode, 403);
+      const id = list.json().documents[0].id;
+      const file = await call(`/insurance/documents/${encodeURIComponent(id)}/file`, {}, officer.id);
+      assert.equal(file.statusCode, 200);
+      assert.match(String(file.headers['content-disposition']), /^attachment/);
+      assert.equal(file.headers['x-content-type-options'], 'nosniff');
+      assert.ok(file.rawPayload.subarray(0, 5).toString() === '%PDF-');
+      assert.ok((await db.sql`SELECT 1 FROM audit_events WHERE metadata->>'context' = 'insurance_document_downloaded'`).length);
+      const verify = await call(`/insurance/documents/${encodeURIComponent(id)}/verify`, { verification: 'verified', note: 'Matches the signed original' }, officer.id);
+      assert.equal(verify.json().verification, 'verified');
+      assert.equal((await call(`/insurance/documents/${encodeURIComponent(id)}/verify`, { verification: 'rejected' }, officer.id)).statusCode, 409, 'reviewed once');
+      await assert.rejects(db.sql`UPDATE insurance_documents SET title = 'changed' WHERE id = ${id}`, 'documents never change');
+    });
+    it('records a manual submission method per payer; direct submission is refused', async () => {
+      const save = (profile: Record<string, unknown>, expectedRevision?: number) => call('/insurance/submission/save', { payerId: 'payer:synthetic-a', profile, ...(expectedRevision ? { expectedRevision } : {}) }, officer.id);
+      assert.equal((await save({ method: 'direct', channel: 'portal', portalUrl: 'https://portal.example.org' })).json().error, 'direct_submission_unavailable');
+      assert.equal((await save({ method: 'manual', channel: 'portal' })).statusCode, 400, 'a portal needs its address');
+      const saved = await save({ method: 'manual', channel: 'email', recipient: 'claims@synthetic-hmo.example.org', claimFormat: 'xlsx', requiredAttachments: ['referral_form'] });
+      assert.equal(saved.json().revision, 1, saved.body);
+      assert.equal((await save({ method: 'manual', channel: 'physical' })).json().error, 'stale_submission_method', 'a second editor must see the current revision');
+      assert.equal((await save({ method: 'manual', channel: 'physical' }, 1)).json().revision, 2);
+      const [stored] = (await call('/insurance/submission/list', {}, officer.id)).json().profiles;
+      assert.equal(stored.profile.channel, 'physical');
+      await assert.rejects(db.sql`INSERT INTO payer_submission_profiles (facility_id, payer_id, profile, revision, updated_by) VALUES (${f.facility.id}, 'payer:synthetic-a', '{"method":"direct"}', 9, 'x') ON CONFLICT (facility_id, payer_id) DO UPDATE SET profile = EXCLUDED.profile`, 'the database refuses direct submission too');
+    });
+  });
+
+  describe('spreadsheet tariff import and saved mappings', () => {
+    const source = { fileName: 'synthetic-tariff.xlsx', sha256: 'a'.repeat(64), sheet: 'Tariff', rows: 3 };
+    const importTariff = (body: Record<string, unknown>, staffId = officer.id) => call('/insurance/contracts/import-tariff', { payerId: 'payer:synthetic-a', mode: 'merge', source, requestKey: randomUUID(), ...body }, staffId);
+    const draftTerms = async () => (await db.sql`SELECT terms, revision, version FROM payer_contract_versions WHERE payer_id = 'payer:synthetic-a' AND status = 'draft'`)[0];
+    before(async () => {
+      const admin = { ...envelopeFor(f), schemaVersion: 5 };
+      await insertRecord(db.sql, 'fee_item', { ...admin, id: 'fee:retired', type: 'fee_item', name: 'Retired service', category: 'procedure', amountMinor: 100, currency: 'NGN', chargeWhen: 'when_ordered', active: false });
+      await insertRecord(db.sql, 'fee_item', { ...admin, id: 'fee:usd', type: 'fee_item', name: 'Dollar service', category: 'procedure', amountMinor: 100, currency: 'USD', chargeWhen: 'when_ordered' });
+    });
+    it('starts a draft from the active version, merges confirmed prices and keeps everything else', async () => {
+      const schedulesBefore = (await db.sql`SELECT COUNT(*)::int AS n FROM cover_schedules`)[0].n;
+      assert.equal((await importTariff({ payerId: 'payer:unknown', lines: [{ feeItemId: 'fee:consult', unitMinor: 1, sourceRow: 2 }] })).json().error, 'no_contract_terms');
+      const key = randomUUID();
+      const lines = [{ feeItemId: 'fee:consult', unitMinor: 6_000, payerCode: 'SYN-CONS-01', sourceRow: 2 }, { feeItemId: 'fee:proc', unitMinor: 25_000, sourceRow: 3 }];
+      const first = await importTariff({ requestKey: key, lines });
+      assert.equal(first.statusCode, 200, first.body);
+      assert.deepEqual([first.json().added, first.json().changed, first.json().unchanged, first.json().removed], [1, 1, 0, 0]);
+      const draft = await draftTerms();
+      assert.equal(draft.version, 3);
+      assert.deepEqual(draft.terms.tariff['fee:consult'], { unitMinor: 6_000, payerCode: 'SYN-CONS-01' });
+      assert.deepEqual(draft.terms.tariff['fee:capt'], { unitMinor: 1_000 }, 'merge keeps prices the sheet does not mention');
+      assert.equal(draft.terms.plans[0].planCode, 'GOLD', 'plans and rules carry over from the active version');
+      assert.equal((await db.sql`SELECT COUNT(*)::int AS n FROM cover_schedules`)[0].n, schedulesBefore, 'importing never activates anything');
+      // The same request again is a replay, not a second change; a different body under the same key is refused.
+      const replay = await importTariff({ requestKey: key, lines });
+      assert.deepEqual(replay.json(), first.json());
+      assert.equal((await draftTerms()).revision, draft.revision);
+      assert.equal((await importTariff({ requestKey: key, lines: lines.slice(0, 1) })).json().error, 'request_reused');
+      const [audit] = await db.sql`SELECT metadata FROM audit_events WHERE metadata->>'context' = 'insurance_tariff_imported'`;
+      assert.equal(audit.metadata.sha256, source.sha256);
+      assert.equal(audit.metadata.fileName, source.fileName);
+      assert.equal((await db.sql`SELECT 1 FROM audit_events WHERE metadata->>'context' = 'insurance_tariff_imported'`).length, 1, 'a replay is not audited twice');
+    });
+    it('needs the current draft revision, and replace makes the sheet the whole tariff', async () => {
+      const lines = [{ feeItemId: 'fee:consult', unitMinor: 6_000, sourceRow: 2 }];
+      assert.equal((await importTariff({ lines })).json().error, 'stale_draft', 'a second import must see the current draft');
+      const draft = await draftTerms();
+      const replaced = await importTariff({ mode: 'replace', expectedRevision: draft.revision, lines });
+      assert.deepEqual([replaced.json().unchanged, replaced.json().removed], [1, 2], replaced.body);
+      const after = await draftTerms();
+      assert.deepEqual(Object.keys(after.terms.tariff), ['fee:consult']);
+      assert.equal(after.terms.tariff['fee:consult'].payerCode, 'SYN-CONS-01', 'a row without a payer code keeps the recorded one');
+    });
+    it('two people importing into the same draft at once: one applies, the other must review first', async () => {
+      const revision = (await draftTerms()).revision;
+      const lines = (price: number) => [{ feeItemId: 'fee:consult', unitMinor: price, sourceRow: 2 }];
+      const results = await Promise.all([importTariff({ expectedRevision: revision, lines: lines(6_100) }), importTariff({ expectedRevision: revision, lines: lines(6_200) })]);
+      assert.deepEqual(results.map((r) => r.statusCode).sort(), [200, 409]);
+      assert.equal(results.find((r) => r.statusCode === 409)!.json().error, 'stale_draft');
+      assert.equal((await draftTerms()).revision, revision + 1, 'exactly one import applied');
+    });
+    it('checks every row again on the server, whatever the browser checked', async () => {
+      const revision = (await draftTerms()).revision;
+      const bad = await importTariff({ expectedRevision: revision, lines: [
+        { feeItemId: 'fee:missing', unitMinor: 1, sourceRow: 2 }, { feeItemId: 'fee:retired', unitMinor: 1, sourceRow: 3 }, { feeItemId: 'fee:usd', unitMinor: 1, sourceRow: 4 },
+      ] });
+      assert.equal(bad.json().error, 'invalid_lines');
+      assert.deepEqual(bad.json().details.rows.map((r: { problem: string }) => r.problem), ['unknown_fee_item', 'retired_fee_item', 'currency_mismatch']);
+      const twice = await importTariff({ expectedRevision: revision, lines: [{ feeItemId: 'fee:consult', unitMinor: 1, sourceRow: 2 }, { feeItemId: 'fee:consult', unitMinor: 2, sourceRow: 3 }] });
+      assert.equal(twice.statusCode, 400, 'one price per service');
+      const formula = await importTariff({ expectedRevision: revision, lines: [{ feeItemId: 'fee:consult', unitMinor: 1, payerCode: '=HYPERLINK("http://example.org")', sourceRow: 2 }] });
+      assert.equal(formula.statusCode, 400, 'formula-like codes are refused');
+      assert.equal((await importTariff({ expectedRevision: revision, lines: [{ feeItemId: 'fee:consult', unitMinor: -5, sourceRow: 2 }] })).statusCode, 400);
+      assert.equal((await draftTerms()).revision, revision, 'nothing was applied');
+      for (const who of [cashier.id, f.admin.id]) assert.equal((await importTariff({ lines: [{ feeItemId: 'fee:consult', unitMinor: 1, sourceRow: 2 }] }, who)).statusCode, 403);
+    });
+    it('saves a column mapping by name and refuses a silent overwrite', async () => {
+      const template = { kind: 'contract_tariff', payerId: 'payer:synthetic-a', name: 'Synthetic HMO tariff', headers: ['service', 'code', 'price'], headerRow: 0, mapping: { name: 0, payerCode: 1, price: 2 } };
+      const saved = await call('/insurance/import-templates/save', template, officer.id);
+      assert.equal(saved.json().revision, 1, saved.body);
+      assert.equal((await call('/insurance/import-templates/save', template, officer.id)).json().error, 'stale_template');
+      assert.equal((await call('/insurance/import-templates/save', { ...template, name: 'synthetic hmo TARIFF', mapping: { name: 0, price: 2 }, expectedRevision: 1 }, officer.id)).json().revision, 2, 'names match ignoring case');
+      const listed = (await call('/insurance/import-templates/list', { kind: 'contract_tariff' }, officer.id)).json().templates;
+      assert.deepEqual([listed.length, listed[0].mapping], [1, { name: 0, price: 2 }]);
+      assert.equal((await call('/insurance/import-templates/save', { ...template, mapping: { name: 999 } }, officer.id)).statusCode, 400);
+      assert.equal((await call('/insurance/import-templates/list', { kind: 'contract_tariff' }, cashier.id)).statusCode, 403);
+      assert.equal((await call('/insurance/import-templates/list', { kind: 'patients' }, officer.id)).statusCode, 400);
+    });
+  });
+
   describe('ending a contract', () => {
     it('ends cover from today without changing any confirmed split', async () => {
       const before = await details('charge:consult');
@@ -382,6 +548,23 @@ describe('insurance foundation', () => {
       const [after] = (await chargePositions(db.sql as never, f.facility.id, await chargesById(db.sql as never, f.facility.id, ['charge:after-end']))).values();
       assert.equal(after.estimate.state === 'undetermined' && after.estimate.detail, 'contract', 'no contract in force: undetermined, never a guess');
       assert.equal((await details('charge:recon'))[0].patient_share_minor, 500, 'earlier snapshots are untouched');
+    });
+    it('deactivating billing keeps every confirmed obligation and the insurance treatment of charges raised while it was on', async () => {
+      const before = await balance('charge:recon');
+      const whileActive = await balance('charge:while-active');
+      assert.notEqual(whileActive, 5_000);
+      await setInsuranceState(db.sql, { facilityId: f.facility.id, state: 'off', operator: 'synthetic-operator', governanceReference: 'synthetic:deactivation' });
+      assert.equal(await balance('charge:recon'), before, 'a confirmed split still decides what the patient owes');
+      assert.equal(await balance('charge:setup'), 5_000);
+      assert.equal(await balance('charge:while-active'), whileActive, 'a charge raised while billing was on keeps its insurance treatment');
+      await charge('charge:after-off', 'fee:consult', 'consultation', 5_000, '000004');
+      assert.equal(await balance('charge:after-off'), 5_000, 'a charge raised after deactivation is billed as cash');
+      const t = (await token()).json();
+      assert.equal(t.insuranceWorkflowVersion, 1, 'devices keep the insurance records behind those obligations');
+      assert.equal(t.insuranceBillingActive, false);
+      assert.ok(t.insuranceBillingPeriods[0].to, 'the period is closed');
+      assert.equal((await call('/insurance/allocations/preview', { chargeIds: ['charge:while-active'] }, officer.id)).statusCode, 200, 'officers can still work historical charges');
+      await assert.rejects(db.sql`UPDATE insurance_billing_periods SET starts_on = now()`, 'a closed period never changes');
       await assert.rejects(db.sql`UPDATE cover_schedules SET ended_on = ${day(5)} WHERE contract_version_id = 'contract:payer:synthetic-a:v2'`, 'an end date is recorded once');
     });
   });

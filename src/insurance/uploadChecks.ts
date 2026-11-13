@@ -3,7 +3,7 @@ import type { Tx } from '../db/client.ts';
 import { findRecord } from '../db/records.ts';
 import { recordAuditEvent } from '../audit/auditEvents.ts';
 import { chargePositions, chargesById, facilityTimeZone, loadCoverageRecords } from './coverage.ts';
-import { insuranceEnabled } from './contracts.ts';
+import { insuranceState } from './contracts.ts';
 
 /**
  * What a cover, check or desk election's shape cannot say about other records.
@@ -11,7 +11,11 @@ import { insuranceEnabled } from './contracts.ts';
  * the caller's usual patient checks.
  */
 export const insuranceUploadIssues = async (tx: Tx, record: PatientCover | CoverCheck | CoverageElection): Promise<string[]> => {
-  if (!(await insuranceEnabled(tx, record.facilityId))) return ['Insurance is not enabled for this hospital yet'];
+  // Cover and checks may be recorded during setup (they change no bill until billing is active);
+  // a self-pay or cover choice is a billing decision, so it needs active billing.
+  const state = await insuranceState(tx, record.facilityId);
+  if (state === 'off') return ['Insurance is not enabled for this hospital'];
+  if (record.type === 'coverage_election' && state !== 'active') return ['Insurance billing is not active for this hospital yet'];
   if (record.type === 'patient_cover') {
     const payer = await findRecord<Payer>(tx, 'payer', record.payerId);
     if (!payer || payer.facilityId !== record.facilityId) return ['Choose a payer of this hospital'];

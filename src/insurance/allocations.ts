@@ -1,7 +1,8 @@
 import {
   CALCULATION_VERSION, CoverageAllocation, SCHEMA_VERSION, chargeUnits, computeAllocation, currentAllocation, estimateCoverage,
-  isRoutine, scheduleOn, serviceDateOf, splitBalances, type Charge, type CoverageEstimate, type CoverSchedule, type EncounterEntry,
+  isRoutine, scheduleOn, serviceDateOf, splitBalances, type Charge, type CoverageEstimate, type CoverSchedule, type EncounterEntry, inBillingPeriod,
 } from '#shared';
+import { billingPeriods } from './billingPeriods.ts';
 import { randomUUID } from 'node:crypto';
 import type { Tx } from '../db/client.ts';
 import { fromRow, insertRecord } from '../db/records.ts';
@@ -28,10 +29,11 @@ export const confirmAllocations = async (tx: Tx, request: ConfirmRequest): Promi
   const found = new Set(charges.map((c) => c.id));
   const outcomes: ConfirmOutcome[] = request.chargeIds.filter((id) => !found.has(id)).map((chargeId) => ({ chargeId, outcome: 'skipped', reason: 'not_found' }));
   if (!charges.length) return outcomes;
-  const [records, timeZone, positions] = await Promise.all([
+  const [records, timeZone, positions, periods] = await Promise.all([
     loadCoverageRecords(tx, request.facilityId, charges.map((c) => c.patientId)),
     facilityTimeZone(tx, request.facilityId),
     chargePositions(tx, request.facilityId, charges),
+    billingPeriods(tx, request.facilityId),
   ]);
   const dispenseIds = charges.map((c) => c.dispenseEntryId).filter((id): id is string => Boolean(id));
   const entries = new Map((dispenseIds.length ? await tx`SELECT * FROM encounter_entries WHERE facility_id = ${request.facilityId} AND id = ANY(${dispenseIds})` : [])
@@ -42,6 +44,8 @@ export const confirmAllocations = async (tx: Tx, request: ConfirmRequest): Promi
     const skip = (reason: string) => outcomes.push({ chargeId: charge.id, outcome: 'skipped', reason });
     const current = currentAllocation(charge.id, records.allocations);
     if (current && request.basis !== 'exception') { skip('already_confirmed'); continue; }
+    // No retrospective cover: a charge raised outside every billing period stays as billed. Corrections are ordinary billing adjustments.
+    if (!inBillingPeriod(charge.createdOn, periods)) { skip('outside_billing_period'); continue; }
     const serviceDate = serviceDateOf(charge.createdOn, timeZone);
     const units = chargeUnits(charge, charge.dispenseEntryId ? entries.get(charge.dispenseEntryId) : undefined);
     // A correction re-derives the estimate as if the old snapshot did not exist.
@@ -49,7 +53,7 @@ export const confirmAllocations = async (tx: Tx, request: ConfirmRequest): Promi
     // the choice stays on record, and any payment it led to becomes a credit to refund.
     const overrideChoice = request.basis === 'exception' && request.decision === 'apply_cover';
     const elections = overrideChoice ? records.elections.filter((e) => !(e.kind === 'self_pay' && e.chargeIds.includes(charge.id))) : records.elections;
-    const estimate: CoverageEstimate = estimateCoverage({ charge, serviceDate, units, records: { ...records, elections, allocations: records.allocations.filter((a) => a.chargeId !== charge.id) } });
+    const estimate: CoverageEstimate = estimateCoverage({ charge, serviceDate, units, billingActive: true, records: { ...records, elections, allocations: records.allocations.filter((a) => a.chargeId !== charge.id) } });
     const money = positions.get(charge.id)!.money;
     const paid = money.receivedMinor + money.waivedByPaymentMinor - money.refundedMinor;
     const base = { id: `coverage_allocation:${randomUUID()}`, type: 'coverage_allocation' as const, facilityId: request.facilityId, schemaVersion: SCHEMA_VERSION,
