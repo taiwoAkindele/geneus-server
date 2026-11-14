@@ -9,6 +9,14 @@ ALTER TABLE facilities ADD COLUMN insurance_state text NOT NULL DEFAULT 'off' CH
 UPDATE facilities SET insurance_state = 'active' WHERE insurance_enabled;
 ALTER TABLE facilities DROP COLUMN insurance_enabled;
 
+-- 0030 gained this table after some databases had already applied it; create it where it is missing.
+CREATE TABLE IF NOT EXISTS insurance_operator_commands (
+  id text PRIMARY KEY, facility_id text NOT NULL REFERENCES facilities(id), enabled boolean NOT NULL, time_zone text,
+  operator text NOT NULL CHECK (btrim(operator) <> ''), governance_reference text NOT NULL CHECK (btrim(governance_reference) <> ''),
+  recorded_on timestamptz NOT NULL DEFAULT now()
+);
+CREATE OR REPLACE TRIGGER insurance_operator_commands_immutable BEFORE UPDATE OR DELETE ON insurance_operator_commands FOR EACH ROW EXECUTE FUNCTION forbid_clinical_change();
+
 -- Each operator command records the state it set; `enabled` stays for the commands already recorded.
 ALTER TABLE insurance_operator_commands ADD COLUMN state text CHECK (state IN ('off', 'setup', 'active'));
 
@@ -56,6 +64,6 @@ CREATE TABLE payer_submission_profiles (
 DO $$
 BEGIN
   IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'powersync') THEN
-    REVOKE ALL ON insurance_documents, payer_submission_profiles FROM powersync;
+    REVOKE ALL ON insurance_documents, payer_submission_profiles, insurance_operator_commands FROM powersync;
   END IF;
 END $$;
