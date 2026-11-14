@@ -533,6 +533,147 @@ describe('insurance foundation', () => {
     });
   });
 
+  describe('claims from confirmed insurance splits', () => {
+    let doctor: Staff;
+    const listClaims = async (body: Record<string, unknown> = {}) => (await call('/insurance/claims/list', body, officer.id)).json().claims as {
+      id: string; claimNumber: string; revision: number; state: string; supersededBy?: string; patientId: string; episode: { kind: string; key: string };
+      lines: { chargeId: string; payerShareMinor: number; fulfillment: { kind: string }; authorization?: { reference?: string } }[]; issues: { code: string; blocking: boolean; chargeId?: string }[];
+    }[];
+    const claimWith = async (chargeId: string) => (await listClaims()).find((c) => c.lines.some((l) => l.chargeId === chargeId))!;
+    const codes = (claim: { issues: { code: string; blocking: boolean }[] }) => claim.issues.filter((i) => i.blocking).map((i) => i.code).sort();
+    const completion = (id: string, chargeId: string, by: Staff, role: string, status = 'completed', extra: Record<string, unknown> = {}) => put('service_completion', {
+      ...envelope(by), id, type: 'service_completion', patientId: patient('000004'), chargeId, status, completedOn: new Date(Date.now() - 60_000).toISOString(), actorRole: role, ...(status === 'not_done' ? { note: 'Patient declined' } : {}), ...extra,
+    });
+    const profileRevision = async () => (await call('/insurance/submission/list', {}, officer.id)).json().profiles[0].revision as number;
+    before(async () => {
+      doctor = await addStaff(db.sql, f, { role: 'doctor' });
+      // A real visit: a doctor's diagnosis entry (ICD-10 coded), and its consultation fee raised against the visit.
+      await insertRecord(db.sql, 'encounter', { ...envelope(doctor), id: 'encounter:claim', type: 'encounter', patientId: patient('000004'), openedOn: new Date().toISOString(), setting: 'facility' });
+      await insertRecord(db.sql, 'encounter_entry', { ...envelope(doctor), id: 'entry:claim-dx', type: 'encounter_entry', encounterId: 'encounter:claim', patientId: patient('000004'), step: 'diagnosis', actorRole: 'doctor',
+        values: { diagnosis: 'Malaria', diagnoses: [{ label: 'Malaria', code: 'B54', codingSystem: 'ICD-10', certainty: 'confirmed' }] } });
+      await insertRecord(db.sql, 'charge', { ...envelope(desk), id: 'charge:claim-visit', type: 'charge', patientId: patient('000004'), feeItemId: 'fee:consult', category: 'consultation', description: 'Consultation', listPriceMinor: 5_000, amountMinor: 5_000, currency: 'NGN', encounterId: 'encounter:claim' });
+      assert.equal((await confirm(['charge:claim-visit'], { basis: 'exception', reason: 'Synthetic visit for claims' })).json().outcomes[0].outcome, 'confirmed');
+    });
+
+    it('makes one claim per payer, patient and episode from per-service splits the payer owes; never capitation, never twice', async () => {
+      const generated = await call('/insurance/claims/generate', {}, officer.id);
+      assert.equal(generated.statusCode, 200, generated.body);
+      assert.ok(generated.json().created >= 2);
+      const all = await listClaims();
+      const lines = all.flatMap((c) => c.lines);
+      assert.ok(lines.every((l) => l.payerShareMinor > 0), 'only what the payer owes is claimed');
+      assert.equal(lines.some((l) => l.chargeId === 'charge:capt'), false, 'capitation never becomes a fee-for-service claim');
+      assert.equal(new Set(lines.map((l) => l.chargeId)).size, lines.length, 'each service once');
+      const visit = await claimWith('charge:claim-visit');
+      assert.deepEqual(visit.episode, { kind: 'encounter', key: 'encounter:claim' });
+      assert.ok(all.every((c) => new Set(c.lines.map(() => c.patientId)).size === 1));
+      assert.equal((await call('/insurance/claims/generate', {}, officer.id)).json().lines, 0, 'generating again adds nothing');
+      const [line] = await db.sql`SELECT * FROM insurance_claim_lines WHERE charge_id = 'charge:claim-visit'`;
+      await assert.rejects(db.sql`INSERT INTO insurance_claim_lines (id, facility_id, claim_id, charge_id, allocation_id, contract_version_id) VALUES ('dup', ${f.facility.id}, ${line.claim_id}, 'charge:claim-visit', ${line.allocation_id}, 'x')`, 'the database refuses a second claim line');
+      for (const who of [cashier.id, f.admin.id, supervisor.id]) assert.equal((await call('/insurance/claims/list', {}, who)).statusCode, 403, 'claims carry payer shares: officers only');
+    });
+
+    it('blocks readiness until evidence and the payer\'s diagnosis rule are met; a draft exports only as a marked draft', async () => {
+      let visit = await claimWith('charge:claim-visit');
+      assert.equal(visit.lines[0].fulfillment.kind, 'visit', 'the doctor\'s entry shows the consultation happened');
+      assert.deepEqual(codes(visit), ['diagnosis_coding_unverified'], 'coded diagnoses cannot pass without a verified ICD-10 catalogue');
+      const day = await claimWith('charge:later');
+      assert.ok(codes(day).includes('fulfillment_missing') && codes(day).includes('diagnosis_missing'));
+      const ready = await call('/insurance/claims/ready', { claimIds: [visit.id] }, officer.id);
+      assert.equal(ready.json().outcomes[0].reason, 'blocked');
+      assert.equal((await call('/insurance/claims/export', { claimIds: [visit.id], draft: false, format: 'csv', requestKey: randomUUID() }, officer.id)).json().error, 'not_ready');
+      const draft = await call('/insurance/claims/export', { claimIds: [visit.id, day.id], draft: true, format: 'xlsx', requestKey: randomUUID() }, officer.id);
+      assert.equal(draft.statusCode, 200, draft.body);
+      const status = draft.json().headers.indexOf('claimStatus');
+      assert.ok(draft.json().rows.every((r: unknown[]) => r[status] === 'DRAFT - NOT FOR SUBMISSION'));
+      assert.equal((await claimWith('charge:claim-visit')).state, 'draft', 'a draft export changes nothing');
+      // This payer accepts written diagnoses: a configurable rule, recorded with the submission method.
+      const saved = await call('/insurance/submission/save', { payerId: 'payer:synthetic-a', profile: { method: 'manual', channel: 'physical', diagnosisRequirement: 'free_text' }, expectedRevision: await profileRevision() }, officer.id);
+      assert.equal(saved.statusCode, 200, saved.body);
+      visit = await claimWith('charge:claim-visit');
+      assert.deepEqual(codes(visit), []);
+      assert.equal((await call('/insurance/claims/ready', { claimIds: [visit.id] }, officer.id)).json().outcomes[0].outcome, 'ready');
+      const [row] = await db.sql`SELECT ready_snapshot FROM insurance_claims WHERE id = ${visit.id}`;
+      assert.equal(row.ready_snapshot.lines[0].fulfillment.kind, 'visit', 'what passed is kept with the claim');
+      assert.equal(row.ready_snapshot.lines[0].contractVersionId, 'contract:payer:synthetic-a:v2', 'traceable to the contract version');
+    });
+
+    it('needs clinical evidence from clinical staff, and an approved authorization where the contract requires one', async () => {
+      // A procedure under a rule that requires the payer's approval.
+      await insertRecord(db.sql, 'charge', { ...envelope(desk), id: 'charge:claim-proc', type: 'charge', patientId: patient('000004'), feeItemId: 'fee:proc', category: 'procedure', description: 'Synthetic procedure', listPriceMinor: 20_000, amountMinor: 20_000, currency: 'NGN', encounterId: 'encounter:claim' });
+      await insertRecord(db.sql, 'coverage_allocation', { ...envelope(officer), id: 'alloc:claim-proc', type: 'coverage_allocation', patientId: patient('000004'), chargeId: 'charge:claim-proc', state: 'finalised', payerId: 'payer:synthetic-a', arrangement: 'per_service', patientShareMinor: 0, currency: 'NGN', basis: 'exception' });
+      await db.sql`INSERT INTO coverage_allocation_details (allocation_id, facility_id, calculation_version, inputs, list_price_minor, patient_share_minor, payer_share_minor, contract_adjustment_minor, capitation_covered_minor, reason, request_key)
+        VALUES ('alloc:claim-proc', ${f.facility.id}, 1, ${db.sql.json({ serviceDate: day(0), units: 1, cover: { id: 'cover:setup', planCode: 'GOLD', enrolleeNumber: 'SYN-000004' }, planCode: 'GOLD', contractVersionId: 'contract:payer:synthetic-a:v2', rule: { coverage: 'covered', copay: { kind: 'none' }, approvalRequired: true }, tariffUnitMinor: 20_000, termsSlice: { tariff: { 'fee:proc': { unitMinor: 20_000, payerCode: 'SYN-P-01' } } } })}, 20000, 0, 20000, 0, 0, 'Synthetic', 'synthetic')`;
+      assert.equal((await call('/insurance/claims/generate', {}, officer.id)).json().lines, 1);
+      let claim = await claimWith('charge:claim-proc');
+      assert.deepEqual(codes(claim), ['authorization_missing', 'fulfillment_missing'], 'the visit claim was already ready, so this is a new claim');
+      // Only clinical staff record that a service was done; an insurance officer cannot.
+      assert.equal((await send([completion('done:officer', 'charge:claim-proc', officer, 'doctor')])).rejected.length, 1);
+      assert.equal((await send([completion('done:wrong-role', 'charge:claim-proc', doctor, 'nurse')])).rejected.length, 1, 'only in a role the person holds');
+      assert.equal((await send([completion('done:1', 'charge:claim-proc', doctor, 'doctor', 'not_done')])).rejected.length, 0);
+      claim = await claimWith('charge:claim-proc');
+      assert.ok(codes(claim).includes('not_performed'));
+      assert.equal((await send([completion('done:2', 'charge:claim-proc', doctor, 'doctor', 'completed', { replaces: 'done:1' })])).rejected.length, 0, 'a correction replaces the earlier record');
+      assert.equal((await send([completion('done:3', 'charge:claim-proc', doctor, 'doctor', 'completed', { replaces: 'done:1' })])).rejected.length, 1, 'once');
+      await assert.rejects(db.sql`UPDATE service_completions SET status = 'completed' WHERE id = 'done:1'`, 'completions never change');
+      const auth = (body: Record<string, unknown>) => call('/insurance/authorizations/save', { patientId: patient('000004'), payerId: 'payer:synthetic-a', kind: 'pre_authorization', validFrom: day(-1), validTo: day(1), categories: ['procedure'], obtainedVia: 'phone', ...body }, officer.id);
+      assert.equal((await auth({ status: 'approved' })).statusCode, 400, 'an approval needs the payer\'s code');
+      const requested = await auth({ status: 'requested' });
+      assert.equal(requested.statusCode, 200, requested.body);
+      assert.deepEqual(codes(await claimWith('charge:claim-proc')), ['authorization_pending'], 'a request is not an approval');
+      assert.equal((await auth({ status: 'approved', reference: 'PA-SYN-001', replaces: requested.json().id })).statusCode, 200);
+      claim = await claimWith('charge:claim-proc');
+      assert.deepEqual(codes(claim), []);
+      assert.equal(claim.lines[0].authorization?.reference, 'PA-SYN-001');
+      assert.equal(claim.lines[0].fulfillment.kind, 'completion');
+      assert.equal((await auth({ status: 'denied', replaces: requested.json().id })).json().error, 'already_replaced');
+    });
+
+    it('exports in the payer\'s layout; export, submission and acknowledgement stay separate facts; a revision keeps history', async () => {
+      const visit = await claimWith('charge:claim-visit');
+      const layout = await call('/insurance/import-templates/save', { kind: 'claim_export', payerId: 'payer:synthetic-a', name: 'Synthetic HMO claim sheet', headerRow: 0,
+        headers: ['Enrollee No', 'Patient', 'Date of Service', 'Diagnosis', 'Service', 'Amount (NGN)'],
+        mapping: { enrolleeNumber: 0, patientName: 1, serviceDate: 2, diagnosis: 3, serviceName: 4, amountClaimed: 5 }, formats: { serviceDate: 'date_dmy' } }, officer.id);
+      assert.equal(layout.statusCode, 200, layout.body);
+      assert.equal((await call('/insurance/import-templates/save', { kind: 'claim_export', name: 'Bad', headerRow: 0, headers: ['A'], mapping: { password: 0 } }, officer.id)).json().error, 'unknown_fields');
+      const submit = (body: Record<string, unknown> = {}) => call('/insurance/claims/submit', { claimIds: [visit.id], channel: 'physical', reference: 'SYN-DELIVERY-1', submittedOn: day(0), requestKey: randomUUID(), ...body }, officer.id);
+      assert.equal((await submit()).json().error, 'not_exported', 'nothing is submitted before it is exported');
+      const key = randomUUID();
+      const exported = await call('/insurance/claims/export', { claimIds: [visit.id], draft: false, format: 'xlsx', templateId: layout.json().id, requestKey: key }, officer.id);
+      assert.equal(exported.statusCode, 200, exported.body);
+      assert.deepEqual(exported.json().headers, ['Enrollee No', 'Patient', 'Date of Service', 'Diagnosis', 'Service', 'Amount (NGN)']);
+      assert.match(String(exported.json().rows[0][2]), /^\d{2}\/\d{2}\/\d{4}$/);
+      assert.equal(exported.json().rows[0][3], 'Malaria');
+      assert.equal(exported.json().rows[0][5], 45, 'the payer share: NGN 50.00 less the 10% co-pay');
+      assert.equal((await call('/insurance/claims/export', { claimIds: [visit.id], draft: false, format: 'xlsx', templateId: layout.json().id, requestKey: key }, officer.id)).json().exportId, exported.json().exportId, 'a retried export replays');
+      assert.equal((await claimWith('charge:claim-visit')).state, 'exported', 'exported, not submitted');
+      const sent = await submit();
+      assert.equal(sent.statusCode, 200, sent.body);
+      assert.equal((await claimWith('charge:claim-visit')).state, 'submitted', 'submitted, not approved');
+      const ack = (requestKey = randomUUID()) => call('/insurance/claims/acknowledge', { submissionId: sent.json().submissionId, acknowledgedOn: day(0), reference: 'SYN-ACK-1', requestKey }, officer.id);
+      assert.equal((await ack()).statusCode, 200);
+      assert.equal((await ack()).json().error, 'already_acknowledged');
+      assert.equal((await claimWith('charge:claim-visit')).state, 'acknowledged');
+      // A correction: a new revision, the earlier one and its submission untouched.
+      const revised = await call(`/insurance/claims/${encodeURIComponent(visit.id)}/revise`, { reason: 'Synthetic correction requested by the payer', requestKey: randomUUID() }, officer.id);
+      assert.equal(revised.statusCode, 200, revised.body);
+      const both = (await listClaims({ includeSuperseded: true })).filter((c) => c.claimNumber === visit.claimNumber).sort((a, b) => a.revision - b.revision);
+      assert.deepEqual(both.map((c) => [c.revision, c.state, Boolean(c.supersededBy)]), [[1, 'acknowledged', true], [2, 'draft', false]]);
+      assert.deepEqual(both[1].lines.map((l) => l.chargeId), ['charge:claim-visit']);
+      assert.equal((await call('/insurance/claims/ready', { claimIds: [visit.id] }, officer.id)).json().error, 'superseded');
+      await assert.rejects(db.sql`UPDATE insurance_claims SET state = 'draft' WHERE id = ${visit.id}`, 'a superseded revision never changes');
+      assert.equal((await call('/insurance/claims/submissions/list', {}, officer.id)).json().submissions[0].acknowledgement.reference, 'SYN-ACK-1');
+    });
+
+    it('two officers generating at once never claim a service twice', async () => {
+      await insertRecord(db.sql, 'charge', { ...envelope(desk), id: 'charge:claim-race', type: 'charge', patientId: patient('000004'), feeItemId: 'fee:consult', category: 'consultation', description: 'Consultation', listPriceMinor: 5_000, amountMinor: 5_000, currency: 'NGN' });
+      assert.equal((await confirm(['charge:claim-race'], { basis: 'exception', reason: 'Synthetic race' })).json().outcomes[0].outcome, 'confirmed');
+      const results = await Promise.all([call('/insurance/claims/generate', {}, officer.id), call('/insurance/claims/generate', {}, officer.id)]);
+      assert.deepEqual(results.map((r) => r.json().lines).sort(), [0, 1]);
+      assert.equal((await db.sql`SELECT COUNT(*)::int AS n FROM insurance_claim_lines WHERE charge_id = 'charge:claim-race' AND current`)[0].n, 1);
+    });
+  });
+
   describe('ending a contract', () => {
     it('ends cover from today without changing any confirmed split', async () => {
       const before = await details('charge:consult');

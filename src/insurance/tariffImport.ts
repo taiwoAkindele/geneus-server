@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { contractIdFor, ImportTemplate, PayerContractTerms, type ImportTemplateSave, type TariffImport, type TariffImportResult } from '#shared';
+import { CLAIM_EXPORT_FIELDS, contractIdFor, ImportTemplate, PayerContractTerms, type ImportTemplateSave, type TariffImport, type TariffImportResult } from '#shared';
 import type { Sql, Tx } from '../db/client.ts';
 import { ContractRefusal, fromContractRow, saveDraft } from './contracts.ts';
 
@@ -54,7 +54,7 @@ export const applyTariffImport = async (tx: Tx, facilityId: string, staffId: str
 
 const templateRow = (r: Row) => ImportTemplate.parse({
   id: r.id, kind: r.kind, ...(r.payer_id ? { payerId: r.payer_id } : {}), name: r.name, headers: r.headers, headerRow: r.header_row, mapping: r.mapping,
-  revision: r.revision, updatedBy: r.updated_by, updatedOn: new Date(r.updated_on as string).toISOString(),
+  ...(r.formats ? { formats: r.formats } : {}), revision: r.revision, updatedBy: r.updated_by, updatedOn: new Date(r.updated_on as string).toISOString(),
 });
 
 export const listImportTemplates = async (sql: Sql | Tx, facilityId: string, kind: string) =>
@@ -62,6 +62,13 @@ export const listImportTemplates = async (sql: Sql | Tx, facilityId: string, kin
 
 /** Saves a mapping by name: the same name for the same payer and kind is a new revision of it. */
 export const saveImportTemplate = async (tx: Tx, facilityId: string, staffId: string, input: ImportTemplateSave) => {
+  if (input.kind === 'claim_export') {
+    // An export layout places known claim fields under the payer's own headers.
+    const unknown = Object.keys(input.mapping).filter((f) => !(CLAIM_EXPORT_FIELDS as readonly string[]).includes(f));
+    if (unknown.length) throw new ContractRefusal('unknown_fields', `Unknown export fields: ${unknown.join(', ')}`);
+    if (!Object.keys(input.mapping).length || Object.values(input.mapping).some((c) => !input.headers[c]?.trim())) throw new ContractRefusal('invalid_layout', 'Give every exported column a header');
+    if (new Set(Object.values(input.mapping)).size !== Object.keys(input.mapping).length) throw new ContractRefusal('invalid_layout', 'Each column holds one field');
+  }
   if (input.payerId) {
     const [payer] = await tx`SELECT id FROM payers WHERE facility_id = ${facilityId} AND id = ${input.payerId}`;
     if (!payer) throw new ContractRefusal('unknown_payer', 'Choose a payer of this hospital');
@@ -69,10 +76,10 @@ export const saveImportTemplate = async (tx: Tx, facilityId: string, staffId: st
   const [current] = await tx<Row[]>`SELECT * FROM import_mapping_templates WHERE facility_id = ${facilityId} AND kind = ${input.kind} AND COALESCE(payer_id, '') = ${input.payerId ?? ''} AND lower(name) = lower(${input.name}) FOR UPDATE`;
   if ((current?.revision as number | undefined) !== input.expectedRevision) throw new ContractRefusal('stale_template', current ? 'A mapping with this name exists. Review it before replacing it' : 'This mapping was removed or renamed');
   if (current) {
-    await tx`UPDATE import_mapping_templates SET headers = ${tx.json(input.headers)}, header_row = ${input.headerRow}, mapping = ${tx.json(input.mapping)}, revision = revision + 1, updated_by = ${staffId}, updated_on = now() WHERE id = ${current.id as string}`;
+    await tx`UPDATE import_mapping_templates SET headers = ${tx.json(input.headers)}, header_row = ${input.headerRow}, mapping = ${tx.json(input.mapping)}, formats = ${input.formats ? tx.json(input.formats) : null}, revision = revision + 1, updated_by = ${staffId}, updated_on = now() WHERE id = ${current.id as string}`;
   } else {
-    await tx`INSERT INTO import_mapping_templates (id, facility_id, kind, payer_id, name, headers, header_row, mapping, revision, updated_by)
-      VALUES (${`import_template:${randomUUID()}`}, ${facilityId}, ${input.kind}, ${input.payerId ?? null}, ${input.name}, ${tx.json(input.headers)}, ${input.headerRow}, ${tx.json(input.mapping)}, 1, ${staffId})`;
+    await tx`INSERT INTO import_mapping_templates (id, facility_id, kind, payer_id, name, headers, header_row, mapping, formats, revision, updated_by)
+      VALUES (${`import_template:${randomUUID()}`}, ${facilityId}, ${input.kind}, ${input.payerId ?? null}, ${input.name}, ${tx.json(input.headers)}, ${input.headerRow}, ${tx.json(input.mapping)}, ${input.formats ? tx.json(input.formats) : null}, 1, ${staffId})`;
   }
   const [row] = await tx<Row[]>`SELECT * FROM import_mapping_templates WHERE facility_id = ${facilityId} AND kind = ${input.kind} AND COALESCE(payer_id, '') = ${input.payerId ?? ''} AND lower(name) = lower(${input.name})`;
   return templateRow(row);

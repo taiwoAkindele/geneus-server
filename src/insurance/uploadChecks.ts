@@ -1,4 +1,4 @@
-import { selfPayPermitted, serviceDateOf, type CoverCheck, type CoverageElection, type Payer, type PatientCover, type Payment } from '#shared';
+import { COMPLETION_ROLES, selfPayPermitted, serviceDateOf, type ServiceCompletion, type Staff, type CoverCheck, type CoverageElection, type Payer, type PatientCover, type Payment } from '#shared';
 import type { Tx } from '../db/client.ts';
 import { findRecord } from '../db/records.ts';
 import { recordAuditEvent } from '../audit/auditEvents.ts';
@@ -76,4 +76,29 @@ export const flagInsuredOverpayment = async (tx: Tx, payment: Payment): Promise<
     facilityId: payment.facilityId, deviceId: payment.deviceId, actorStaffId: payment.createdBy, action: 'create', entityType: 'payment', entityId: payment.id,
     metadata: { context: 'insurance_payment_review', charges: flagged.length, states: [...new Set(flagged.map((p) => p.estimate.state))].join(',') },
   });
+};
+
+/**
+ * A completion is clinical evidence, so it must come from someone who does
+ * clinical work in the role they claim, about this patient's own charge, and
+ * correct only the latest completion for that charge.
+ */
+export const completionUploadIssues = async (tx: Tx, record: ServiceCompletion): Promise<string[]> => {
+  if (await insuranceState(tx, record.facilityId) === 'off' && !(await tx`SELECT 1 FROM insurance_billing_periods WHERE facility_id = ${record.facilityId} LIMIT 1`).length) return ['Insurance is not enabled for this hospital'];
+  const [charge] = await tx<{ patient_id: string }[]>`SELECT patient_id FROM charges WHERE facility_id = ${record.facilityId} AND id = ${record.chargeId}`;
+  if (!charge || charge.patient_id !== record.patientId) return ['A completion must name this patient\'s charge'];
+  const staff = await findRecord<Staff>(tx, 'staff', record.createdBy);
+  const roles: string[] = staff ? [staff.role, ...(staff.additionalRoles ?? [])] : [];
+  if (!(COMPLETION_ROLES as readonly string[]).includes(record.actorRole) || !roles.includes(record.actorRole)) return ['Only clinical or operational staff record that a service was done, in a role they hold'];
+  if (Date.parse(record.completedOn) > Date.parse(record.createdOn) + 5 * 60_000) return ['A service cannot be recorded as done in the future'];
+  if (record.replaces) {
+    const [previous] = await tx<{ charge_id: string }[]>`SELECT charge_id FROM service_completions WHERE facility_id = ${record.facilityId} AND id = ${record.replaces}`;
+    if (!previous || previous.charge_id !== record.chargeId) return ['A correction must replace a completion of the same charge'];
+    const [later] = await tx`SELECT 1 FROM service_completions WHERE facility_id = ${record.facilityId} AND replaces = ${record.replaces}`;
+    if (later) return ['This completion was already corrected on another device'];
+  } else {
+    const [existing] = await tx`SELECT 1 FROM service_completions WHERE facility_id = ${record.facilityId} AND charge_id = ${record.chargeId} LIMIT 1`;
+    if (existing) return ['This service already has a completion record. Correct it instead'];
+  }
+  return [];
 };

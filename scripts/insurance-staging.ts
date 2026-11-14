@@ -68,9 +68,9 @@ try {
 
   // A synthetic hospital. The registration device is the harness's own; the browser enrolls a second.
   const f = await registerScratchFacility(source.sql);
-  const people = {} as Record<'admin' | 'desk' | 'cashier' | 'officer' | 'supervisor', { id: string; name: string; email?: string; pinCode: string }>;
+  const people = {} as Record<'admin' | 'desk' | 'cashier' | 'officer' | 'supervisor' | 'doctor', { id: string; name: string; email?: string; pinCode: string }>;
   const roles = [['admin', 'facility_admin', 'Ada Admin', 'admin2@example.org'], ['desk', 'records_officer', 'Dele Desk', undefined], ['cashier', 'cashier', 'Chika Cashier', undefined],
-    ['officer', 'insurance_officer', 'Ifeoma Officer', 'officer@example.org'], ['supervisor', 'supervisor', 'Sola Supervisor', 'supervisor@example.org']] as const;
+    ['officer', 'insurance_officer', 'Ifeoma Officer', 'officer@example.org'], ['supervisor', 'supervisor', 'Sola Supervisor', 'supervisor@example.org'], ['doctor', 'doctor', 'Dayo Doctor', undefined]] as const;
   for (const [key, role, name, email] of roles) {
     const staff = await addStaff(source.sql, f, { role, name, loginAccess: 'always' });
     if (email) await source.sql`INSERT INTO staff_contacts (facility_id, staff_id, email, verified_on) VALUES (${f.facility.id}, ${staff.id}, ${email}, now())`;
@@ -86,10 +86,19 @@ try {
   for (const [id, name, category, amountMinor] of [['fee:consultation', 'General consultation', 'consultation', 200_000], ['fee:lab', 'Malaria RDT', 'laboratory', 150_000]] as const) {
     await insertRecord(source.sql, 'fee_item', { ...base, id, type: 'fee_item', name, category, amountMinor, currency: 'NGN', chargeWhen: 'when_ordered' });
   }
-  const charges: [string, string, string, string, number][] = [['charge:p1-consult', '000001', 'fee:consultation', 'consultation', 200_000], ['charge:p1-lab', '000001', 'fee:lab', 'laboratory', 150_000], ['charge:p2-consult', '000002', 'fee:consultation', 'consultation', 200_000]];
-  for (const [id, n, feeItemId, category, amount] of charges) {
-    await insertRecord(source.sql, 'charge', { ...base, id, type: 'charge', patientId: patient(n), feeItemId, category, description: feeItemId === 'fee:lab' ? 'Malaria RDT' : 'General consultation', listPriceMinor: amount, amountMinor: amount, currency: 'NGN' } as Partial<Charge>);
-  }
+  // The patients attend after insurance billing starts: billing applies only to charges raised from activation.
+  // Each visit has a doctor's written diagnosis; the consultation is shown done by it, the test needs a completion.
+  const attend = async () => {
+    const now = { ...envelopeFor(f), schemaVersion: 5 };
+    for (const [n, diagnosis] of [['000001', 'Uncomplicated malaria'], ['000002', 'Suspected malaria']] as const) {
+      await insertRecord(source.sql, 'encounter', { ...now, createdBy: people.doctor.id, id: `encounter:p${Number(n)}`, type: 'encounter', patientId: patient(n), openedOn: now.createdOn, setting: 'facility' });
+      await insertRecord(source.sql, 'encounter_entry', { ...now, createdBy: people.doctor.id, id: `entry:p${Number(n)}-dx`, type: 'encounter_entry', encounterId: `encounter:p${Number(n)}`, patientId: patient(n), step: 'diagnosis', actorRole: 'doctor', values: { diagnosis } });
+    }
+    const charges: [string, string, string, string, number][] = [['charge:p1-consult', '000001', 'fee:consultation', 'consultation', 200_000], ['charge:p1-lab', '000001', 'fee:lab', 'laboratory', 150_000], ['charge:p2-consult', '000002', 'fee:consultation', 'consultation', 200_000]];
+    for (const [id, n, feeItemId, category, amount] of charges) {
+      await insertRecord(source.sql, 'charge', { ...now, id, type: 'charge', patientId: patient(n), feeItemId, category, description: feeItemId === 'fee:lab' ? 'Malaria RDT' : 'General consultation', listPriceMinor: amount, amountMinor: amount, currency: 'NGN', encounterId: `encounter:p${Number(n)}` } as Partial<Charge>);
+    }
+  };
   // Setup the way an operator would: audited, with the time zone recorded. Billing is activated later, after readiness.
   await setInsuranceState(source.sql, { facilityId: f.facility.id, state: 'setup', operator: 'staging-harness', governanceReference: 'staging:synthetic-hospital', timeZone: 'Africa/Lagos' });
   // The time zone is recorded; the hospital administrator then starts setup from the app.
@@ -131,7 +140,11 @@ try {
       if (url.pathname === '/refunds') return send(await source.sql`SELECT id, refund_number, amount_minor, allocations FROM refunds WHERE facility_id = ${f.facility.id}`);
       if (url.pathname === '/devices') return send(await source.sql`SELECT d.id, d.status, v.insurance_version, v.pending_mutation_count, v.recorded_on FROM devices d LEFT JOIN workforce_client_versions v ON v.device_id = d.id WHERE d.facility_id = ${f.facility.id}`);
       if (url.pathname === '/ready' && request.method === 'POST') { await reportReady(); return send({ ok: true }); }
-      if (url.pathname === '/activate-billing' && request.method === 'POST') { await reportReady(); return send(await setInsuranceState(source.sql, { facilityId: f.facility.id, state: 'active', operator: 'staging-harness', governanceReference: 'staging:billing-activation' })); }
+      if (url.pathname === '/activate-billing' && request.method === 'POST') { await reportReady(); const status = await setInsuranceState(source.sql, { facilityId: f.facility.id, state: 'active', operator: 'staging-harness', governanceReference: 'staging:billing-activation' }); await attend(); return send(status); }
+      if (url.pathname === '/claims') return send(await source.sql`SELECT claim_number, revision, state, superseded_by, patient_id, (SELECT COUNT(*)::int FROM insurance_claim_lines l WHERE l.claim_id = c.id AND l.current) AS lines FROM insurance_claims c WHERE facility_id = ${f.facility.id} ORDER BY claim_number, revision`);
+      if (url.pathname === '/completions') return send(await source.sql`SELECT id, charge_id, status, actor_role, created_by FROM service_completions WHERE facility_id = ${f.facility.id}`);
+      if (url.pathname === '/claim-exports') return send(await source.sql`SELECT draft, format, rows, payload_sha256 FROM insurance_claim_exports WHERE facility_id = ${f.facility.id} ORDER BY exported_on`);
+      if (url.pathname === '/claim-submissions') return send(await source.sql`SELECT s.channel, s.reference, s.claim_ids, a.reference AS ack FROM insurance_claim_submissions s LEFT JOIN insurance_claim_acknowledgements a ON a.submission_id = s.id WHERE s.facility_id = ${f.facility.id}`);
       if (url.pathname === '/enrollment-code' && request.method === 'POST') return send(await issueEnrollmentCode(source.sql, f.facility.id, f.admin.id, f.device.deviceId));
       // Ends every verified staff session, to exercise expiry and renewal in the real app.
       if (url.pathname === '/expire-sessions' && request.method === 'POST') { await source.sql`UPDATE workforce_private_sessions SET expires_on = now() - interval '1 second' WHERE facility_id = ${f.facility.id}`; return send({ ok: true }); }

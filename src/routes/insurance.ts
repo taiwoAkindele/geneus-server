@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import {
-  DOCUMENT_MAX_BYTES, ImportKind, ImportTemplateSave, InsuranceDocument, InsuranceDocumentUpload, Payer, PayerKind, SCHEMA_VERSION, StoredSubmissionProfile, SubmissionProfile, TariffImport,
+  AuthorizationInput, ClaimAcknowledgementInput, ClaimState, ClaimSubmissionInput, ImportTemplate, DOCUMENT_MAX_BYTES, ImportKind, ImportTemplateSave, InsuranceDocument, InsuranceDocumentUpload, Payer, PayerKind, SCHEMA_VERSION, StoredSubmissionProfile, SubmissionProfile, TariffImport,
   computeAllocation, documentContentType, isRoutine, staffPermissions,
   type ApiErrorBody, type Permission, type Staff,
 } from '#shared';
@@ -18,6 +18,10 @@ import { chargePositions, chargesById } from '../insurance/coverage.ts';
 import { RefundRefusal, RefundRequest, recordRefund } from '../insurance/refunds.ts';
 import { SetupRefusal, insuranceSetupStatus, setInsuranceSetup } from '../insurance/enablement.ts';
 import { billingPeriods } from '../insurance/billingPeriods.ts';
+import {
+  ClaimRefusal, createBatch, exportClaims, generateClaims, listAuthorizations, listBatches, listClaims, listSubmissions, markReady, recordAcknowledgement,
+  recordAuthorization, recordSubmission, reviseClaim, setAttachment,
+} from '../insurance/claims.ts';
 import { applyTariffImport, listImportTemplates, saveImportTemplate } from '../insurance/tariffImport.ts';
 
 /**
@@ -87,7 +91,7 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
     return { replayed: false, response };
   };
   const refusal = (reply: FastifyReply, cause: unknown) => {
-    if (cause instanceof ContractRefusal || cause instanceof RefundRefusal || cause instanceof SetupRefusal) return reply.code(409).send({ error: cause.code, message: cause.message, ...(cause.details ? { details: cause.details } : {}) });
+    if (cause instanceof ContractRefusal || cause instanceof RefundRefusal || cause instanceof SetupRefusal || cause instanceof ClaimRefusal) return reply.code(409).send({ error: cause.code, message: cause.message, ...(cause.details ? { details: cause.details } : {}) });
     throw cause;
   };
 
@@ -366,7 +370,7 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
   /* ---------------- Spreadsheet import (Milestone 2) ---------------- */
 
   /** Saved column mappings. Generic by kind; the tariff kind needs contract management. */
-  const IMPORT_PERMISSION: Record<ImportKind, Permission> = { contract_tariff: 'insurance_contract:manage' };
+  const IMPORT_PERMISSION: Record<ImportKind, Permission> = { contract_tariff: 'insurance_contract:manage', claim_export: 'coverage:confirm' };
   app.post('/insurance/import-templates/list', async (request, reply) => {
     const body = z.strictObject({ kind: ImportKind }).safeParse(request.body);
     if (!body.success) return invalid(reply, 'Choose what is being imported');
@@ -405,6 +409,138 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
       } });
       return result.response;
     } catch (cause) { return refusal(reply, cause); }
+  });
+
+  /* ---------------- Claims (Milestone 3) ---------------- */
+
+  // Claims carry contract prices and payer shares: insurance officers only. Billing work continues after billing is turned off.
+  const CLAIMS: Permission = 'coverage:confirm';
+  const audit = (who: Verified, entityId: string, metadata: Record<string, string | number | boolean>) =>
+    recordAuditEvent(sql, { facilityId: who.identity.facilityId, deviceId: who.identity.deviceId, actorStaffId: who.staff.id, action: 'update', entityType: 'facility', entityId, metadata });
+
+  /** Prior authorizations and referrals, recorded as obtained by staff who verify cover. */
+  app.post('/insurance/authorizations/save', async (request, reply) => {
+    const who = await verified(request, reply, 'cover:verify', 'configure'); if (!who) return;
+    const body = AuthorizationInput.safeParse(request.body);
+    if (!body.success) return invalid(reply, body.error.issues.map((i) => i.message).join('; '));
+    try {
+      const saved = await sql.begin((tx) => recordAuthorization(tx, who.identity.facilityId, who.staff.id, body.data));
+      await audit(who, saved.id, { context: 'insurance_authorization_recorded', kind: saved.kind, status: saved.status, patientId: saved.patientId });
+      return saved;
+    } catch (cause) { return refusal(reply, cause); }
+  });
+  app.post('/insurance/authorizations/list', async (request, reply) => {
+    const who = await verified(request, reply, 'cover:verify', 'configure'); if (!who) return;
+    const body = z.strictObject({ patientId: z.string().min(1).optional() }).safeParse(request.body ?? {});
+    if (!body.success) return invalid(reply, 'Choose a patient');
+    return { authorizations: await listAuthorizations(sql, who.identity.facilityId, body.data.patientId ? [body.data.patientId] : undefined) };
+  });
+
+  app.post('/insurance/claims/generate', async (request, reply) => {
+    const who = await verified(request, reply, CLAIMS, 'billing'); if (!who) return;
+    const body = z.strictObject({ payerId: z.string().min(1).optional(), from: z.iso.date().optional(), to: z.iso.date().optional() }).safeParse(request.body ?? {});
+    if (!body.success) return invalid(reply, 'Choose a payer and dates');
+    const result = await sql.begin((tx) => generateClaims(tx, who.identity.facilityId, who.staff.id, body.data));
+    if (result.lines) await audit(who, who.identity.facilityId, { context: 'insurance_claims_generated', created: result.created, extended: result.extended, lines: result.lines });
+    return result;
+  });
+  app.post('/insurance/claims/list', async (request, reply) => {
+    const who = await verified(request, reply, CLAIMS, 'billing'); if (!who) return;
+    const body = z.strictObject({ payerId: z.string().min(1).optional(), state: ClaimState.optional(), batchId: z.string().min(1).optional(), claimIds: z.array(z.string().min(1)).max(300).optional(), includeSuperseded: z.boolean().optional() }).safeParse(request.body ?? {});
+    if (!body.success) return invalid(reply, 'Choose which claims to list');
+    return { claims: await listClaims(sql, who.identity.facilityId, body.data) };
+  });
+  app.post('/insurance/claims/ready', async (request, reply) => {
+    const who = await verified(request, reply, CLAIMS, 'billing'); if (!who) return;
+    const body = z.strictObject({ claimIds: z.array(z.string().min(1)).min(1).max(300) }).safeParse(request.body);
+    if (!body.success) return invalid(reply, 'Choose claims');
+    try {
+      const result = await sql.begin((tx) => markReady(tx, who.identity.facilityId, who.staff.id, body.data.claimIds));
+      for (const o of result.outcomes.filter((x) => x.outcome === 'ready')) await audit(who, o.claimId, { context: 'insurance_claim_ready' });
+      return result;
+    } catch (cause) { return refusal(reply, cause); }
+  });
+  app.post<{ Params: { id: string } }>('/insurance/claims/:id/revise', async (request, reply) => {
+    const who = await verified(request, reply, CLAIMS, 'billing'); if (!who) return;
+    const body = z.strictObject({ reason: z.string().trim().min(3).max(1000), requestKey: z.string().min(8).max(100) }).safeParse(request.body);
+    if (!body.success) return invalid(reply, 'Give a reason for the revision');
+    try {
+      const result = await sql.begin((tx) => once(tx, who, body.data.requestKey, 'revise_claim', { id: request.params.id, ...body.data }, () => reviseClaim(tx, who.identity.facilityId, who.staff.id, request.params.id, body.data.reason)));
+      if ('conflict' in result) return reply.code(409).send({ error: 'request_reused', message: 'This request key was already used for a different action' } satisfies ApiErrorBody);
+      if (!result.replayed) await audit(who, request.params.id, { context: 'insurance_claim_revised', revisedTo: result.response.claimId, reason: body.data.reason });
+      return result.response;
+    } catch (cause) { return refusal(reply, cause); }
+  });
+  app.post<{ Params: { id: string } }>('/insurance/claims/:id/attachments', async (request, reply) => {
+    const who = await verified(request, reply, CLAIMS, 'billing'); if (!who) return;
+    const body = z.strictObject({ documentId: z.string().min(1), remove: z.boolean().default(false) }).safeParse(request.body);
+    if (!body.success) return invalid(reply, 'Choose a document');
+    try {
+      await sql.begin((tx) => setAttachment(tx, who.identity.facilityId, who.staff.id, request.params.id, body.data.documentId, body.data.remove));
+      await audit(who, request.params.id, { context: body.data.remove ? 'insurance_claim_attachment_removed' : 'insurance_claim_attachment_added', documentId: body.data.documentId });
+      return { ok: true };
+    } catch (cause) { return refusal(reply, cause); }
+  });
+  app.post('/insurance/claims/batches/create', async (request, reply) => {
+    const who = await verified(request, reply, CLAIMS, 'billing'); if (!who) return;
+    const body = z.strictObject({ payerId: z.string().min(1), periodFrom: z.iso.date(), periodTo: z.iso.date(), reference: z.string().trim().min(1).max(60).optional() }).safeParse(request.body);
+    if (!body.success) return invalid(reply, 'Choose a payer and period');
+    try {
+      const result = await sql.begin((tx) => createBatch(tx, who.identity.facilityId, who.staff.id, body.data));
+      await audit(who, result.batchId, { context: 'insurance_claim_batch_created', reference: result.reference, claims: result.claims });
+      return result;
+    } catch (cause) { return refusal(reply, cause); }
+  });
+  app.post('/insurance/claims/batches/list', async (request, reply) => {
+    const who = await verified(request, reply, CLAIMS, 'billing'); if (!who) return;
+    return { batches: await listBatches(sql, who.identity.facilityId) };
+  });
+  /** Rows for a file the device writes (CSV/XLSX) or prints (PDF). Recorded, never a submission. */
+  app.post('/insurance/claims/export', async (request, reply) => {
+    const who = await verified(request, reply, CLAIMS, 'billing'); if (!who) return;
+    const body = z.strictObject({ claimIds: z.array(z.string().min(1)).max(2000).optional(), batchId: z.string().min(1).optional(), draft: z.boolean(), format: z.enum(['csv', 'xlsx', 'pdf']), templateId: z.string().min(1).optional(), requestKey: z.string().min(8).max(100) })
+      .refine((b) => Boolean(b.claimIds?.length) !== Boolean(b.batchId), 'Choose claims or a batch').safeParse(request.body);
+    if (!body.success) return invalid(reply, body.error.issues.map((i) => i.message).join('; '));
+    try {
+      const result = await sql.begin(async (tx) => once(tx, who, body.data.requestKey, 'export_claims', body.data, async () => {
+        let template: ImportTemplate | undefined;
+        if (body.data.templateId) {
+          const [row] = await tx<Record<string, unknown>[]>`SELECT * FROM import_mapping_templates WHERE facility_id = ${who.identity.facilityId} AND id = ${body.data.templateId} AND kind = 'claim_export'`;
+          if (!row) throw new ClaimRefusal('unknown_template', 'Choose a saved export layout');
+          template = ImportTemplate.parse({ id: row.id, kind: row.kind, ...(row.payer_id ? { payerId: row.payer_id } : {}), name: row.name, headers: row.headers, headerRow: row.header_row, mapping: row.mapping, ...(row.formats ? { formats: row.formats } : {}), revision: row.revision, updatedBy: row.updated_by, updatedOn: new Date(row.updated_on as string).toISOString() });
+        }
+        return exportClaims(tx, who.identity.facilityId, who.staff.id, { ...body.data, ...(template ? { template } : {}) });
+      }));
+      if ('conflict' in result) return reply.code(409).send({ error: 'request_reused', message: 'This request key was already used for a different action' } satisfies ApiErrorBody);
+      if (!result.replayed) await audit(who, result.response.exportId, { context: 'insurance_claims_exported', draft: body.data.draft, format: body.data.format, claims: result.response.claims.length, rows: result.response.rows.length, payloadSha256: result.response.payloadSha256 });
+      return result.response;
+    } catch (cause) { return refusal(reply, cause); }
+  });
+  app.post('/insurance/claims/submit', async (request, reply) => {
+    const who = await verified(request, reply, CLAIMS, 'billing'); if (!who) return;
+    const body = ClaimSubmissionInput.safeParse(request.body);
+    if (!body.success) return invalid(reply, body.error.issues.map((i) => i.message).join('; '));
+    try {
+      const result = await sql.begin((tx) => once(tx, who, body.data.requestKey, 'submit_claims', body.data, () => recordSubmission(tx, who.identity.facilityId, who.staff.id, body.data)));
+      if ('conflict' in result) return reply.code(409).send({ error: 'request_reused', message: 'This request key was already used for a different action' } satisfies ApiErrorBody);
+      if (!result.replayed) await audit(who, result.response.submissionId, { context: 'insurance_claims_submitted', channel: body.data.channel, reference: body.data.reference, claims: result.response.claims });
+      return result.response;
+    } catch (cause) { return refusal(reply, cause); }
+  });
+  app.post('/insurance/claims/acknowledge', async (request, reply) => {
+    const who = await verified(request, reply, CLAIMS, 'billing'); if (!who) return;
+    const body = ClaimAcknowledgementInput.safeParse(request.body);
+    if (!body.success) return invalid(reply, body.error.issues.map((i) => i.message).join('; '));
+    try {
+      const result = await sql.begin((tx) => once(tx, who, body.data.requestKey, 'acknowledge_claims', body.data, () => recordAcknowledgement(tx, who.identity.facilityId, who.staff.id, body.data)));
+      if ('conflict' in result) return reply.code(409).send({ error: 'request_reused', message: 'This request key was already used for a different action' } satisfies ApiErrorBody);
+      if (!result.replayed) await audit(who, result.response.acknowledgementId, { context: 'insurance_claims_acknowledged', claims: result.response.claims });
+      return result.response;
+    } catch (cause) { return refusal(reply, cause); }
+  });
+  app.post('/insurance/claims/submissions/list', async (request, reply) => {
+    const who = await verified(request, reply, CLAIMS, 'billing'); if (!who) return;
+    return { submissions: await listSubmissions(sql, who.identity.facilityId) };
   });
 };
 
