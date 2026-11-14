@@ -31,6 +31,13 @@ ALTER TABLE workforce_client_versions ADD COLUMN insurance_version integer;
 -- Off for every hospital until an operator enables it after the rollout checks.
 -- Not a synced column: devices learn it only through the negotiated sync token.
 ALTER TABLE facilities ADD COLUMN insurance_enabled boolean NOT NULL DEFAULT false;
+-- Every switch, with who ran it and the approval it rests on. Never changed or removed.
+CREATE TABLE insurance_operator_commands (
+  id text PRIMARY KEY, facility_id text NOT NULL REFERENCES facilities(id), enabled boolean NOT NULL, time_zone text,
+  operator text NOT NULL CHECK (btrim(operator) <> ''), governance_reference text NOT NULL CHECK (btrim(governance_reference) <> ''),
+  recorded_on timestamptz NOT NULL DEFAULT now()
+);
+CREATE TRIGGER insurance_operator_commands_immutable BEFORE UPDATE OR DELETE ON insurance_operator_commands FOR EACH ROW EXECUTE FUNCTION forbid_clinical_change();
 
 CREATE TABLE payers (
   id text PRIMARY KEY, facility_id text NOT NULL REFERENCES facilities(id),
@@ -250,6 +257,6 @@ ALTER PUBLICATION powersync ADD TABLE payers, cover_schedules, patient_covers, c
 DO $$
 BEGIN
   IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'powersync') THEN
-    REVOKE ALL ON payer_contract_versions, coverage_allocation_details, insurance_requests FROM powersync;
+    REVOKE ALL ON payer_contract_versions, coverage_allocation_details, insurance_requests, insurance_operator_commands FROM powersync;
   END IF;
 END $$;

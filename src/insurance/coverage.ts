@@ -1,8 +1,9 @@
 import {
   chargeUnits, estimateCoverage, patientResponsibility, serviceDateOf,
   type Charge, type CoverageEstimate, type CoverageRecords, type CoverSchedule, type CoverageAllocation,
-  type CoverageElection, type CoverCheck, type EncounterEntry, type Facility, type Payer, type PatientCover, type Payment, type Refund,
+  type CoverageElection, type CoverCheck, type EncounterEntry, type Facility, type Payer, type PatientCover, type Payment, type Refund, inBillingPeriod,
 } from '#shared';
+import { billingPeriods } from './billingPeriods.ts';
 import type { Sql, Tx } from '../db/client.ts';
 import { findRecord, fromRow } from '../db/records.ts';
 
@@ -85,11 +86,14 @@ export type ChargePosition = {
 export const chargePositions = async (sql: Sql | Tx, facilityId: string, charges: readonly Charge[]): Promise<Map<string, ChargePosition>> => {
   const positions = new Map<string, ChargePosition>();
   if (!charges.length) return positions;
-  const [records, timeZone, money] = await Promise.all([
+  const [records, timeZone, money, state] = await Promise.all([
     loadCoverageRecords(sql, facilityId, charges.map((c) => c.patientId)),
     facilityTimeZone(sql, facilityId),
     moneyFor(sql, facilityId, charges.map((c) => c.id)),
+    billingPeriods(sql, facilityId),
   ]);
+  // Cover changes a balance only for charges raised while billing was active; confirmed splits always stand.
+  const periods = state;
   const dispenseIds = charges.map((c) => c.dispenseEntryId).filter((id): id is string => Boolean(id));
   const entries = new Map<string, EncounterEntry>();
   if (dispenseIds.length) {
@@ -100,7 +104,7 @@ export const chargePositions = async (sql: Sql | Tx, facilityId: string, charges
   }
   for (const charge of charges) {
     const estimate = estimateCoverage({
-      charge, records, serviceDate: serviceDateOf(charge.createdOn, timeZone),
+      charge, records, billingActive: inBillingPeriod(charge.createdOn, periods), serviceDate: serviceDateOf(charge.createdOn, timeZone),
       units: chargeUnits(charge, charge.dispenseEntryId ? entries.get(charge.dispenseEntryId) : undefined),
     });
     const responsibility = patientResponsibility(charge, estimate);

@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import { billingPeriods } from '../insurance/billingPeriods.ts';
 import { UploadRequest, type ApiErrorBody, type SyncTokenResponse } from '#shared';
 import { authenticateDevice, touchDevice } from '../auth/deviceAuth.ts';
 import { mintSyncToken } from '../auth/syncToken.ts';
@@ -9,7 +10,7 @@ import { processUpload } from '../sync/upload.ts';
 import { FACILITY_FEATURE_SUPPORT } from '../workforce/compatibility.ts';
 import { assertWorkforceCompatibility } from '../workforce/compatibility.ts';
 import { recordClientVersion } from '../workforce/readiness.ts';
-import { insuranceEnabled } from '../insurance/contracts.ts';
+import { insuranceState } from '../insurance/contracts.ts';
 import { z } from 'zod';
 import { ensureStandardCatalogueOnce } from '../clinical/standardCatalogue.ts';
 
@@ -58,7 +59,10 @@ export const registerSyncRoutes = (app: FastifyInstance, sql: Sql, config: Confi
     if (version.data.resultTemplateWorkflowVersion === 1) await ensureStandardCatalogueOnce(sql, identity.facilityId);
 
     // A capable device is recorded for readiness above; it receives insurance records only once an operator enables the hospital.
-    const insurance = version.data.insuranceWorkflowVersion === 1 && await insuranceEnabled(sql, identity.facilityId) ? 1 as const : undefined;
+    const state = version.data.insuranceWorkflowVersion === 1 ? await insuranceState(sql, identity.facilityId) : 'off';
+    // A hospital that ever billed insurance keeps its insurance records after turning billing off: those obligations stand.
+    const periods = version.data.insuranceWorkflowVersion === 1 ? await billingPeriods(sql, identity.facilityId) : [];
+    const insurance = state === 'setup' || state === 'active' || periods.length ? 1 as const : undefined;
     const minted = mintSyncToken(signer, {
       deviceId: identity.deviceId,
       facilityId: identity.facilityId,
@@ -88,6 +92,7 @@ export const registerSyncRoutes = (app: FastifyInstance, sql: Sql, config: Confi
       documentWorkflowVersion: version.data.documentWorkflowVersion,
       resultTemplateWorkflowVersion: version.data.resultTemplateWorkflowVersion,
       insuranceWorkflowVersion: insurance,
+      ...(insurance ? { insuranceBillingActive: state === 'active', insuranceBillingPeriods: periods.slice(-200) } : {}),
     };
     return response;
   });

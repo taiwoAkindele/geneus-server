@@ -1,6 +1,6 @@
 import {
   CALCULATION_VERSION, CoverSchedule, PayerContractTerms, PayerContractVersion, SCHEMA_VERSION, buildScheduleLines, contractIdFor,
-  contractVersionId, serviceDateOf, unsupportedArrangements, type FeeCategory,
+  contractVersionId, insuranceConfigurable, serviceDateOf, unsupportedArrangements, type FeeCategory, type InsuranceState,
 } from '#shared';
 import type { Sql, Tx } from '../db/client.ts';
 import { insertRecord } from '../db/records.ts';
@@ -32,9 +32,13 @@ export class ContractRefusal extends Error {
   constructor(code: string, message: string, details?: unknown) { super(message); this.name = 'ContractRefusal'; this.code = code; this.details = details; }
 }
 
-/** Insurance stays off for every hospital until an operator enables it after the rollout checks. */
-export const insuranceEnabled = async (sql: Sql | Tx, facilityId: string): Promise<boolean> =>
-  Boolean((await sql<{ insurance_enabled: boolean }[]>`SELECT insurance_enabled FROM facilities WHERE id = ${facilityId}`)[0]?.insurance_enabled);
+/**
+ * The hospital's insurance state: off, setup (configure without touching bills)
+ * or active (cover applies to bills; set only by an operator after readiness).
+ */
+export const insuranceState = async (sql: Sql | Tx, facilityId: string): Promise<InsuranceState> =>
+  ((await sql<{ insurance_state: InsuranceState }[]>`SELECT insurance_state FROM facilities WHERE id = ${facilityId}`)[0]?.insurance_state) ?? 'off';
+export const insuranceBillingActive = async (sql: Sql | Tx, facilityId: string) => (await insuranceState(sql, facilityId)) === 'active';
 
 /** Fee items the terms name, with their categories; an unknown fee item is refused, never guessed. */
 const feeCategories = async (tx: Tx, facilityId: string, terms: PayerContractTerms): Promise<Map<string, FeeCategory>> => {
@@ -123,7 +127,8 @@ export const activationBlockers = async (sql: Sql | Tx, facilityId: string, now 
  */
 export const activateContract = async (tx: Tx, input: { facilityId: string; deviceId: string; staffId: string; contractVersionId: string; acknowledgeUnsupported: boolean; acceptRevokedDevices: readonly string[] }, now = Date.now()) => {
   await tx`SELECT id FROM facilities WHERE id = ${input.facilityId} FOR UPDATE`;
-  if (!(await insuranceEnabled(tx, input.facilityId))) throw new ContractRefusal('insurance_not_enabled', 'Insurance is not enabled for this hospital yet');
+  // Activating a contract version prepares cover; it changes bills only once billing itself is active.
+  if (!insuranceConfigurable(await insuranceState(tx, input.facilityId))) throw new ContractRefusal('insurance_not_enabled', 'Insurance setup is not enabled for this hospital');
   if (!(await facilityTimeZone(tx, input.facilityId))) throw new ContractRefusal('timezone_required', "Record the hospital's time zone first: insurance dates every service in local time");
   const version = await findContractVersion(tx, input.facilityId, input.contractVersionId, true);
   if (!version) throw new ContractRefusal('not_found', 'This contract version is not in this hospital');

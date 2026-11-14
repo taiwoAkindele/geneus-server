@@ -57,7 +57,7 @@ import type { DeviceIdentity } from '../devices/credentials.ts';
 import { describeDenial, findStaffInFacility, staffDenial } from '../auth/staffAuthorization.ts';
 import { keepsAdministrator } from '../staff/access.ts';
 import { availableOnCharge } from '../billing/ledger.ts';
-import { flagInsuredOverpayment, insuranceUploadIssues } from '../insurance/uploadChecks.ts';
+import { completionUploadIssues, flagInsuredOverpayment, insuranceUploadIssues } from '../insurance/uploadChecks.ts';
 import { claimMutation, recordRejection } from './ledger.ts';
 import { stockMovementIssue } from '../inventory/validation.ts';
 import { validateWorkforceRecord, workforceType } from '../workforce/validation.ts';
@@ -113,7 +113,7 @@ const APPEND_ONLY: readonly DocType[] = [
   'payment',
   'billing_adjustment',
   'patient_identity_event',
-  'patient_cover', 'cover_check', 'coverage_election',
+  'patient_cover', 'cover_check', 'coverage_election', 'service_completion',
 ];
 /** Never patched: a change is a new version (SCHEMA.md §11.2). */
 const IMMUTABLE_PER_VERSION: readonly DocType[] = ['register_definition'];
@@ -161,6 +161,8 @@ const PUT_PERMISSION: Partial<Record<DocType, Permission>> = {
   billing_department: 'fee_item:manage',
   patient_cover: 'cover:record',
   cover_check: 'cover:verify',
+  // Evidence that a service was done: recorded by those who do clinical work, never by insurance or billing staff.
+  service_completion: 'encounter:record',
   // A payment's permission depends on what it does — see paymentPermission.
 };
 
@@ -550,6 +552,11 @@ const evaluatePut = async ({ tx, identity, uploadedAt }: Context, mutation: Uplo
   if (record.type === 'payment') {
     const refusal = await paymentRefusal(tx, record);
     if (refusal) return refusal;
+  }
+
+  if (record.type === 'service_completion') {
+    const issues = await completionUploadIssues(tx, record);
+    if (issues.length) return refuse('validation', issues.join('; '));
   }
 
   if (record.type === 'patient_cover' || record.type === 'cover_check' || record.type === 'coverage_election') {

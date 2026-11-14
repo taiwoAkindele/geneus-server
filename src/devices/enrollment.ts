@@ -112,6 +112,8 @@ export const revokeDevice = async (
   revokedBy: string,
   revokedFrom: string,
   wipe: boolean,
+  /** Changes the device last reported as unsent, accepted as lost by the revoker. */
+  unsentAccepted = 0,
 ): Promise<RevocationOutcome> =>
   sql.begin(async (tx): Promise<RevocationOutcome> => {
     const updated = await tx`
@@ -127,7 +129,7 @@ export const revokeDevice = async (
       action: 'revoke',
       entityType: 'device',
       entityId: targetDeviceId,
-      metadata: { wipe },
+      metadata: { wipe, unsentChangesAccepted: unsentAccepted },
     });
     const device = await findRecord<Device>(tx, 'device', targetDeviceId);
     return { ok: true, device: device as Device };
