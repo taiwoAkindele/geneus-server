@@ -260,7 +260,8 @@ describe('insurance foundation', () => {
     });
     it('an excluded service marked not billable can never be put on the patient', async () => {
       await charge('charge:nobill', 'fee:nobill', 'consultation', 3_000);
-      const response = await confirm(['charge:nobill'], { basis: 'exception', decision: 'self_pay', reason: 'Synthetic attempt' });
+      assert.equal((await confirm(['charge:nobill'], { basis: 'exception', decision: 'self_pay', reason: 'Synthetic attempt' })).statusCode, 400, 'a reason alone is never a ground');
+      const response = await confirm(['charge:nobill'], { basis: 'exception', decision: 'self_pay', reason: 'Synthetic attempt', liability: { ground: 'contract_clause', contractClause: 'Synthetic clause 9' } });
       assert.deepEqual(response.json().outcomes, [{ chargeId: 'charge:nobill', outcome: 'skipped', reason: 'patient_liability_not_permitted' }]);
     });
   });
@@ -300,7 +301,7 @@ describe('insurance foundation', () => {
       assert.equal(await balance('charge:later'), 100);
     });
     it('a contract that prohibits self-pay cannot be overridden by an officer reason', async () => {
-      const response = await confirm(['charge:pending'], { basis: 'exception', decision: 'self_pay', reason: 'Patient asked' });
+      const response = await confirm(['charge:pending'], { basis: 'exception', decision: 'self_pay', reason: 'Patient asked', liability: { ground: 'patient_election', patientAgreement: 'Signed synthetic form' } });
       assert.equal(response.json().outcomes[0].reason, 'self_pay_prohibited_by_payer');
     });
     it('a correction supersedes the snapshot and keeps both', async () => {
@@ -580,7 +581,7 @@ describe('insurance foundation', () => {
     it('blocks readiness until evidence and the payer\'s diagnosis rule are met; a draft exports only as a marked draft', async () => {
       let visit = await claimWith('charge:claim-visit');
       assert.equal(visit.lines[0].fulfillment.kind, 'visit', 'the doctor\'s entry shows the consultation happened');
-      assert.deepEqual(codes(visit), ['diagnosis_coding_unverified'], 'coded diagnoses cannot pass without a verified ICD-10 catalogue');
+      assert.deepEqual(codes(visit), ['diagnosis_catalogue_missing'], 'a payer requiring verified codes is never satisfied without a licensed catalogue');
       const day = await claimWith('charge:later');
       assert.ok(codes(day).includes('fulfillment_missing') && codes(day).includes('diagnosis_missing'));
       const ready = await call('/insurance/claims/ready', { claimIds: [visit.id] }, officer.id);
@@ -591,11 +592,20 @@ describe('insurance foundation', () => {
       const status = draft.json().headers.indexOf('claimStatus');
       assert.ok(draft.json().rows.every((r: unknown[]) => r[status] === 'DRAFT - NOT FOR SUBMISSION'));
       assert.equal((await claimWith('charge:claim-visit')).state, 'draft', 'a draft export changes nothing');
-      // This payer accepts written diagnoses: a configurable rule, recorded with the submission method.
-      const saved = await call('/insurance/submission/save', { payerId: 'payer:synthetic-a', profile: { method: 'manual', channel: 'physical', diagnosisRequirement: 'free_text' }, expectedRevision: await profileRevision() }, officer.id);
-      assert.equal(saved.statusCode, 200, saved.body);
+      // The hospital imports its own licensed ICD-10 list. A code it lacks still blocks; once present, the code is verified.
+      const catalogue = (lines: { code: string; description: string; sourceRow: number }[], mode = 'merge', by = officer.id) => call('/insurance/diagnosis-catalogue/import', {
+        codeSystem: 'ICD-10', edition: 'Synthetic 2026', licenceReference: 'Synthetic licence SYN-LIC-1', mode, lines, source: { fileName: 'icd.xlsx', sha256: 'a'.repeat(64), rows: lines.length }, requestKey: randomUUID() }, by);
+      assert.equal((await catalogue([{ code: 'A00', description: 'Cholera', sourceRow: 2 }], 'merge', cashier.id)).statusCode, 403);
+      assert.equal((await catalogue([{ code: 'NOT A CODE', description: 'x', sourceRow: 2 }])).statusCode, 400, 'malformed codes are refused');
+      assert.equal((await catalogue([{ code: 'A00', description: 'Cholera', sourceRow: 2 }])).statusCode, 200);
+      assert.deepEqual(codes(await claimWith('charge:claim-visit')), ['diagnosis_code_not_in_catalogue']);
+      assert.equal((await catalogue([{ code: 'b54', description: 'Unspecified malaria', sourceRow: 3 }])).json().added, 1);
       visit = await claimWith('charge:claim-visit');
       assert.deepEqual(codes(visit), []);
+      assert.equal((visit as unknown as { diagnoses: { verification: string }[] }).diagnoses[0].verification, 'catalogue_verified');
+      const listed = await call('/insurance/diagnosis-catalogue/list', {}, officer.id);
+      assert.equal(listed.json().catalogues?.[0]?.codes, 2, listed.body);
+      void profileRevision;
       assert.equal((await call('/insurance/claims/ready', { claimIds: [visit.id] }, officer.id)).json().outcomes[0].outcome, 'ready');
       const [row] = await db.sql`SELECT ready_snapshot FROM insurance_claims WHERE id = ${visit.id}`;
       assert.equal(row.ready_snapshot.lines[0].fulfillment.kind, 'visit', 'what passed is kept with the claim');

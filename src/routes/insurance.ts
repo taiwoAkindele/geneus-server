@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import {
-  AuthorizationInput, ClaimAcknowledgementInput, ClaimState, ClaimSubmissionInput, ImportTemplate, DOCUMENT_MAX_BYTES, ImportKind, ImportTemplateSave, InsuranceDocument, InsuranceDocumentUpload, Payer, PayerKind, SCHEMA_VERSION, StoredSubmissionProfile, SubmissionProfile, TariffImport,
+  AuthorizationInput, ClaimAcknowledgementInput, DiagnosisCatalogueImport, DisputeOpen, DisputeResolve, LiabilityChange, PayerDecisionInput, RemittanceAllocate, RemittanceInput, RemittanceReverse, WriteOffInput, ClaimState, ClaimSubmissionInput, ImportTemplate, DOCUMENT_MAX_BYTES, ImportKind, ImportTemplateSave, InsuranceDocument, InsuranceDocumentUpload, Payer, PayerKind, SCHEMA_VERSION, StoredSubmissionProfile, SubmissionProfile, TariffImport,
   computeAllocation, documentContentType, isRoutine, staffPermissions,
   type ApiErrorBody, type Permission, type Staff,
 } from '#shared';
@@ -23,6 +23,8 @@ import {
   recordAuthorization, recordSubmission, reviseClaim, setAttachment,
 } from '../insurance/claims.ts';
 import { applyTariffImport, listImportTemplates, saveImportTemplate } from '../insurance/tariffImport.ts';
+import { diagnosisCatalogues, importDiagnosisCatalogue } from '../insurance/diagnosisCatalogue.ts';
+import { allocateRemittance, listDisputes, listRemittances, matchRemittance, openDispute, outstandingClaims, recordDecision, recordRemittance, resolveDispute, reverseRemittance, writeOff } from '../insurance/settlement.ts';
 
 /**
  * Online insurance actions. Each needs a server-verified staff identity — the
@@ -54,8 +56,10 @@ const Confirm = ChargeList.extend({
   basis: z.enum(['visit', 'routine_bulk', 'exception']),
   decision: z.enum(['apply_cover', 'self_pay']).default('apply_cover'),
   reason: z.string().trim().min(1).max(1000).optional(),
+  liability: LiabilityChange.optional(),
 }).refine((b) => b.basis !== 'exception' || b.reason, { message: 'An exception needs a reason', path: ['reason'] })
-  .refine((b) => b.decision !== 'self_pay' || b.basis === 'exception', { message: 'Recording self-pay is an exception', path: ['basis'] });
+  .refine((b) => b.decision !== 'self_pay' || b.basis === 'exception', { message: 'Recording self-pay is an exception', path: ['basis'] })
+  .refine((b) => b.decision !== 'self_pay' || b.liability, { message: 'Making the patient liable needs a documented ground', path: ['liability'] });
 
 export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void => {
   /** `configure` needs setup or active; `billing` needs active billing. */
@@ -218,9 +222,10 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
     const result = await sql.begin((tx) => once(tx, who, body.data.requestKey, 'confirm', body.data, () => confirmAllocations(tx, {
       facilityId: who.identity.facilityId, deviceId: who.identity.deviceId, staffId: who.staff.id, requestKey: body.data.requestKey,
       chargeIds: body.data.chargeIds, basis: body.data.basis, decision: body.data.decision, reason: body.data.reason,
+      ...(body.data.liability ? { liability: body.data.liability } : {}), mayApproveLiability: staffPermissions(who.staff).includes('coverage:approve_liability_change'),
     })));
     if ('conflict' in result) return reply.code(409).send({ error: 'request_reused', message: 'This request key was already used for a different action' } satisfies ApiErrorBody);
-    if (!result.replayed) await recordAuditEvent(sql, { facilityId: who.identity.facilityId, deviceId: who.identity.deviceId, actorStaffId: who.staff.id, action: 'create', entityType: 'coverage_allocation', metadata: { context: 'insurance_confirm', basis: body.data.basis, decision: body.data.decision, confirmed: result.response.filter((o) => o.outcome === 'confirmed').length, skipped: result.response.filter((o) => o.outcome === 'skipped').length } });
+    if (!result.replayed) await recordAuditEvent(sql, { facilityId: who.identity.facilityId, deviceId: who.identity.deviceId, actorStaffId: who.staff.id, action: 'create', entityType: 'coverage_allocation', metadata: { context: 'insurance_confirm', basis: body.data.basis, decision: body.data.decision, ...(body.data.liability ? { ground: body.data.liability.ground } : {}), confirmed: result.response.filter((o) => o.outcome === 'confirmed').length, skipped: result.response.filter((o) => o.outcome === 'skipped').length } });
     return { outcomes: result.response };
   });
 
@@ -392,7 +397,7 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
   /* ---------------- Spreadsheet import (Milestone 2) ---------------- */
 
   /** Saved column mappings. Generic by kind; the tariff kind needs contract management. */
-  const IMPORT_PERMISSION: Record<ImportKind, Permission> = { contract_tariff: 'insurance_contract:manage', claim_export: 'coverage:confirm' };
+  const IMPORT_PERMISSION: Record<ImportKind, Permission> = { contract_tariff: 'insurance_contract:manage', claim_export: 'coverage:confirm', diagnosis_catalogue: 'insurance_contract:manage', remittance: 'insurance_remittance:record' };
   app.post('/insurance/import-templates/list', async (request, reply) => {
     const body = z.strictObject({ kind: ImportKind }).safeParse(request.body);
     if (!body.success) return invalid(reply, 'Choose what is being imported');
@@ -564,5 +569,84 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
     const who = await verified(request, reply, CLAIMS, 'billing'); if (!who) return;
     return { submissions: await listSubmissions(sql, who.identity.facilityId) };
   });
-};
 
+  /* ---------------- Diagnosis catalogue (audit H1) ---------------- */
+
+  /** A licensed code list the hospital supplies. Online, audited by file name and checksum, never its content. */
+  app.post('/insurance/diagnosis-catalogue/import', { bodyLimit: 8 * 1024 * 1024 }, async (request, reply) => {
+    const who = await verified(request, reply, 'insurance_contract:manage'); if (!who) return;
+    const body = DiagnosisCatalogueImport.safeParse(request.body);
+    if (!body.success) return invalid(reply, body.error.issues.slice(0, 20).map((i) => i.message).join('; '));
+    const result = await sql.begin((tx) => once(tx, who, body.data.requestKey, 'import_diagnosis_catalogue', body.data, () => importDiagnosisCatalogue(tx, who.identity.facilityId, who.staff.id, body.data)));
+    if ('conflict' in result) return reply.code(409).send({ error: 'request_reused', message: 'This request key was already used for a different action' } satisfies ApiErrorBody);
+    if (!result.replayed) await audit(who, result.response.importId, { context: 'diagnosis_catalogue_imported', codeSystem: result.response.codeSystem, edition: body.data.edition, licenceReference: body.data.licenceReference,
+      mode: body.data.mode, reportedFileName: body.data.source.fileName, reportedFileSha256: body.data.source.sha256, payloadSha256: result.response.payloadSha256, added: result.response.added, changed: result.response.changed, removed: result.response.removed });
+    return result.response;
+  });
+  app.post('/insurance/diagnosis-catalogue/list', async (request, reply) => {
+    const who = await verified(request, reply, 'insurance_contract:read'); if (!who) return;
+    return { catalogues: await diagnosisCatalogues(sql, who.identity.facilityId) };
+  });
+
+  /* ---------------- Payer decisions, remittances, disputes, write-offs (Slice 4) ---------------- */
+
+  /** A settlement action: verified, idempotent by request key, audited, refusals reported as conflicts. */
+  const settle = <B extends { requestKey: string }, R>(path: string, permission: Permission, schema: z.ZodType<B>, operation: string,
+    run: (tx: Tx, who: Verified, body: B) => Promise<R>, auditOf: (response: R, body: B) => [string, Record<string, string | number | boolean>]) => {
+    app.post(path, async (request, reply) => {
+      const who = await verified(request, reply, permission, 'billing'); if (!who) return;
+      const body = schema.safeParse(request.body);
+      if (!body.success) return invalid(reply, body.error.issues.slice(0, 20).map((i) => `${i.path.join('.')}: ${i.message}`).join('; '));
+      try {
+        const result = await sql.begin((tx) => once(tx, who, body.data.requestKey, operation, body.data, () => run(tx, who, body.data)));
+        if ('conflict' in result) return reply.code(409).send({ error: 'request_reused', message: 'This request key was already used for a different action' } satisfies ApiErrorBody);
+        if (!result.replayed) { const [entityId, metadata] = auditOf(result.response, body.data); await audit(who, entityId, { context: operation, ...metadata }); }
+        return result.response;
+      } catch (cause) { return refusal(reply, cause); }
+    });
+  };
+
+  settle('/insurance/claims/decisions/record', CLAIMS, PayerDecisionInput, 'insurance_payer_decision', (tx, who, body) => recordDecision(tx, who.identity.facilityId, who.staff.id, body),
+    (r, b) => [r.claimId, { decision: r.decision, approvedMinor: r.approvedMinor, ...(b.reasonCode ? { reasonCode: b.reasonCode } : {}) }]);
+  settle('/insurance/remittances/record', 'insurance_remittance:record', RemittanceInput, 'insurance_remittance_recorded', (tx, who, body) => recordRemittance(tx, who.identity.facilityId, who.staff.id, body),
+    (r, b) => [r.remittanceId, { payerId: b.payerId, reference: b.reference, amountMinor: b.amountMinor, allocatedMinor: r.allocatedMinor, ...(b.source ? { reportedFileName: b.source.fileName, reportedFileSha256: b.source.sha256 } : {}) }]);
+  settle('/insurance/remittances/allocate', 'insurance_remittance:record', RemittanceAllocate, 'insurance_remittance_allocated', (tx, who, body) => allocateRemittance(tx, who.identity.facilityId, who.staff.id, body),
+    (r) => [r.remittanceId, { allocatedMinor: r.allocatedMinor, unallocatedMinor: r.unallocatedMinor }]);
+  settle('/insurance/remittances/reverse', 'insurance_remittance:record', RemittanceReverse, 'insurance_remittance_reversed', (tx, who, body) => reverseRemittance(tx, who.identity.facilityId, who.staff.id, body),
+    (r, b) => [r.remittanceId, { reason: b.reason }]);
+  settle('/insurance/disputes/open', CLAIMS, DisputeOpen, 'insurance_dispute_opened', (tx, who, body) => openDispute(tx, who.identity.facilityId, who.staff.id, body),
+    (r, b) => [b.claimId, { disputeId: r.disputeId, amountMinor: b.amountMinor }]);
+  settle('/insurance/disputes/resolve', CLAIMS, DisputeResolve, 'insurance_dispute_resolved', (tx, who, body) => resolveDispute(tx, who.identity.facilityId, who.staff.id, body),
+    (r) => [r.disputeId, { outcome: r.outcome }]);
+  settle('/insurance/write-offs', 'billing:write_off', WriteOffInput, 'insurance_write_off', (tx, who, body) => writeOff(tx, who.identity.facilityId, who.staff.id, body),
+    (r, b) => [b.claimId, { writeOffId: r.writeOffId, amountMinor: b.amountMinor, reason: b.reason }]);
+
+  app.post('/insurance/remittances/list', async (request, reply) => {
+    const who = await verified(request, reply, 'insurance_remittance:record', 'billing'); if (!who) return;
+    const body = z.strictObject({ payerId: z.string().min(1).optional() }).safeParse(request.body ?? {});
+    if (!body.success) return invalid(reply, 'Choose a payer');
+    return { remittances: await listRemittances(sql, who.identity.facilityId, body.data.payerId) };
+  });
+  /** Proposed matches for a payer's payment advice. Records nothing. */
+  app.post('/insurance/remittances/match', { bodyLimit: 4 * 1024 * 1024 }, async (request, reply) => {
+    const who = await verified(request, reply, 'insurance_remittance:record', 'billing'); if (!who) return;
+    const minor = z.number().int().nonnegative().optional();
+    const body = z.strictObject({ payerId: z.string().min(1), rows: z.array(z.strictObject({
+      sourceRow: z.number().int().positive(), claimNumber: z.string().trim().min(1).max(60).optional(), enrolleeNumber: z.string().trim().min(1).max(100).optional(),
+      approvedMinor: minor, deductedMinor: minor, paidMinor: minor, reasonCode: z.string().trim().min(1).max(60).optional(), reason: z.string().trim().min(1).max(1000).optional(),
+    })).min(1).max(5000) }).safeParse(request.body);
+    if (!body.success) return invalid(reply, 'Send the mapped rows of the payment advice');
+    return { matches: await matchRemittance(sql, who.identity.facilityId, body.data.payerId, body.data.rows) };
+  });
+  app.post('/insurance/disputes/list', async (request, reply) => {
+    const who = await verified(request, reply, CLAIMS, 'billing'); if (!who) return;
+    return { disputes: await listDisputes(sql, who.identity.facilityId) };
+  });
+  /** What payers still owe, claim by claim, with expected, approved, paid, disputed and written-off kept apart. */
+  app.post('/insurance/outstanding', async (request, reply) => {
+    const who = await verified(request, reply, 'insurance_remittance:record', 'billing'); if (!who) return;
+    const body = z.strictObject({ payerId: z.string().min(1).optional() }).safeParse(request.body ?? {});
+    if (!body.success) return invalid(reply, 'Choose a payer');
+    return outstandingClaims(sql, who.identity.facilityId, body.data.payerId);
+  });
+};
