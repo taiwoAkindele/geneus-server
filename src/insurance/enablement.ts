@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
-import { FacilityTimeZone, type Facility, type InsuranceActivationRequest, type InsuranceSetupItem, type InsuranceSetupStatus, type InsuranceState, type SetupPerson } from '#shared';
+import { FacilityTimeZone, staffPermissions, type Staff, type Facility, type InsuranceActivationRequest, type InsuranceSetupItem, type InsuranceSetupStatus, type InsuranceState, type SetupPerson } from '#shared';
 import type { Sql, Tx } from '../db/client.ts';
-import { findRecord } from '../db/records.ts';
+import { findRecord, fromRow } from '../db/records.ts';
 import { recordAuditEvent } from '../audit/auditEvents.ts';
 import { activationBlockers } from './contracts.ts';
 import { closeBillingPeriod, openBillingPeriod } from './billingPeriods.ts';
@@ -38,11 +38,12 @@ export const insuranceSetupStatus = async (sql: Sql | Tx, facilityId: string, no
       EXISTS (SELECT 1 FROM insurance_documents d WHERE d.facility_id = p.facility_id AND d.payer_id = p.id AND d.document_type = 'contract' AND d.verification = 'verified') AS document
     FROM payers p WHERE p.facility_id = ${facilityId} AND p.active ORDER BY p.name`;
   const [{ n: activeContracts }] = await sql<{ n: number }[]>`SELECT COUNT(*)::int AS n FROM payer_contract_versions WHERE facility_id = ${facilityId} AND status = 'active' AND ended_on IS NULL`;
-  const officers = await sql<{ id: string; full_name: string; verified: boolean; pending: boolean }[]>`
-    SELECT s.id, s.full_name, EXISTS (SELECT 1 FROM staff_contacts c WHERE c.facility_id = s.facility_id AND c.staff_id = s.id) AS verified,
-      EXISTS (SELECT 1 FROM staff_email_requests r WHERE r.facility_id = s.facility_id AND r.staff_id = s.id AND r.status = 'pending') AS pending
-    FROM staff s WHERE s.facility_id = ${facilityId} AND s.active
-      AND (s.role = 'insurance_officer' OR s.additional_roles ? 'insurance_officer' OR s.additional_permissions ? 'coverage:confirm') ORDER BY s.full_name`;
+  // Everyone who can confirm insurance work: insurance officers, administrators, and anyone granted it.
+  const staffRows = await sql<Row[]>`SELECT s.*, EXISTS (SELECT 1 FROM staff_contacts c WHERE c.facility_id = s.facility_id AND c.staff_id = s.id) AS verified_email,
+      EXISTS (SELECT 1 FROM staff_email_requests r WHERE r.facility_id = s.facility_id AND r.staff_id = s.id AND r.status = 'pending') AS pending_email
+    FROM staff s WHERE s.facility_id = ${facilityId} AND s.active ORDER BY s.full_name`;
+  const officers = staffRows.filter((r) => staffPermissions(fromRow<Staff>('staff', r)).includes('coverage:confirm'))
+    .map((r) => ({ id: r.id as string, full_name: r.full_name as string, verified: r.verified_email as boolean, pending: r.pending_email as boolean }));
   const people: SetupPerson[] = officers.map((o) => ({ staffId: o.id, name: o.full_name, email: o.verified ? 'verified' : o.pending ? 'pending' : 'none' }));
   // A revoked device never syncs again; losing its unsent work is accepted by name when a contract is activated, not here.
   const devices = (await activationBlockers(sql, facilityId, now)).filter((d) => !d.reasons.includes('revoked_with_unsent_changes'));
