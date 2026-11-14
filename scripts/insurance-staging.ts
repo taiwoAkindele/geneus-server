@@ -25,6 +25,7 @@ import { insertRecord } from '../src/db/records.ts';
 import { issueEnrollmentCode } from '../src/devices/enrollment.ts';
 import { issuePinSetupCode } from '../src/staff/pinSetupCodes.ts';
 import { chargePositions, chargesById } from '../src/insurance/coverage.ts';
+import { outstandingClaims } from '../src/insurance/settlement.ts';
 import { config, signer, addStaff, envelopeFor, registerScratchFacility, scratchDatabase } from '../tests/postgres.ts';
 import type { EmailMessage } from '../src/lib/email.ts';
 import { readFirstCheckpoint } from '../tests/powersyncClient.ts';
@@ -143,6 +144,9 @@ try {
       if (url.pathname === '/attend' && request.method === 'POST') { await attend(); return send({ ok: true }); }
       if (url.pathname === '/insurance-state') return send((await source.sql`SELECT insurance_state, time_zone FROM facilities WHERE id = ${f.facility.id}`)[0]);
       if (url.pathname === '/claims') return send(await source.sql`SELECT claim_number, revision, state, superseded_by, patient_id, (SELECT COUNT(*)::int FROM insurance_claim_lines l WHERE l.claim_id = c.id AND l.current) AS lines FROM insurance_claims c WHERE facility_id = ${f.facility.id} ORDER BY claim_number, revision`);
+      if (url.pathname === '/remittances') return send(await source.sql`SELECT r.reference, r.amount_minor, (SELECT COALESCE(SUM(a.amount_minor), 0)::int FROM insurance_remittance_allocations a WHERE a.remittance_id = r.id) AS allocated, EXISTS (SELECT 1 FROM insurance_remittance_reversals v WHERE v.remittance_id = r.id) AS reversed FROM insurance_remittances r WHERE r.facility_id = ${f.facility.id} ORDER BY r.recorded_on`);
+      if (url.pathname === '/settlement') return send((await outstandingClaims(source.sql, f.facility.id)).claims.map((x) => ({ claimNumber: x.claimNumber, revision: x.revision, patientId: x.patientId, ...x.settlement })));
+      if (url.pathname === '/decisions') return send(await source.sql`SELECT c.claim_number, d.decision, d.approved_minor FROM insurance_claim_decisions d JOIN insurance_claims c ON c.id = d.claim_id WHERE d.facility_id = ${f.facility.id} ORDER BY d.recorded_on`);
       if (url.pathname === '/completions') return send(await source.sql`SELECT id, charge_id, status, actor_role, created_by FROM service_completions WHERE facility_id = ${f.facility.id}`);
       if (url.pathname === '/claim-exports') return send(await source.sql`SELECT draft, format, rows, payload_sha256 FROM insurance_claim_exports WHERE facility_id = ${f.facility.id} ORDER BY exported_on`);
       if (url.pathname === '/claim-submissions') return send(await source.sql`SELECT s.channel, s.reference, s.claim_ids, a.reference AS ack FROM insurance_claim_submissions s LEFT JOIN insurance_claim_acknowledgements a ON a.submission_id = s.id WHERE s.facility_id = ${f.facility.id}`);

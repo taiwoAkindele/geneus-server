@@ -1,6 +1,6 @@
 import {
   CALCULATION_VERSION, CoverageAllocation, SCHEMA_VERSION, chargeUnits, computeAllocation, currentAllocation, estimateCoverage,
-  isRoutine, scheduleOn, serviceDateOf, splitBalances, type Charge, type CoverageEstimate, type CoverSchedule, type EncounterEntry, inBillingPeriod,
+  isRoutine, scheduleOn, serviceDateOf, splitBalances, type Charge, type CoverageEstimate, type CoverageRecords, type EncounterEntry, type LiabilityChange, inBillingPeriod,
 } from '#shared';
 import { billingPeriods } from './billingPeriods.ts';
 import { randomUUID } from 'node:crypto';
@@ -12,6 +12,10 @@ import { findContractVersion } from './contracts.ts';
 export type ConfirmRequest = {
   facilityId: string; deviceId: string; staffId: string; requestKey: string;
   chargeIds: string[]; basis: 'visit' | 'routine_bulk' | 'exception'; decision: 'apply_cover' | 'self_pay'; reason?: string;
+  /** self_pay only: the documented ground. */
+  liability?: LiabilityChange;
+  /** Whether the person holds coverage:approve_liability_change, decided by the server from its own staff row. */
+  mayApproveLiability?: boolean;
 };
 export type ConfirmOutcome = { chargeId: string; outcome: 'confirmed'; allocationId: string; state: CoverageAllocation['state']; patientShareMinor: number }
   | { chargeId: string; outcome: 'skipped'; reason: string };
@@ -61,7 +65,7 @@ export const confirmAllocations = async (tx: Tx, request: ConfirmRequest): Promi
       currency: charge.currency, basis: request.basis, ...(current ? { supersedes: current.id } : {}) };
 
     if (request.decision === 'self_pay') {
-      const outcome = await confirmSelfPay(tx, request, charge, estimate, records.schedules, serviceDate, base);
+      const outcome = await confirmSelfPay(tx, request, charge, estimate, records, serviceDate, base, current?.state === 'finalised');
       if ('reason' in outcome) skip(outcome.reason); else outcomes.push(outcome);
       continue;
     }
@@ -111,27 +115,50 @@ const insertDetails = async (tx: Tx, request: ConfirmRequest, allocationId: stri
 };
 
 /**
- * An officer recording that the patient pays without insurance. A contractual
- * prohibition is final: no reason overrides `not_allowed`. Exclusions bill the
- * patient only where the contract says `patient_pays`, so an excluded service
- * marked not billable — or with no liability recorded — is refused here too.
+ * An officer making the patient responsible for a charge that has cover
+ * (audit H3). A reason alone is never enough: the change rests on a
+ * documented ground (see `LiabilityChange`), and
+ *   - a contractual prohibition is final: no ground overrides `not_allowed`;
+ *   - missing hospital configuration is never a ground;
+ *   - a charge on a current claim is never moved — the claim is revised first;
+ *   - an excluded service the contract says the patient may not be billed for stays refused;
+ *   - moving a share the payer is expected to pay (an estimate, or a confirmed
+ *     split), or relying on a contract clause, needs coverage:approve_liability_change.
+ * The earlier split, any claim and every payment stay on record.
  */
-const confirmSelfPay = async (tx: Tx, request: ConfirmRequest, charge: Charge, estimate: CoverageEstimate, schedules: readonly CoverSchedule[], serviceDate: string | undefined, base: Record<string, unknown>): Promise<ConfirmOutcome | { reason: string }> => {
+const CONFIGURATION_GAPS = new Set(['not_configured', 'facility_timezone_missing', 'unsupported_arrangement', 'quantity_unavailable', 'self_pay_not_permitted']);
+const confirmSelfPay = async (tx: Tx, request: ConfirmRequest, charge: Charge, estimate: CoverageEstimate, records: CoverageRecords, serviceDate: string | undefined,
+  base: Record<string, unknown>, replacesFinalised: boolean): Promise<ConfirmOutcome | { reason: string }> => {
   if (request.basis !== 'exception' || !request.reason) return { reason: 'reason_required' };
+  const liability = request.liability;
+  if (!liability) return { reason: 'ground_required' };
+  const [onClaim] = await tx`SELECT 1 FROM insurance_claim_lines WHERE facility_id = ${request.facilityId} AND charge_id = ${charge.id} AND current LIMIT 1`;
+  if (onClaim) return { reason: 'on_current_claim' };
   if (estimate.state === 'undetermined' && (estimate.reason === 'not_billable_to_patient' || estimate.reason === 'exclusion_liability_not_configured')) return { reason: 'patient_liability_not_permitted' };
   if (estimate.state === 'undetermined' && estimate.reason === 'choose_cover') return { reason: 'choose_cover_first' };
+  if (estimate.state === 'undetermined' && CONFIGURATION_GAPS.has(estimate.reason) && liability.ground !== 'not_eligible') return { reason: 'missing_configuration_is_not_a_ground' };
   const cover = 'cover' in estimate ? estimate.cover : undefined;
   if (!cover) return { reason: `nothing_to_confirm:${estimate.state}` };
   if (!serviceDate) return { reason: 'timezone_required' };
   // The rule is the contract version in force on the date of service, not today's.
-  const schedule = scheduleOn(cover.payerId, cover.planCode, serviceDate, schedules);
+  const schedule = scheduleOn(cover.payerId, cover.planCode, serviceDate, records.schedules);
   if (schedule?.selfPayElection === 'not_allowed') return { reason: 'self_pay_prohibited_by_payer' };
+  let check: CoverageRecords['checks'][number] | undefined;
+  if (liability.ground === 'patient_election' && schedule?.selfPayElection !== 'allowed') return { reason: 'contract_does_not_allow_self_pay' };
+  if (liability.ground === 'not_eligible') {
+    check = records.checks.find((c) => c.id === liability.coverCheckId);
+    if (!check || check.coverId !== cover.id || check.result !== 'not_eligible' || !(check.coversFrom <= serviceDate && serviceDate <= check.coversTo)) return { reason: 'not_eligible_check_required' };
+  }
+  const payerExpectedToPay = estimate.state === 'estimated' || replacesFinalised;
+  if ((payerExpectedToPay || liability.ground === 'contract_clause') && !request.mayApproveLiability) return { reason: 'liability_approval_required' };
   const allocation = CoverageAllocation.parse({ ...base, state: 'self_pay_confirmed', payerId: cover.payerId, patientShareMinor: charge.amountMinor });
   await insertRecord(tx, 'coverage_allocation', allocation);
   await insertDetails(tx, request, allocation.id, charge.listPriceMinor, { patientShareMinor: charge.listPriceMinor, payerShareMinor: 0, contractAdjustmentMinor: 0, capitationCoveredMinor: 0 }, {
     calculationVersion: CALCULATION_VERSION, decision: 'self_pay', listPriceMinor: charge.listPriceMinor, currency: charge.currency,
     cover: { id: cover.id, payerId: cover.payerId, planCode: cover.planCode }, priorState: estimate.state,
     ...(estimate.state === 'undetermined' ? { priorReason: estimate.reason } : {}), serviceDate, scheduleId: schedule?.id ?? null, selfPayRule: schedule?.selfPayElection ?? 'not_recorded',
+    liability: { ...liability, ...(check ? { check: { id: check.id, method: check.method, reference: check.reference ?? null, coversFrom: check.coversFrom, coversTo: check.coversTo } } : {}) },
+    payerExpectedToPay, approvedBy: payerExpectedToPay || liability.ground === 'contract_clause' ? request.staffId : null,
   });
   return { chargeId: charge.id, outcome: 'confirmed', allocationId: allocation.id, state: 'self_pay_confirmed', patientShareMinor: allocation.patientShareMinor };
 };
