@@ -138,7 +138,7 @@ describe('self-service administration', () => {
       const status = (await call('/insurance/setup/status', {}, f.admin.id)).json();
       const officerItem = status.items.find((i: { kind: string }) => i.kind === 'officer_with_verified_email');
       assert.equal(officerItem.ok, true);
-      assert.deepEqual(officerItem.people.map((p: { name: string; email: string }) => [p.name, p.email]), [['Ifeoma Officer', 'verified']]);
+      assert.deepEqual(officerItem.people.map((p: { name: string; email: string }) => [p.name, p.email]).sort(), [['Ifeoma Officer', 'verified'], ['Test Admin', 'verified']], 'administrators confirm insurance too');
       const devices = status.items.find((i: { kind: string }) => i.kind === 'devices_ready');
       assert.ok(Array.isArray(devices.devices), 'each device and its reasons, not a count');
       assert.ok(status.items.find((i: { kind: string }) => i.kind === 'payers_added').count === 0);
@@ -166,11 +166,13 @@ describe('self-service administration', () => {
       // Readiness changes between request and approval: the approval refuses, and nothing changes.
       await db.sql`UPDATE payer_contract_versions SET ended_on = now()::date WHERE facility_id = ${f.facility.id}`.catch(() => undefined);
       await db.sql`UPDATE staff SET active = false WHERE id = ${officer.id}`;
+      const [adminContact] = await db.sql`DELETE FROM staff_contacts WHERE staff_id = ${f.admin.id} RETURNING email`;
       const refused = await operatorCall(`/operator/insurance/requests/${encodeURIComponent(mine.openRequest.id)}/decide`, { decision: 'approve', note: 'Synthetic approval' }, operatorToken);
       assert.equal(refused.json().error, 'not_ready', refused.body);
       assert.equal((await db.sql`SELECT insurance_state FROM facilities WHERE id = ${f.facility.id}`)[0].insurance_state, 'setup');
       assert.equal((await db.sql`SELECT status FROM insurance_activation_requests WHERE id = ${mine.openRequest.id}`)[0].status, 'requested');
       await db.sql`UPDATE staff SET active = true WHERE id = ${officer.id}`;
+      await db.sql`INSERT INTO staff_contacts (facility_id, staff_id, email, verified_on) VALUES (${f.facility.id}, ${f.admin.id}, ${adminContact.email}, now())`;
       const approved = await operatorCall(`/operator/insurance/requests/${encodeURIComponent(mine.openRequest.id)}/decide`, { decision: 'approve', note: 'GOV-SYN-001 rollout approval' }, operatorToken);
       assert.equal(approved.statusCode, 200, approved.body);
       assert.equal(approved.json().status.state, 'active');

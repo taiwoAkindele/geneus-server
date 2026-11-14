@@ -133,9 +133,10 @@ describe('insurance foundation', () => {
       }
       assert.equal((await call('/billing/refunds', { id: `refund:${randomUUID()}`, patientId: patient('000001'), method: 'cash', currency: 'NGN', allocations: [{ chargeId: 'x', amountMinor: 1 }], reason: 'Synthetic' }, cashier.id)).statusCode, 403);
     });
-    it('keeps the officer from activating and the administrator from reading contracts', async () => {
+    it('keeps the officer from activating; the administrator performs every insurance function', async () => {
       assert.equal((await call('/insurance/contracts/activate', { contractVersionId: 'x', requestKey: randomUUID() }, officer.id)).statusCode, 403);
-      assert.equal((await call('/insurance/contracts/list', {}, f.admin.id)).statusCode, 403);
+      assert.equal((await call('/insurance/contracts/list', {}, f.admin.id)).statusCode, 200);
+      assert.equal((await call('/insurance/contracts/list', {}, cashier.id)).statusCode, 403);
     });
   });
 
@@ -424,7 +425,8 @@ describe('insurance foundation', () => {
       const list = await call('/insurance/documents/list', { payerId: 'payer:synthetic-a' }, officer.id);
       assert.equal(list.json().documents.length, 2);
       assert.equal(JSON.stringify(list.json()).includes('content'), false, 'listing never carries file contents');
-      for (const who of [supervisor.id, cashier.id, f.admin.id]) assert.equal((await call('/insurance/documents/list', {}, who)).statusCode, 403);
+      for (const who of [supervisor.id, cashier.id]) assert.equal((await call('/insurance/documents/list', {}, who)).statusCode, 403);
+      assert.equal((await call('/insurance/documents/list', {}, f.admin.id)).statusCode, 200, 'an administrator performs every insurance function');
       const id = list.json().documents[0].id;
       const file = await call(`/insurance/documents/${encodeURIComponent(id)}/file`, {}, officer.id);
       assert.equal(file.statusCode, 200);
@@ -517,7 +519,8 @@ describe('insurance foundation', () => {
       assert.equal(formula.statusCode, 400, 'formula-like codes are refused');
       assert.equal((await importTariff({ expectedRevision: revision, lines: [{ feeItemId: 'fee:consult', unitMinor: -5, sourceRow: 2 }] })).statusCode, 400);
       assert.equal((await draftTerms()).revision, revision, 'nothing was applied');
-      for (const who of [cashier.id, f.admin.id]) assert.equal((await importTariff({ lines: [{ feeItemId: 'fee:consult', unitMinor: 1, sourceRow: 2 }] }, who)).statusCode, 403);
+      assert.equal((await importTariff({ lines: [{ feeItemId: 'fee:consult', unitMinor: 1, sourceRow: 2 }] }, cashier.id)).statusCode, 403);
+      assert.equal((await importTariff({ lines: [{ feeItemId: 'fee:consult', unitMinor: 1, sourceRow: 2 }] }, f.admin.id)).json().error, 'stale_draft', 'an administrator may import; this one is refused only for not seeing the current draft');
     });
     it('saves a column mapping by name and refuses a silent overwrite', async () => {
       const template = { kind: 'contract_tariff', payerId: 'payer:synthetic-a', name: 'Synthetic HMO tariff', headers: ['service', 'code', 'price'], headerRow: 0, mapping: { name: 0, payerCode: 1, price: 2 } };
@@ -570,7 +573,8 @@ describe('insurance foundation', () => {
       assert.equal((await call('/insurance/claims/generate', {}, officer.id)).json().lines, 0, 'generating again adds nothing');
       const [line] = await db.sql`SELECT * FROM insurance_claim_lines WHERE charge_id = 'charge:claim-visit'`;
       await assert.rejects(db.sql`INSERT INTO insurance_claim_lines (id, facility_id, claim_id, charge_id, allocation_id, contract_version_id) VALUES ('dup', ${f.facility.id}, ${line.claim_id}, 'charge:claim-visit', ${line.allocation_id}, 'x')`, 'the database refuses a second claim line');
-      for (const who of [cashier.id, f.admin.id, supervisor.id]) assert.equal((await call('/insurance/claims/list', {}, who)).statusCode, 403, 'claims carry payer shares: officers only');
+      for (const who of [cashier.id, supervisor.id]) assert.equal((await call('/insurance/claims/list', {}, who)).statusCode, 403, 'claims carry payer shares: officers and administrators only');
+      assert.equal((await call('/insurance/claims/list', {}, f.admin.id)).statusCode, 200);
     });
 
     it('blocks readiness until evidence and the payer\'s diagnosis rule are met; a draft exports only as a marked draft', async () => {
