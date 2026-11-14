@@ -9,11 +9,10 @@ import type { Sql } from '../db/client.ts';
 import { findRecord } from '../db/records.ts';
 import { checkVerificationCode, consumeVerification, createVerificationCode, findStaffEmail, saveStaffEmail, staffEmailSubject, verificationEmail } from '../email/verifications.ts';
 import { maskEmail, type Mailer } from '../lib/email.ts';
-import { privateStaff } from '../workforce/privateAccess.ts';
+import { requestStaff } from '../auth/staffSessions.ts';
 import { recordFacilityTimeZone, TimeZoneRefusal, timeZoneChanges } from '../facility/timeZone.ts';
 import { activationBlockers } from '../insurance/contracts.ts';
 
-const header = (value: string | string[] | undefined) => (typeof value === 'string' ? value : undefined);
 const refuse = (reply: FastifyReply, status: number, error: string, message: string) => reply.code(status).send({ error, message } satisfies ApiErrorBody);
 
 /**
@@ -26,8 +25,8 @@ export const registerSelfServiceRoutes = (app: FastifyInstance, sql: Sql, mailer
   const verifiedStaff = async (request: FastifyRequest, reply: FastifyReply) => {
     const identity = await authenticateDevice(sql, request, reply);
     if (!identity) return;
-    const staff = await privateStaff(sql, identity, header(request.headers['x-workforce-access']));
-    if (!staff) { refuse(reply, 403, 'private_verification_required', 'Verify your staff email code to continue'); return; }
+    const staff = await requestStaff(sql, identity, request.headers);
+    if (!staff) { refuse(reply, 403, 'staff_session_required', 'Confirm your PIN to continue'); return; }
     return { identity, staff };
   };
 
@@ -75,7 +74,7 @@ export const registerSelfServiceRoutes = (app: FastifyInstance, sql: Sql, mailer
     const identity = await authenticateDevice(sql, request, reply); if (!identity) return;
     const body = z.strictObject({ staffId: z.string().min(1) }).safeParse(request.body);
     if (!body.success || !(await activeStaff(identity.facilityId, body.data.staffId))) return refuse(reply, 404, 'unknown_staff', 'No such member of staff here');
-    const session = await privateStaff(sql, identity, header(request.headers['x-workforce-access']));
+    const session = await requestStaff(sql, identity, request.headers);
     const own = session?.id === body.data.staffId;
     const email = await findStaffEmail(sql, identity.facilityId, body.data.staffId);
     const pending = await pendingFor(identity.facilityId, body.data.staffId);
@@ -113,7 +112,9 @@ export const registerSelfServiceRoutes = (app: FastifyInstance, sql: Sql, mailer
     if (!(await activeStaff(identity.facilityId, staffId))) return refuse(reply, 404, 'unknown_staff', 'No such member of staff here');
     const proof = await checkVerificationCode(sql, { purpose: 'staff_email', subject: staffEmailSubject(identity.facilityId, staffId), email, code: body.data.code });
     if (!proof) return refuse(reply, 403, 'invalid_email_code', 'The code is not right, or has expired — ask for a new one');
-    const session = await privateStaff(sql, identity, header(request.headers['x-workforce-access']));
+    const session = await requestStaff(sql, identity, request.headers);
+    // The address belongs to whoever proved it AND is signed in as this person: the server verified both.
+    if (session?.id !== staffId) return refuse(reply, 403, 'staff_session_required', 'Confirm your PIN to change your email');
     const outcome = await sql.begin(async (tx) => {
       if (!(await consumeVerification(tx, proof))) return 'spent' as const;
       if (session?.id === staffId) {

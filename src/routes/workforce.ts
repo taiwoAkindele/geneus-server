@@ -6,7 +6,8 @@ import { recordAuditEvent } from '../audit/auditEvents.ts';
 import type { Sql } from '../db/client.ts';
 import type { Mailer } from '../lib/email.ts';
 import { maskEmail } from '../lib/email.ts';
-import { beginPrivateAccess, completePrivateAccess, endPrivateAccess, privateStaff, canReadWorkforceEvidence } from '../workforce/privateAccess.ts';
+import { beginPrivateAccess, completePrivateAccess, endPrivateAccess, canReadWorkforceEvidence } from '../workforce/privateAccess.ts';
+import { requestStaff } from '../auth/staffSessions.ts';
 import { recordsInFacility } from '../workforce/records.ts';
 import { workforceReadiness } from '../workforce/readiness.ts';
 import { authorizeStaff } from '../auth/staffAuthorization.ts';
@@ -21,7 +22,7 @@ const tokenHeader = (value: string | string[] | undefined): string | undefined =
 export const registerWorkforceRoutes = (app: FastifyInstance, sql: Sql, mailer: Mailer): void => {
   app.post<{Params:{id:string}}>('/workforce/rejections/:id/resolve',async(request,reply)=>{
     const identity=await authenticateDevice(sql,request,reply);if(!identity)return;
-    const staff=await privateStaff(sql,identity,tokenHeader(request.headers['x-workforce-access']));
+    const staff=await requestStaff(sql,identity,request.headers);
     if(!staff)return reply.code(403).send({error:'private_verification_required',message:'Verify your workforce contact first'} satisfies ApiErrorBody);
     const body=z.strictObject({resolution:z.string().trim().min(1).max(1000)}).safeParse(request.body);
     if(!body.success)return reply.code(400).send({error:'invalid_request',message:'Explain how the private proposal was reviewed or corrected'} satisfies ApiErrorBody);
@@ -41,7 +42,7 @@ export const registerWorkforceRoutes = (app: FastifyInstance, sql: Sql, mailer: 
   });
   app.post('/workforce/clinical-drafts/review',async(request,reply)=>{
     const identity=await authenticateDevice(sql,request,reply);if(!identity)return;
-    const staff=await privateStaff(sql,identity,tokenHeader(request.headers['x-workforce-access']));
+    const staff=await requestStaff(sql,identity,request.headers);
     if(!staff)return reply.code(403).send({error:'private_verification_required',message:'Verify the independent reviewing staff contact first'} satisfies ApiErrorBody);
     const body=z.strictObject({record:z.unknown(),reason:z.string().trim().min(1).max(1000)}).safeParse(request.body);
     if(!body.success)return reply.code(400).send({error:'invalid_request',message:'Provide the exact retained source and an independent review reason'} satisfies ApiErrorBody);
@@ -54,7 +55,7 @@ export const registerWorkforceRoutes = (app: FastifyInstance, sql: Sql, mailer: 
     const identity = await authenticateDevice(sql, request, reply);
     if (!identity)
       return;
-    const staff = await privateStaff(sql, identity, tokenHeader(request.headers['x-workforce-access']));
+    const staff = await requestStaff(sql, identity, request.headers);
     if (!staff)
       return reply.code(403).send({ error: 'private_verification_required', message: 'Verify the reviewing staff contact first' } satisfies ApiErrorBody);
     const parsed = parseDocument(request.body);
@@ -70,7 +71,7 @@ export const registerWorkforceRoutes = (app: FastifyInstance, sql: Sql, mailer: 
     const identity = await authenticateDevice(sql, request, reply);
     if (!identity)
       return;
-    const staff = await privateStaff(sql, identity, tokenHeader(request.headers['x-workforce-access']));
+    const staff = await requestStaff(sql, identity, request.headers);
     if (!staff)
       return reply.code(403).send({ error: 'private_verification_required', message: 'Verify the independent reviewer contact first' } satisfies ApiErrorBody);
     const body = z.strictObject({ reason: z.string().trim().min(1).max(1000) }).safeParse(request.body);
@@ -133,7 +134,7 @@ export const registerWorkforceRoutes = (app: FastifyInstance, sql: Sql, mailer: 
     const identity = await authenticateDevice(sql, request, reply);
     if (!identity)
       return;
-    const staff = await privateStaff(sql, identity, tokenHeader(request.headers['x-workforce-access']));
+    const staff = await requestStaff(sql, identity, request.headers);
     if (!staff)
       return reply.code(403).send({ error: 'private_verification_required', message: 'Verify your workforce contact to read restricted evidence' } satisfies ApiErrorBody);
     const parsed = evidenceQuery.safeParse(request.query);
@@ -153,7 +154,7 @@ export const registerWorkforceRoutes = (app: FastifyInstance, sql: Sql, mailer: 
     const identity = await authenticateDevice(sql, request, reply);
     if (!identity)
       return;
-    const staff = await privateStaff(sql, identity, tokenHeader(request.headers['x-workforce-access']));
+    const staff = await requestStaff(sql, identity, request.headers);
     if (!staff)
       return reply.code(403).send({ error: 'private_verification_required', message: 'Verify your workforce contact first' } satisfies ApiErrorBody);
     const records = (await recordsInFacility(sql, identity.facilityId, 'sync_rejection')).filter((r) => r.visibility === 'restricted'

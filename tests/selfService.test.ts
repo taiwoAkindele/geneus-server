@@ -6,7 +6,7 @@ import { insertRecord } from '../src/db/records.ts';
 import { chargePositions, chargesById } from '../src/insurance/coverage.ts';
 import { ensureBootstrapOperators } from '../src/routes/operator.ts';
 import { setInsuranceState } from '../src/insurance/enablement.ts';
-import { addStaff, asDevice, envelopeFor, lastCodeSentTo, registerScratchFacility, scratchDatabase, testApp, type ScratchDatabase } from './postgres.ts';
+import { addStaff, asDevice, envelopeFor, lastCodeSentTo, registerScratchFacility, scratchDatabase, staffSessionFor, testApp, type ScratchDatabase } from './postgres.ts';
 
 /**
  * Self-service administration: nothing a hospital or a Geneus operator does
@@ -73,40 +73,29 @@ describe('self-service administration', () => {
   });
 
   describe('staff email self-service', () => {
-    it('lets a member of staff prove an address; an administrator confirms it is theirs', async () => {
+    const asPerson = async (url: string, payload: unknown, staffId: string) => app.inject({ method: 'POST', url, payload: payload as object,
+      headers: { ...asDevice(f.device.credential), 'x-staff-session': (await staffSessionFor(app, f.device.credential, staffId))! } });
+    it('lets a person register their own address with a code to it, once the server knows from their PIN who they are', async () => {
       assert.equal((await call('/staff/me/email/code', { staffId: officer.id, email: 'nurse@example.org' })).json().error, 'email_in_use');
       assert.equal((await call('/staff/me/email/code', { staffId: officer.id, email: 'officer@example.org' })).statusCode, 202);
-      assert.equal((await call('/staff/me/email', { staffId: officer.id, email: 'officer@example.org', code: '000000' })).json().error, 'invalid_email_code');
-      const proven = await call('/staff/me/email', { staffId: officer.id, email: 'officer@example.org', code: lastCodeSentTo('officer@example.org') });
-      assert.deepEqual(proven.json(), { status: 'pending_approval' }, 'the device cannot prove who holds it, so an administrator confirms');
-      const status = (await call('/staff/me/email/status', { staffId: officer.id })).json();
-      assert.equal(status.verified, false);
-      assert.notEqual(status.pending.email, 'officer@example.org', 'masked without proof of identity');
-      assert.equal((await call('/staff/email-requests/list', {})).statusCode, 403, 'confirming needs a verified administrator');
-      assert.equal((await call('/staff/email-requests/list', {}, nurse.id)).statusCode, 403, 'and staff:manage');
-      const [request] = (await call('/staff/email-requests/list', {}, f.admin.id)).json().requests;
-      assert.equal(request.email, 'officer@example.org');
-      assert.equal(request.staffName, 'Ifeoma Officer');
-      assert.equal((await call(`/staff/email-requests/${encodeURIComponent(request.id)}/decide`, { decision: 'approve' }, f.admin.id)).statusCode, 200);
-      assert.equal((await call(`/staff/email-requests/${encodeURIComponent(request.id)}/decide`, { decision: 'approve' }, f.admin.id)).json().error, 'already_decided');
-      await login(officer.id, 'officer@example.org');
-      assert.equal((await call('/staff/me/email/status', { staffId: officer.id }, officer.id)).json().email, 'officer@example.org', 'unmasked to its verified owner');
+      const code = lastCodeSentTo('officer@example.org');
+      assert.equal((await call('/staff/me/email', { staffId: officer.id, email: 'officer@example.org', code })).json().error, 'staff_session_required', 'a device-asserted identity is not enough');
+      assert.equal((await asPerson('/staff/me/email', { staffId: officer.id, email: 'officer@example.org', code: '000000' }, officer.id)).json().error, 'invalid_email_code');
+      const proven = await asPerson('/staff/me/email', { staffId: officer.id, email: 'officer@example.org', code }, officer.id);
+      assert.deepEqual(proven.json(), { status: 'verified' }, 'proven address and proven person: no one else has to confirm it');
+      assert.notEqual((await call('/staff/me/email/status', { staffId: officer.id })).json().email, 'officer@example.org', 'masked to anyone else on the device');
+      assert.equal((await asPerson('/staff/me/email/status', { staffId: officer.id }, officer.id)).json().email, 'officer@example.org', 'unmasked to its owner');
     });
-    it('lets a verified person change their own address at once', async () => {
+    it('lets a person change their own address at once, and never another person\'s', async () => {
       await call('/staff/me/email/code', { staffId: officer.id, email: 'officer.new@example.org' });
-      const changed = await call('/staff/me/email', { staffId: officer.id, email: 'officer.new@example.org', code: lastCodeSentTo('officer.new@example.org') }, officer.id);
+      const code = lastCodeSentTo('officer.new@example.org');
+      assert.equal((await asPerson('/staff/me/email', { staffId: officer.id, email: 'officer.new@example.org', code }, nurse.id)).json().error, 'staff_session_required', 'the nurse signed in cannot set the officer\'s address');
+      const changed = await asPerson('/staff/me/email', { staffId: officer.id, email: 'officer.new@example.org', code }, officer.id);
       assert.deepEqual(changed.json(), { status: 'verified' });
       const [contact] = await db.sql`SELECT email FROM staff_contacts WHERE staff_id = ${officer.id}`;
       assert.equal(contact.email, 'officer.new@example.org');
       assert.ok((await db.sql`SELECT 1 FROM audit_events WHERE metadata->>'context' = 'staff_email_changed'`).length);
-      assert.equal((await call('/insurance/setup/status/officer', {}, officer.id)).statusCode, 403, 'a session for the old address ends with it');
       await login(officer.id, 'officer.new@example.org');
-    });
-    it('never lets an administrator confirm their own request', async () => {
-      await call('/staff/me/email/code', { staffId: f.admin.id, email: 'admin.second@example.org' });
-      await call('/staff/me/email', { staffId: f.admin.id, email: 'admin.second@example.org', code: lastCodeSentTo('admin.second@example.org') });
-      const mine = (await call('/staff/email-requests/list', {}, f.admin.id)).json().requests.find((r: { staffId: string }) => r.staffId === f.admin.id);
-      assert.equal((await call(`/staff/email-requests/${encodeURIComponent(mine.id)}/decide`, { decision: 'approve' }, f.admin.id)).json().error, 'own_request');
     });
   });
 
@@ -164,15 +153,13 @@ describe('self-service administration', () => {
       const mine = list.find((x: { id: string }) => x.id === f.facility.id);
       assert.ok(mine.openRequest, 'the request appears in the console');
       // Readiness changes between request and approval: the approval refuses, and nothing changes.
-      await db.sql`UPDATE payer_contract_versions SET ended_on = now()::date WHERE facility_id = ${f.facility.id}`.catch(() => undefined);
-      await db.sql`UPDATE staff SET active = false WHERE id = ${officer.id}`;
-      const [adminContact] = await db.sql`DELETE FROM staff_contacts WHERE staff_id = ${f.admin.id} RETURNING email`;
+      // A device reports unsent work after the request: billing must not start until it uploads.
+      await db.sql`UPDATE workforce_client_versions SET pending_mutation_count = 3 WHERE device_id = ${f.device.deviceId}`;
       const refused = await operatorCall(`/operator/insurance/requests/${encodeURIComponent(mine.openRequest.id)}/decide`, { decision: 'approve', note: 'Synthetic approval' }, operatorToken);
       assert.equal(refused.json().error, 'not_ready', refused.body);
       assert.equal((await db.sql`SELECT insurance_state FROM facilities WHERE id = ${f.facility.id}`)[0].insurance_state, 'setup');
       assert.equal((await db.sql`SELECT status FROM insurance_activation_requests WHERE id = ${mine.openRequest.id}`)[0].status, 'requested');
-      await db.sql`UPDATE staff SET active = true WHERE id = ${officer.id}`;
-      await db.sql`INSERT INTO staff_contacts (facility_id, staff_id, email, verified_on) VALUES (${f.facility.id}, ${f.admin.id}, ${adminContact.email}, now())`;
+      await db.sql`UPDATE workforce_client_versions SET pending_mutation_count = 0 WHERE device_id = ${f.device.deviceId}`;
       const approved = await operatorCall(`/operator/insurance/requests/${encodeURIComponent(mine.openRequest.id)}/decide`, { decision: 'approve', note: 'GOV-SYN-001 rollout approval' }, operatorToken);
       assert.equal(approved.statusCode, 200, approved.body);
       assert.equal(approved.json().status.state, 'active');

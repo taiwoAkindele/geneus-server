@@ -52,7 +52,8 @@ export const insuranceSetupStatus = async (sql: Sql | Tx, facilityId: string, no
     { kind: 'time_zone_recorded', ok: Boolean(facility.timeZone), requiredFor: 'billing', ...(facility.timeZone ? { timeZone: facility.timeZone } : {}) },
     { kind: 'payers_added', ok: payers.length > 0, requiredFor: 'billing', count: payers.length },
     { kind: 'active_contract', ok: activeContracts > 0, requiredFor: 'billing', count: activeContracts, payers: missing('contract') },
-    { kind: 'officer_with_verified_email', ok: people.some((p) => p.email === 'verified'), requiredFor: 'billing', count: people.filter((p) => p.email === 'verified').length, people },
+    // Who can confirm insurance work. Their identity is proven by their PIN-verified session, so no email is needed.
+    { kind: 'officer_with_verified_email', ok: people.length > 0, requiredFor: 'billing', count: people.length, people },
     { kind: 'devices_ready', ok: devices.length === 0, requiredFor: 'billing', devices: devices.map(({ revokedOn: _revoked, ...d }) => d) },
     { kind: 'submission_method_per_payer', ok: payers.length > 0 && missing('profile').length === 0, requiredFor: 'claims', payers: missing('profile') },
     { kind: 'contract_document_verified', ok: payers.length > 0 && missing('document').length === 0, requiredFor: 'optional', payers: missing('document') },

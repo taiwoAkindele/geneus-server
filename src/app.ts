@@ -16,6 +16,7 @@ import { registerPatientRoutes } from './routes/patients.ts';
 import { registerWorkforceRoutes } from './routes/workforce.ts';
 import { registerInsuranceRoutes } from './routes/insurance.ts';
 import { registerSelfServiceRoutes } from './routes/selfService.ts';
+import { registerStaffSessionRoutes } from './routes/staffSessions.ts';
 import { ensureBootstrapOperators, registerOperatorRoutes } from './routes/operator.ts';
 import { billingRawBodies, registerBillingRoutes } from './routes/billing.ts';
 import type { PaystackFetch } from './billing/paystack.ts';
@@ -110,7 +111,7 @@ export const buildApp = ({ config, sql, signer, mailer: givenMailer, paystackFet
     if (origin && config.corsOrigins.includes(origin)) {
       reply.header('access-control-allow-origin', origin);
       reply.header('vary', 'origin');
-      reply.header('access-control-allow-headers', 'content-type, authorization, x-workforce-access, x-actor-staff-id, x-file-mime, x-file-sha256, x-document-meta, x-operator-session');
+      reply.header('access-control-allow-headers', 'content-type, authorization, x-workforce-access, x-actor-staff-id, x-file-mime, x-file-sha256, x-document-meta, x-operator-session, x-staff-session');
       reply.header('access-control-allow-methods', 'GET, POST, OPTIONS');
     }
     if (request.method === 'OPTIONS') return reply.code(204).send();
@@ -168,6 +169,7 @@ export const buildApp = ({ config, sql, signer, mailer: givenMailer, paystackFet
   registerWorkforceRoutes(app, sql, mailer);
   registerInsuranceRoutes(app, sql);
   registerSelfServiceRoutes(app, sql, mailer);
+  registerStaffSessionRoutes(app, sql, signer);
   registerOperatorRoutes(app, sql, mailer);
   // The deployment's first Geneus operators; the operator console manages the rest.
   app.addHook('onReady', async () => { if (config.bootstrapOperators.length) await ensureBootstrapOperators(sql, config.bootstrapOperators); });
