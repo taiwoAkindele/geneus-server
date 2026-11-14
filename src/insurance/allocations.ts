@@ -6,7 +6,7 @@ import { billingPeriods } from './billingPeriods.ts';
 import { randomUUID } from 'node:crypto';
 import type { Tx } from '../db/client.ts';
 import { fromRow, insertRecord } from '../db/records.ts';
-import { chargePositions, chargesById, facilityTimeZone, loadCoverageRecords } from './coverage.ts';
+import { chargePositions, chargesById, facilityZoneAt, loadCoverageRecords } from './coverage.ts';
 import { findContractVersion } from './contracts.ts';
 
 export type ConfirmRequest = {
@@ -31,7 +31,7 @@ export const confirmAllocations = async (tx: Tx, request: ConfirmRequest): Promi
   if (!charges.length) return outcomes;
   const [records, timeZone, positions, periods] = await Promise.all([
     loadCoverageRecords(tx, request.facilityId, charges.map((c) => c.patientId)),
-    facilityTimeZone(tx, request.facilityId),
+    facilityZoneAt(tx, request.facilityId),
     chargePositions(tx, request.facilityId, charges),
     billingPeriods(tx, request.facilityId),
   ]);
@@ -46,7 +46,7 @@ export const confirmAllocations = async (tx: Tx, request: ConfirmRequest): Promi
     if (current && request.basis !== 'exception') { skip('already_confirmed'); continue; }
     // No retrospective cover: a charge raised outside every billing period stays as billed. Corrections are ordinary billing adjustments.
     if (!inBillingPeriod(charge.createdOn, periods)) { skip('outside_billing_period'); continue; }
-    const serviceDate = serviceDateOf(charge.createdOn, timeZone);
+    const serviceDate = serviceDateOf(charge.createdOn, timeZone(charge.createdOn));
     const units = chargeUnits(charge, charge.dispenseEntryId ? entries.get(charge.dispenseEntryId) : undefined);
     // A correction re-derives the estimate as if the old snapshot did not exist.
     // An exception that applies cover also sets aside the patient's earlier self-pay choice for this charge:

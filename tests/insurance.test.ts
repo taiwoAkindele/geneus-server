@@ -102,7 +102,7 @@ describe('insurance foundation', () => {
       const status = await op('setup', { timeZone: TZ });
       assert.equal(status.state, 'setup');
       assert.equal(status.timeZone, TZ);
-      await assert.rejects(op('setup', { timeZone: 'Europe/London' }), /separate reviewed change/, 'a recorded time zone is never silently changed');
+      await assert.rejects(op('setup', { timeZone: 'Europe/London' }), /Facility settings/, 'a recorded time zone is never silently changed');
       await assert.rejects(op('active'), /not ready/, 'billing cannot be activated before readiness');
       const [command] = await db.sql`SELECT operator, governance_reference, state FROM insurance_operator_commands WHERE facility_id = ${f.facility.id}`;
       assert.deepEqual([command.operator, command.governance_reference, command.state], ['synthetic-operator', 'synthetic:approval', 'setup']);

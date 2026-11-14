@@ -2,7 +2,7 @@ import { COMPLETION_ROLES, selfPayPermitted, serviceDateOf, type ServiceCompleti
 import type { Tx } from '../db/client.ts';
 import { findRecord } from '../db/records.ts';
 import { recordAuditEvent } from '../audit/auditEvents.ts';
-import { chargePositions, chargesById, facilityTimeZone, loadCoverageRecords } from './coverage.ts';
+import { chargePositions, chargesById, facilityZoneAt, loadCoverageRecords } from './coverage.ts';
 import { insuranceState } from './contracts.ts';
 
 /**
@@ -46,10 +46,10 @@ export const insuranceUploadIssues = async (tx: Tx, record: PatientCover | Cover
   }
   // Each charge is judged by the rule in force on its own date of service: a "not eligible"
   // check must cover that date, and a member's own choice needs that contract version to allow it.
-  const timeZone = await facilityTimeZone(tx, record.facilityId);
+  const zoneAt = await facilityZoneAt(tx, record.facilityId);
   const records = await loadCoverageRecords(tx, record.facilityId, [record.patientId]);
   for (const charge of charges) {
-    const serviceDate = serviceDateOf(charge.createdOn, timeZone);
+    const serviceDate = serviceDateOf(charge.createdOn, zoneAt(charge.createdOn));
     if (!serviceDate) return ["Record the hospital's time zone before recording insurance choices"];
     if (!selfPayPermitted(record, cover, serviceDate, records)) {
       return [record.reason === 'not_eligible'

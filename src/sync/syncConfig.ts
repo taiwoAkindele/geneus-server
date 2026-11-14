@@ -26,7 +26,7 @@ const EDITION = 3;
  * alias: `id` is `id`, and `type` is the table, not a column.
  */
 const LEGACY_OMISSIONS: Partial<Record<DocType, readonly string[]>> = {
-  facility:['timeZone','workforcePolicy','allowCustomInvestigations'],unit:['kind','parentId','routingEnabled','revision'],billing_department:['organizationUnitId','revision'],
+  facility:['timeZone','timeZoneHistory','workforcePolicy','allowCustomInvestigations'],unit:['kind','parentId','routingEnabled','revision'],billing_department:['organizationUnitId','revision'],
   fee_item:['priceVersion'], encounter:['workflowVersion'], staff:['personId'], charge:['orderItemId','orderEntryId'],
   appointment:['allocation'],encounter_entry:['actorContext','workflowVersion'],clinical_event:['actorContext'],sync_rejection:['dependencies','visibility','visibleToStaffIds'],
 };

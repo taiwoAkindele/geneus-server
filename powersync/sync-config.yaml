@@ -616,7 +616,7 @@ streams:
     auto_subscribe: true
     queries:
       - |
-        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", allow_custom_investigations AS "allowCustomInvestigations", code, name, lga, state, time_zone AS "timeZone", workforce_policy AS "workforcePolicy", level
+        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", allow_custom_investigations AS "allowCustomInvestigations", code, name, lga, state, time_zone AS "timeZone", time_zone_history AS "timeZoneHistory", workforce_policy AS "workforcePolicy", level
         FROM facilities
         WHERE facility_id = auth.parameter('facility_id')
           AND auth.parameter('facility_contract') = 1
@@ -628,7 +628,7 @@ streams:
           AND (auth.parameter('facility_contract') IS NULL OR auth.parameter('facility_contract') <> 1)
           AND auth.parameter('clinical_workflow') = 1
       - |
-        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", code, name, lga, state, time_zone AS "timeZone", workforce_policy AS "workforcePolicy", level
+        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", code, name, lga, state, time_zone AS "timeZone", time_zone_history AS "timeZoneHistory", workforce_policy AS "workforcePolicy", level
         FROM facilities
         WHERE facility_id = auth.parameter('facility_id')
           AND auth.parameter('facility_contract') = 1
