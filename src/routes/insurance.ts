@@ -16,7 +16,7 @@ import { confirmAllocations } from '../insurance/allocations.ts';
 import { ContractRefusal, activateContract, activationBlockers, contractVersions, endContract, findContractVersion, insuranceState, saveDraft } from '../insurance/contracts.ts';
 import { chargePositions, chargesById } from '../insurance/coverage.ts';
 import { RefundRefusal, RefundRequest, recordRefund } from '../insurance/refunds.ts';
-import { SetupRefusal, insuranceSetupStatus, setInsuranceSetup } from '../insurance/enablement.ts';
+import { SetupRefusal, insuranceSetupStatus, requestActivation, setInsuranceSetup, withdrawActivation } from '../insurance/enablement.ts';
 import { billingPeriods } from '../insurance/billingPeriods.ts';
 import {
   ClaimRefusal, createBatch, exportClaims, generateClaims, listAuthorizations, listBatches, listClaims, listSubmissions, markReady, recordAcknowledgement,
@@ -255,6 +255,28 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
     try {
       const state = await setInsuranceSetup(sql, { facilityId: who.identity.facilityId, staffId: who.staff.id, deviceId: who.identity.deviceId, to: body.data.state });
       return { state };
+    } catch (cause) { return refusal(reply, cause); }
+  });
+
+  /**
+   * The administrator asks Geneus to switch billing on. Refused unless every
+   * billing item passes now; Geneus approves in the operator console, where
+   * the same checks run again in the activating transaction.
+   */
+  app.post('/insurance/activation/request', async (request, reply) => {
+    const who = await verified(request, reply, 'insurance_contract:activate', 'configure'); if (!who) return;
+    const body = z.strictObject({ note: z.string().trim().min(1).max(1000).optional() }).safeParse(request.body ?? {});
+    if (!body.success) return invalid(reply, 'The note is too long');
+    try {
+      await sql.begin((tx) => requestActivation(tx, { facilityId: who.identity.facilityId, staffId: who.staff.id, deviceId: who.identity.deviceId, ...(body.data.note ? { note: body.data.note } : {}) }));
+      return insuranceSetupStatus(sql, who.identity.facilityId);
+    } catch (cause) { return refusal(reply, cause); }
+  });
+  app.post('/insurance/activation/withdraw', async (request, reply) => {
+    const who = await verified(request, reply, 'insurance_contract:activate', 'configure'); if (!who) return;
+    try {
+      await sql.begin((tx) => withdrawActivation(tx, { facilityId: who.identity.facilityId, staffId: who.staff.id, deviceId: who.identity.deviceId }));
+      return insuranceSetupStatus(sql, who.identity.facilityId);
     } catch (cause) { return refusal(reply, cause); }
   });
 

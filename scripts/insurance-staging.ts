@@ -11,6 +11,7 @@
  * A read-only inspector on 18081 lets the browser run compare its figures with
  * the server's. Stop with Ctrl+C; the container and databases are removed.
  */
+import { ensureBootstrapOperators } from '../src/routes/operator.ts';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { createServer } from 'node:http';
@@ -23,7 +24,6 @@ import { buildSyncConfig } from '../src/sync/syncConfig.ts';
 import { insertRecord } from '../src/db/records.ts';
 import { issueEnrollmentCode } from '../src/devices/enrollment.ts';
 import { issuePinSetupCode } from '../src/staff/pinSetupCodes.ts';
-import { setInsuranceState } from '../src/insurance/enablement.ts';
 import { chargePositions, chargesById } from '../src/insurance/coverage.ts';
 import { config, signer, addStaff, envelopeFor, registerScratchFacility, scratchDatabase } from '../tests/postgres.ts';
 import type { EmailMessage } from '../src/lib/email.ts';
@@ -73,7 +73,7 @@ try {
     ['officer', 'insurance_officer', 'Ifeoma Officer', 'officer@example.org'], ['supervisor', 'supervisor', 'Sola Supervisor', 'supervisor@example.org'], ['doctor', 'doctor', 'Dayo Doctor', undefined]] as const;
   for (const [key, role, name, email] of roles) {
     const staff = await addStaff(source.sql, f, { role, name, loginAccess: 'always' });
-    if (email) await source.sql`INSERT INTO staff_contacts (facility_id, staff_id, email, verified_on) VALUES (${f.facility.id}, ${staff.id}, ${email}, now())`;
+    if (email && key !== 'officer') await source.sql`INSERT INTO staff_contacts (facility_id, staff_id, email, verified_on) VALUES (${f.facility.id}, ${staff.id}, ${email}, now())`;
     const pin = await issuePinSetupCode(source.sql, { facilityId: f.facility.id, staffId: staff.id, issuedBy: f.admin.id, issuedFrom: f.device.deviceId });
     assert.ok(pin.ok, `PIN code for ${name}`);
     people[key] = { id: staff.id, name, ...(email ? { email } : {}), pinCode: pin.code };
@@ -99,10 +99,9 @@ try {
       await insertRecord(source.sql, 'charge', { ...now, id, type: 'charge', patientId: patient(n), feeItemId, category, description: feeItemId === 'fee:lab' ? 'Malaria RDT' : 'General consultation', listPriceMinor: amount, amountMinor: amount, currency: 'NGN', encounterId: `encounter:p${Number(n)}` } as Partial<Charge>);
     }
   };
-  // Setup the way an operator would: audited, with the time zone recorded. Billing is activated later, after readiness.
-  await setInsuranceState(source.sql, { facilityId: f.facility.id, state: 'setup', operator: 'staging-harness', governanceReference: 'staging:synthetic-hospital', timeZone: 'Africa/Lagos' });
-  // The time zone is recorded; the hospital administrator then starts setup from the app.
-  await setInsuranceState(source.sql, { facilityId: f.facility.id, state: 'off', operator: 'staging-harness', governanceReference: 'staging:synthetic-hospital' });
+  // Nothing is preconfigured: the administrator records the time zone and starts setup in the app,
+  // and a Geneus operator approves billing in the operator console.
+  await ensureBootstrapOperators(source.sql, ['ops@geneus.example.org']);
   const enrollment = await issueEnrollmentCode(source.sql, f.facility.id, f.admin.id, f.device.deviceId);
   // The harness device reports itself synced with insurance support, so activation waits only on real devices.
   const reportReady = async () => {
@@ -140,7 +139,9 @@ try {
       if (url.pathname === '/refunds') return send(await source.sql`SELECT id, refund_number, amount_minor, allocations FROM refunds WHERE facility_id = ${f.facility.id}`);
       if (url.pathname === '/devices') return send(await source.sql`SELECT d.id, d.status, v.insurance_version, v.pending_mutation_count, v.recorded_on FROM devices d LEFT JOIN workforce_client_versions v ON v.device_id = d.id WHERE d.facility_id = ${f.facility.id}`);
       if (url.pathname === '/ready' && request.method === 'POST') { await reportReady(); return send({ ok: true }); }
-      if (url.pathname === '/activate-billing' && request.method === 'POST') { await reportReady(); const status = await setInsuranceState(source.sql, { facilityId: f.facility.id, state: 'active', operator: 'staging-harness', governanceReference: 'staging:billing-activation' }); await attend(); return send(status); }
+      // Patients attend once billing is active (activation itself happens in the operator console).
+      if (url.pathname === '/attend' && request.method === 'POST') { await attend(); return send({ ok: true }); }
+      if (url.pathname === '/insurance-state') return send((await source.sql`SELECT insurance_state, time_zone FROM facilities WHERE id = ${f.facility.id}`)[0]);
       if (url.pathname === '/claims') return send(await source.sql`SELECT claim_number, revision, state, superseded_by, patient_id, (SELECT COUNT(*)::int FROM insurance_claim_lines l WHERE l.claim_id = c.id AND l.current) AS lines FROM insurance_claims c WHERE facility_id = ${f.facility.id} ORDER BY claim_number, revision`);
       if (url.pathname === '/completions') return send(await source.sql`SELECT id, charge_id, status, actor_role, created_by FROM service_completions WHERE facility_id = ${f.facility.id}`);
       if (url.pathname === '/claim-exports') return send(await source.sql`SELECT draft, format, rows, payload_sha256 FROM insurance_claim_exports WHERE facility_id = ${f.facility.id} ORDER BY exported_on`);

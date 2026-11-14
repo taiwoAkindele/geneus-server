@@ -45,6 +45,11 @@ const Config = z
     isProduction: z.boolean(),
     /** 32-byte hex master key for per-hospital Paystack credentials. Never synced. */
     billingEncryptionKey: z.string().regex(/^[a-fA-F0-9]{64}$/).optional(),
+    /**
+     * The first Geneus platform operators, provisioned with the deployment. Only ever adds:
+     * further operators are added and removed in the operator console, never here.
+     */
+    bootstrapOperators: z.array(z.email()).default([]),
   })
   .refine((config) => !config.resendApiKey || Boolean(config.emailFrom), {
     message: 'EMAIL_FROM is required when RESEND_API_KEY is set: Resend refuses a message with no sender',
@@ -75,4 +80,5 @@ export const loadConfig = (): Config =>
     emailFrom: process.env.EMAIL_FROM || undefined,
     isProduction: process.env.NODE_ENV === 'production',
     billingEncryptionKey: process.env.BILLING_ENCRYPTION_KEY || undefined,
+    bootstrapOperators: (process.env.PLATFORM_OPERATOR_EMAILS ?? '').split(',').map((e) => e.trim().toLowerCase()).filter(Boolean),
   });

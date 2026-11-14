@@ -1,7 +1,7 @@
 import {
   chargeUnits, estimateCoverage, patientResponsibility, serviceDateOf,
   type Charge, type CoverageEstimate, type CoverageRecords, type CoverSchedule, type CoverageAllocation,
-  type CoverageElection, type CoverCheck, type EncounterEntry, type Facility, type Payer, type PatientCover, type Payment, type Refund, inBillingPeriod,
+  type CoverageElection, type CoverCheck, type EncounterEntry, type Facility, type Payer, type PatientCover, type Payment, type Refund, inBillingPeriod, timeZoneAt,
 } from '#shared';
 import { billingPeriods } from './billingPeriods.ts';
 import type { Sql, Tx } from '../db/client.ts';
@@ -36,6 +36,8 @@ export const loadCoverageRecords = async (sql: Sql | Tx, facilityId: string, pat
 
 export const facilityTimeZone = async (sql: Sql | Tx, facilityId: string): Promise<string | undefined> =>
   (await findRecord<Facility>(sql, 'facility', facilityId))?.timeZone;
+/** The zone in force when a moment happened: a correction never re-dates what was raised before it. */
+export const facilityZoneAt = async (sql: Sql | Tx, facilityId: string) => { const facility = await findRecord<Facility>(sql, 'facility', facilityId); return (at: string) => timeZoneAt(facility, at); };
 
 /** The money already recorded against one charge. Reversals subtract; nothing is removed. */
 export type ChargeMoney = { receivedMinor: number; waivedByPaymentMinor: number; reducedMinor: number; refundedMinor: number };
@@ -88,7 +90,7 @@ export const chargePositions = async (sql: Sql | Tx, facilityId: string, charges
   if (!charges.length) return positions;
   const [records, timeZone, money, state] = await Promise.all([
     loadCoverageRecords(sql, facilityId, charges.map((c) => c.patientId)),
-    facilityTimeZone(sql, facilityId),
+    facilityZoneAt(sql, facilityId),
     moneyFor(sql, facilityId, charges.map((c) => c.id)),
     billingPeriods(sql, facilityId),
   ]);
@@ -104,7 +106,7 @@ export const chargePositions = async (sql: Sql | Tx, facilityId: string, charges
   }
   for (const charge of charges) {
     const estimate = estimateCoverage({
-      charge, records, billingActive: inBillingPeriod(charge.createdOn, periods), serviceDate: serviceDateOf(charge.createdOn, timeZone),
+      charge, records, billingActive: inBillingPeriod(charge.createdOn, periods), serviceDate: serviceDateOf(charge.createdOn, timeZone(charge.createdOn)),
       units: chargeUnits(charge, charge.dispenseEntryId ? entries.get(charge.dispenseEntryId) : undefined),
     });
     const responsibility = patientResponsibility(charge, estimate);

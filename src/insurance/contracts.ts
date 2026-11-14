@@ -79,7 +79,7 @@ export const saveDraft = async (tx: Tx, facilityId: string, staffId: string, inp
 };
 
 export type DeviceBlocker = {
-  deviceId: string;
+  deviceId: string; label?: string;
   reasons: ('no_insurance_support' | 'unsent_changes' | 'not_seen_in_24_hours' | 'never_reported' | 'revoked_with_unsent_changes')[];
   pendingMutationCount?: number; lastReportedOn?: string; revokedOn?: string;
 };
@@ -95,8 +95,8 @@ export type DeviceBlocker = {
  * by a revocation is an explicit, audited decision, never a silent side effect.
  */
 export const activationBlockers = async (sql: Sql | Tx, facilityId: string, now = Date.now()): Promise<DeviceBlocker[]> => {
-  const rows = await sql<{ id: string; status: string; revoked_on: string | null; insurance_version: number | null; pending_mutation_count: number | null; recorded_on: string | null }[]>`
-    SELECT d.id, d.status, d.revoked_on, v.insurance_version, v.pending_mutation_count, v.recorded_on
+  const rows = await sql<{ id: string; label: string | null; status: string; revoked_on: string | null; insurance_version: number | null; pending_mutation_count: number | null; recorded_on: string | null }[]>`
+    SELECT d.id, d.label, d.status, d.revoked_on, v.insurance_version, v.pending_mutation_count, v.recorded_on
     FROM devices d LEFT JOIN workforce_client_versions v ON v.device_id = d.id
     WHERE d.facility_id = ${facilityId} AND (d.status = 'active' OR (d.status = 'revoked' AND COALESCE(v.pending_mutation_count, 0) > 0))
     ORDER BY d.id`;
@@ -111,7 +111,7 @@ export const activationBlockers = async (sql: Sql | Tx, facilityId: string, now 
       if (Date.parse(row.recorded_on) < dayAgo) reasons.push('not_seen_in_24_hours');
     }
     return reasons.length ? [{
-      deviceId: row.id, reasons,
+      deviceId: row.id, ...(row.label ? { label: row.label } : {}), reasons,
       ...(row.pending_mutation_count !== null ? { pendingMutationCount: row.pending_mutation_count } : {}),
       ...(row.recorded_on ? { lastReportedOn: new Date(row.recorded_on).toISOString() } : {}),
       ...(row.revoked_on ? { revokedOn: new Date(row.revoked_on).toISOString() } : {}),

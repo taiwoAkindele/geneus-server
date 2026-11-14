@@ -59,7 +59,7 @@ export const TABLE_FOR: Record<DocType, string> = {
 const JSONB_COLUMNS: Partial<Record<DocType, readonly string[]>> = {
   library_document:['file'],visit_document:['file','signature_review'],
   patient: ['identification_base'],
-  facility: ['workforce_policy'],
+  facility: ['workforce_policy', 'time_zone_history'],
   appointment: ['charge_ids', 'activity', 'allocation'],
   staff: ['additional_roles', 'additional_permissions'],
   register_definition: ['fields', 'visit_link'],

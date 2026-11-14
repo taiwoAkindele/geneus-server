@@ -10,7 +10,7 @@ import type { Sql, Tx } from '../db/client.ts';
  * it allows: five, within fifteen minutes, then it is dead. Requesting a new
  * code retires the old one. Only a hash is stored.
  */
-export type VerificationPurpose = 'registration' | 'staff_email' | 'staff_email_current' | 'workforce_access';
+export type VerificationPurpose = 'registration' | 'staff_email' | 'staff_email_current' | 'workforce_access' | 'operator_login';
 export type VerificationKey = { purpose: VerificationPurpose; subject: string; email: string };
 
 const CODE_TTL_MS = 15 * 60 * 1000;
@@ -94,7 +94,9 @@ export const verificationEmail = (code: string, purpose: VerificationPurpose) =>
     purpose === 'registration'
       ? 'Enter it on the facility registration screen to confirm this is your email.'
       : purpose === 'staff_email'
-        ? 'Enter it in Geneus to confirm this as your recovery email.'
+        ? 'Enter it in Geneus to confirm this as your email address.'
+        : purpose === 'operator_login'
+        ? 'Enter it on the Geneus operator sign-in screen.'
         : 'Someone asked to replace this recovery email on your Geneus admin account. Enter this code in Geneus only if that was you.',
     'It works once, for 15 minutes. If you did not ask for it, you can ignore this email.',
     '',

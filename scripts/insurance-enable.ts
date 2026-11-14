@@ -4,6 +4,10 @@ import { createSql } from '../src/db/client.ts';
 import { loadConfig } from '../src/lib/config.ts';
 import { insuranceSetupStatus, setInsuranceState } from '../src/insurance/enablement.ts';
 
+// ENGINEERING BREAK-GLASS ONLY. Routine activation is in the app: the hospital requests it in Insurance
+// settings and a Geneus operator approves it in the operator console (/operator), with the same checks.
+// Use this only when the console itself is unavailable, and record why.
+//
 // A deployment operation, not a facility setting: run by an operator with database access, from a reviewed
 // input file, and recorded as an immutable command and an audit event. Prints no credentials or patient data.
 //   node scripts/insurance-enable.ts status   approved-input.json   { "facilityId": "..." }
