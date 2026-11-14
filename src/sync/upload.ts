@@ -41,8 +41,7 @@ import {
   type UploadMutation,
   type UploadRejection,
   type UploadRequest,
-  type UploadResponse,
-} from '#shared';
+  type UploadResponse, isConfigurationWrite } from '#shared';
 import {
   CHECK_VIOLATION,
   FOREIGN_KEY_VIOLATION,
@@ -216,6 +215,23 @@ const patchPermissions = (table: DocType, changes: Record<string, unknown>): Per
 };
 
 type Refusal = { category: RejectionCategory; reason: string; conflicts?: ConflictingColumn[]; dependencies?: FacilityDependency[] };
+/** How an upload arrived: through a device's offline queue, or saved online by a person the server verified. */
+export type UploadOptions = { online?: { staffId: string } };
+class OnlineRefusal extends Error { readonly refusal: Refusal; constructor(refusal: Refusal) { super(refusal.reason); this.refusal = refusal; } }
+
+/**
+ * Optimistic concurrency for online configuration: a change names the values
+ * it saw, and is refused if anyone changed them since. Records keyed by
+ * revision already check their revision; this covers the rest (staff, roster).
+ */
+const staleConfiguration = async (tx: Tx, mutation: UploadMutation): Promise<Refusal | undefined> => {
+  if (mutation.op !== 'patch' || !mutation.previous) return undefined;
+  const current = await findRecord(tx, mutation.table, mutation.id) as Record<string, unknown> | undefined;
+  if (!current) return undefined;
+  const norm = (value: unknown) => JSON.stringify(value ?? null);
+  const moved = Object.keys(mutation.previous).filter((key) => !['updatedBy', 'updatedOn'].includes(key) && norm(current[key]) !== norm(mutation.previous![key]));
+  return moved.length ? refuse('conflict', 'Someone changed this since you opened it. Reopen it to see the current values, then save again') : undefined;
+};
 const refuse = (category: RejectionCategory, reason: string): Refusal => ({ category, reason });
 
 type Outcome = 'applied' | 'duplicate' | 'rejected' | 'applied_with_conflicts';
@@ -862,6 +878,7 @@ const processMutation = async (
   uploadedAt: number,
   request: UploadRequest,
   signer?: Signer,
+  options: UploadOptions = {},
 ): Promise<MutationResult> =>
   sql.begin(async (tx): Promise<MutationResult> => {
     // One order everywhere, including operator changes: facility, then record/calendar locks.
@@ -871,8 +888,12 @@ const processMutation = async (
     if (!(await claimMutation(tx, ledger, mutation.table, mutation.id, 'applied'))) return { outcome: 'duplicate' };
 
     const context: Context = { tx, identity, uploadedAt };
+    const configuration = isConfigurationWrite(mutation.table, mutation.op, Object.keys(mutation.data ?? {}));
     const handled = workforceType(mutation.table) || ['unit','billing_department'].includes(mutation.table);
-    const refusal = handled ? await evaluateWorkforce(context, mutation, signer) :
+    // Configuration is saved online only, confirmed by the server; a queued change (made offline, or by an older app) is refused.
+    const refusal = configuration && !options.online ? refuse('authorization', 'Settings are saved online, with the server. This change was made offline or by an older version of the app, so it was not applied — make it again while connected')
+      : configuration && options.online ? (await staleConfiguration(tx, mutation)) ?? (handled ? await evaluateWorkforce(context, mutation, signer) : mutation.op === 'put' ? await evaluatePut(context, mutation) : await evaluatePatch(context, mutation))
+      : handled ? await evaluateWorkforce(context, mutation, signer) :
       mutation.op === 'delete'
         ? refuse('authorization', 'records are never deleted; retire them instead')
         : mutation.op === 'put'
@@ -885,6 +906,8 @@ const processMutation = async (
     }
 
     // A column conflict on a merge table applied the other columns; everything else applied nothing.
+    // Online configuration is all or nothing: a change that would merge only some columns is undone entirely.
+    if (options.online && refusal.conflicts !== undefined) throw new OnlineRefusal(refusal);
     const partial = refusal.conflicts !== undefined && mutation.op === 'patch';
     if (!partial) {
       await tx`UPDATE applied_mutations SET outcome = 'rejected' WHERE device_id = ${identity.deviceId} AND client_id = ${mutation.clientId}`;
@@ -926,6 +949,7 @@ export const processUpload = async (
   request: UploadRequest,
   now: number = Date.now(),
   signer?: Signer,
+  options: UploadOptions = {},
 ): Promise<UploadResponse> => {
   let applied = 0;
   let duplicates = 0;
@@ -939,7 +963,14 @@ export const processUpload = async (
     await recordClientVersion(tx, identity, { ...request, pendingMutationCount: 1 }, now);
   });
   for (const mutation of orderWorkforceMutations(request.mutations)) {
-    const result = await processMutation(sql, identity, request.transactionId, mutation, now, request, signer);
+    let result: MutationResult;
+    try { result = await processMutation(sql, identity, request.transactionId, mutation, now, request, signer, options); }
+    catch (cause) {
+      // An online refusal rolled its transaction back entirely, ledger included, and is reported to the person directly.
+      if (!(cause instanceof OnlineRefusal)) throw cause;
+      await recordAuditEvent(sql, { facilityId: identity.facilityId, deviceId: identity.deviceId, actorStaffId: options.online?.staffId, action: 'reject', entityType: mutation.table, entityId: mutation.id, result: 'rejected', metadata: { category: cause.refusal.category, operation: mutation.op, context: 'configuration_online' } });
+      result = { outcome: 'rejected', refusal: cause.refusal };
+    }
     if (result.outcome === 'duplicate') duplicates += 1;
     if (result.outcome === 'applied' || result.outcome === 'applied_with_conflicts') applied += 1;
     if (result.refusal) {

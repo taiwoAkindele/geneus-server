@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+import { pbkdf2Sync, randomBytes } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import {
   Staff,
@@ -7,6 +7,7 @@ import {
   type StaffPermission,
   type UploadRequest,
   type UploadResponse,
+  isConfigurationWrite,
 } from '#shared';
 import { createSql, type Sql } from '../src/db/client.ts';
 import { migrate, type Migration } from '../src/db/migrate.ts';
@@ -91,7 +92,8 @@ export const lastCodeSentTo = (to: string, pattern = /code is (\w+)\./): string 
 };
 
 /** The app under test: same construction as server.ts, no port, no log noise, no rate limit, mail kept in `mailbox`. */
-export const testApp = (sql: Sql) => buildApp({ config, sql, signer, mailer: recordingMailer }, { logger: false, rateLimit: false });
+const sqlForApp = new WeakMap<object, Sql>();
+export const testApp = (sql: Sql) => { const app = buildApp({ config, sql, signer, mailer: recordingMailer }, { logger: false, rateLimit: false }); sqlForApp.set(app, sql); return app; };
 
 /** A proven admin email for a registration, without the round trip through mail. */
 export const verifiedEmailFor = async (sql: Sql, inviteToken: string, email = 'admin@example.org') => ({
@@ -187,15 +189,85 @@ export const addStaff = async (
 
 export const asDevice = (credential: string) => ({ authorization: `Bearer ${credential}` });
 
-/** Uploads as the device and returns the acknowledged response. */
+export const TEST_PIN = '135790';
+const enrolled = new Set<string>();
+/**
+ * A PIN-proven staff session for a person on the facility's devices, as the
+ * app opens one at sign-in. Opening it ends any other session on the device,
+ * exactly as a shared device does. Undefined for staff who cannot sign in.
+ */
+const opening = new Map<string, Promise<string | undefined>>();
+/** One sign-in at a time per person and device: two at once would end each other's session. */
+export const staffSessionFor = (app: FastifyInstance, credential: string, staffId: string): Promise<string | undefined> => {
+  const key = `${credential}:${staffId}`;
+  const pending = opening.get(key) ?? openStaffSession(app, credential, staffId).finally(() => opening.delete(key));
+  opening.set(key, pending);
+  return pending;
+};
+const openStaffSession = async (app: FastifyInstance, credential: string, staffId: string): Promise<string | undefined> => {
+  const sql = sqlForApp.get(app);
+  if (!sql) throw new Error('staffSessionFor needs an app from testApp');
+  if (!enrolled.has(staffId)) {
+    const [staff] = await sql<{ facility_id: string }[]>`SELECT facility_id FROM staff WHERE id = ${staffId}`;
+    if (!staff) return undefined;
+    const salt = randomBytes(16).toString('base64');
+    const hash = pbkdf2Sync(TEST_PIN, Buffer.from(salt, 'base64'), 210_000, 32, 'sha256').toString('base64');
+    for (const { id } of await sql<{ id: string }[]>`SELECT id FROM devices WHERE facility_id = ${staff.facility_id}`) {
+      await sql`INSERT INTO staff_device_pins (facility_id, staff_id, device_id, salt, hash, iterations, enrolled_by) VALUES (${staff.facility_id}, ${staffId}, ${id}, ${salt}, ${hash}, 210000, 'setup_code') ON CONFLICT DO NOTHING`;
+    }
+    enrolled.add(staffId);
+  }
+  const opened = await app.inject({ method: 'POST', url: '/staff/session', headers: asDevice(credential), payload: { staffId, pin: TEST_PIN } });
+  const token = opened.statusCode === 200 ? opened.json().token as string : undefined;
+  if (token) sessions.set(`${credential}:${staffId}`, token);
+  return token;
+};
+const sessions = new Map<string, string>();
+
+/**
+ * Uploads as the device. Configuration goes online, as the app sends it: to
+ * /config/save, in the name of the person it is attributed to, with their
+ * PIN-proven session. Everything else goes through the offline sync queue.
+ */
 export const upload = async (
   app: FastifyInstance,
   credential: string,
   request: UploadRequest,
 ): Promise<UploadResponse> => {
-  const response = await app.inject({ method: 'POST', url: '/sync/upload', headers: asDevice(credential), payload: request });
-  if (response.statusCode !== 200) throw new Error(`upload returned ${response.statusCode}: ${response.body}`);
-  return response.json() as UploadResponse;
+  const isConfig = (m: UploadRequest['mutations'][number]) => isConfigurationWrite(m.table, m.op, Object.keys(m.data ?? {}));
+  const configuration = request.mutations.filter(isConfig), operational = request.mutations.filter((m) => !isConfig(m));
+  let applied = 0, duplicates = 0; const rejected: UploadResponse['rejected'] = []; let serverTime = new Date().toISOString();
+  const byPerson = new Map<string, typeof configuration>();
+  for (const m of configuration) { const by = String((m.op === 'put' ? m.data.createdBy : m.data.updatedBy) ?? ''); byPerson.set(by, [...(byPerson.get(by) ?? []), m]); }
+  for (const [by, mutations] of byPerson) {
+    // The person's open session if they still hold the device; signing in again only when someone else has since.
+    let token = by ? sessions.get(`${credential}:${by}`) ?? await staffSessionFor(app, credential, by) : undefined;
+    const used = token;
+    const save = () => app.inject({ method: 'POST', url: token ? '/config/save' : '/sync/upload', headers: { ...asDevice(credential), ...(token ? { 'x-staff-session': token } : {}) }, payload: { ...request, mutations } });
+    let response = await save();
+    if (token && response.statusCode === 403 && response.json().error === 'staff_session_required') {
+      // Someone else signed in on this device since; sign this person in again (once, shared by concurrent saves).
+      token = sessions.get(`${credential}:${by}`) !== used ? sessions.get(`${credential}:${by}`) : await staffSessionFor(app, credential, by);
+      response = await save();
+    }
+    if (!token) {
+      if (response.statusCode !== 200) throw new Error(`upload returned ${response.statusCode}: ${response.body}`);
+      const body = response.json() as UploadResponse; applied += body.applied; duplicates += body.duplicates; rejected.push(...body.rejected); serverTime = body.serverTime; continue;
+    }
+    if (response.statusCode === 200) { applied += response.json().applied; duplicates += response.json().duplicates; continue; }
+    if (response.statusCode !== 409) throw new Error(`config save returned ${response.statusCode}: ${response.body}`);
+    for (const r of response.json().details.rejected as { table: string; id: string; category: string; reason: string }[]) {
+      const m = mutations.find((x) => x.table === r.table && x.id === r.id)!;
+      rejected.push({ clientId: m.clientId, table: m.table, id: m.id, category: r.category as never, reason: r.reason });
+    }
+    applied += response.json().details.applied; duplicates += response.json().details.duplicates;
+  }
+  if (operational.length || !configuration.length) {
+    const response = await app.inject({ method: 'POST', url: '/sync/upload', headers: asDevice(credential), payload: { ...request, mutations: operational } });
+    if (response.statusCode !== 200) throw new Error(`upload returned ${response.statusCode}: ${response.body}`);
+    const body = response.json() as UploadResponse; applied += body.applied; duplicates += body.duplicates; rejected.push(...body.rejected); serverTime = body.serverTime;
+  }
+  return { applied, duplicates, rejected, serverTime, ...(request.facilityContractVersion ? { facilityContractVersion: request.facilityContractVersion } : {}) } as UploadResponse;
 };
 
 let nextClientId = 1;

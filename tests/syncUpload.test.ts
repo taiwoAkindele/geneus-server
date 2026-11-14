@@ -440,18 +440,18 @@ describe('POST /sync/upload', () => {
       assert.equal((await findRecord<RegisterEntry>(db.sql, 'register_entry', 'entry:complete'))?.encounterId, 'encounter:malaria');
     });
 
-    it('lets the later administrative change win on staff, and audits it', async () => {
+    it('refuses a staff change made from an outdated view, so one administrator never silently overwrites another', async () => {
       const target = await addStaff(db.sql, a, { role: 'chew' });
       await send(a.device.credential, patch('staff', target.id, a.admin, { permission: 'read_only' }, { permission: 'read_write' }));
 
+      // The second device still saw read_write: saving online from that view is refused, not applied over the first change.
       const response = await send(aSecond.credential, patch('staff', target.id, a.admin, { permission: 'read_write' }, { permission: 'read_write' }));
 
-      assert.deepEqual(response.rejected, []);
-      assert.equal((await findRecord<Staff>(db.sql, 'staff', target.id))?.permission, 'read_write');
+      assert.equal(response.rejected[0]?.category, 'conflict');
+      assert.equal((await findRecord<Staff>(db.sql, 'staff', target.id))?.permission, 'read_only');
       const audits = await db.sql<{ metadata: Record<string, unknown> }[]>`
         SELECT metadata FROM audit_events WHERE entity_id = ${target.id} AND action = 'update'`;
-      assert.equal(audits.length, 2);
-      assert.ok(audits.some((event) => event.metadata.lastWriteWins === true));
+      assert.equal(audits.length, 1);
     });
   });
 

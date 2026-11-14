@@ -122,7 +122,7 @@ describe('insurance foundation', () => {
     it('refuses contract access to a staff id the device merely asserts', async () => {
       const response = await app.inject({ method: 'POST', url: '/insurance/contracts/list', headers: { ...asDevice(f.device.credential), 'x-actor-staff-id': officer.id }, payload: {} });
       assert.equal(response.statusCode, 403);
-      assert.equal(response.json().error, 'private_verification_required');
+      assert.equal(response.json().error, 'staff_session_required');
       assert.equal((await call('/insurance/contracts/list', {}, officer.id)).statusCode, 200);
     });
     it('never gives contract access to supervisors or cashiers, and refunds only to those allowed', async () => {

@@ -148,7 +148,7 @@ try {
       if (url.pathname === '/claim-submissions') return send(await source.sql`SELECT s.channel, s.reference, s.claim_ids, a.reference AS ack FROM insurance_claim_submissions s LEFT JOIN insurance_claim_acknowledgements a ON a.submission_id = s.id WHERE s.facility_id = ${f.facility.id}`);
       if (url.pathname === '/enrollment-code' && request.method === 'POST') return send(await issueEnrollmentCode(source.sql, f.facility.id, f.admin.id, f.device.deviceId));
       // Ends every verified staff session, to exercise expiry and renewal in the real app.
-      if (url.pathname === '/expire-sessions' && request.method === 'POST') { await source.sql`UPDATE workforce_private_sessions SET expires_on = now() - interval '1 second' WHERE facility_id = ${f.facility.id}`; return send({ ok: true }); }
+      if (url.pathname === '/expire-sessions' && request.method === 'POST') { await source.sql`UPDATE staff_sessions SET expires_on = now() - interval '1 second' WHERE facility_id = ${f.facility.id}`; return send({ ok: true }); }
       send({ error: 'not_found' }, 404);
     } catch (cause) { send({ error: String(cause) }, 500); }
   }).listen(INSPECT, '127.0.0.1');
