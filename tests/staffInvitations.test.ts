@@ -258,4 +258,114 @@ describe('staff invitations by email', () => {
     assert.equal(seun?.activated, false);
     assert.equal(mailbox.filter((m) => m.to === 'seun@example.org').length, 1);
   });
+
+  describe('invitation links', () => {
+    /** The token from the newest invitation link emailed to `to` — what tapping "Accept invitation" opens. */
+    const lastLinkSentTo = (to: string) => {
+      const text = [...mailbox].reverse().find((m) => m.to === to)?.text ?? '';
+      const token = text.match(/\/onboarding\/invitation#token=([\w-]+)/)?.[1];
+      if (!token) throw new Error(`no invitation link was emailed to ${to}`);
+      return token;
+    };
+    const inviteWithDevice = async (staffId: string, email: string, by = a.admin.id) =>
+      post(`/staff/${staffId}/invitations`, { channel: 'email', email, allowNewDevice: true }, await as(by));
+    const open = (token: string) => post('/invitations/link/open', { token }, {});
+    const linkCode = (token: string, f = a) => post('/invitations/link/code', { token }, device(f));
+    const newDevice = (token: string, deviceId: string, deviceLabel = 'Ward 2 phone') => post('/invitations/link/device', { token, deviceId, deviceLabel }, {});
+    // The suite has sent many invitations from this facility; start these with the hourly facility limit's hour passed.
+    before(() => db.sql`UPDATE staff_invitations SET created_on = created_on - interval '2 hours' WHERE facility_id = ${a.facility.id}`);
+
+    it('leads the email with a link whose token is in the fragment, keeps the code as a fallback, and stores only a hash', async () => {
+      const person = await newcomer('Tola Newcomer');
+      const sent = await invite(person.id, 'tola@example.org');
+      const token = lastLinkSentTo('tola@example.org');
+      const text = mailbox.at(-1)!.text;
+      assert.ok(text.indexOf('Accept invitation') < text.indexOf('code is'), 'the link comes before the code');
+      assert.ok(lastCodeSentTo('tola@example.org'), 'the fallback code is still there');
+      assert.ok(text.includes(`${config.corsOrigins[0]}/onboarding/invitation#token=`), 'opens in the web app, token after #');
+      assert.ok(!sent.body.includes(token), 'the administrator never sees the link');
+      const [row] = await db.sql`SELECT link_hash, allows_new_device FROM staff_invitations WHERE id = ${sent.json().invitation.id}`;
+      assert.ok(row.link_hash && row.link_hash !== token, 'only a hash is stored');
+      assert.equal(row.allows_new_device, false, 'no device allowance unless asked for');
+      assert.equal(sent.json().invitation.allowsNewDevice, false);
+    });
+
+    it('shows who it is for without spending anything, and refuses an unknown link', async () => {
+      const person = await newcomer('Uche Newcomer');
+      await invite(person.id, 'uche@example.org');
+      const view = (await open(lastLinkSentTo('uche@example.org'))).json();
+      assert.deepEqual({ ...view, expiresOn: undefined }, { staffId: person.id, staffName: 'Uche Newcomer', role: 'nurse', facilityId: a.facility.id, facilityName: view.facilityName, expiresOn: undefined, status: 'pending', newDevice: 'not_allowed' });
+      assert.equal((await status(person.id)).invitation.status, 'pending');
+      assert.equal((await open('x'.repeat(43))).json().error, 'invalid_invitation');
+    });
+
+    it('on a facility device, swaps the link for a fresh one-time code that sets the PIN and accepts the invitation', async () => {
+      const person = await newcomer('Vera Newcomer');
+      await invite(person.id, 'vera@example.org');
+      const emailed = lastCodeSentTo('vera@example.org'), token = lastLinkSentTo('vera@example.org');
+      const exchanged = await linkCode(token);
+      assert.equal(exchanged.statusCode, 200, exchanged.body);
+      const { staffId, code } = exchanged.json();
+      assert.equal(staffId, person.id);
+      assert.notEqual(code, emailed, 'a new code, never the emailed one');
+      assert.equal((await check(person.id, emailed)).statusCode, 403, 'the emailed code is replaced');
+      assert.equal((await enrol(person.id, code)).statusCode, 200);
+      assert.equal(await emailOf(person.id), 'vera@example.org', 'opening the link proves the inbox, as the code did');
+      assert.equal((await open(token)).json().status, 'accepted');
+      assert.equal((await linkCode(token)).json().error, 'invalid_invitation', 'single use');
+    });
+
+    it('is refused on another facility\'s device', async () => {
+      const person = await newcomer('Wale Newcomer');
+      await invite(person.id, 'wale@example.org');
+      assert.equal((await linkCode(lastLinkSentTo('wale@example.org'), b)).json().error, 'other_facility');
+    });
+
+    it('enrols a new device only when an administrator who may enrol devices allowed it — once', async () => {
+      const plain = await newcomer('Xavi Newcomer');
+      await invite(plain.id, 'xavi@example.org');
+      assert.equal((await newDevice(lastLinkSentTo('xavi@example.org'), 'device-xavi')).json().error, 'device_not_allowed');
+      assert.equal((await db.sql`SELECT 1 FROM devices WHERE id = 'device-xavi'`).length, 0);
+
+      // May add staff, but not devices: can invite, cannot let the invitation enrol a device.
+      const staffManager = await addStaff(db.sql, a, { role: 'supervisor', name: 'Staff Manager', additionalPermissions: ['staff:manage'] });
+      const yemi = await newcomer('Yemi Newcomer');
+      assert.equal((await inviteWithDevice(yemi.id, 'yemi@example.org', staffManager.id)).json().error, 'device_enroll_forbidden');
+      assert.equal((await db.sql`SELECT 1 FROM staff_invitations WHERE staff_id = ${yemi.id}`).length, 0, 'nothing is sent');
+      assert.equal((await invite(yemi.id, 'yemi@example.org', staffManager.id)).statusCode, 201, 'an ordinary invitation is still theirs to send');
+
+      const person = await newcomer('Zainab Newcomer');
+      const sent = await inviteWithDevice(person.id, 'zainab@example.org');
+      assert.equal(sent.json().invitation.allowsNewDevice, true);
+      const token = lastLinkSentTo('zainab@example.org');
+      const enrolled = await newDevice(token, 'device-zainab');
+      assert.equal(enrolled.statusCode, 201, enrolled.body);
+      const credential = enrolled.json();
+      assert.equal(credential.facilityId, a.facility.id, 'the invitation decides the facility');
+      const [deviceRow] = await db.sql`SELECT enrolled_by, label FROM devices WHERE id = 'device-zainab'`;
+      assert.equal(deviceRow.enrolled_by, a.admin.id, 'enrolled in the name of the administrator who allowed it');
+      assert.equal(deviceRow.label, 'Ward 2 phone');
+      assert.equal((await db.sql`SELECT 1 FROM enrollment_codes WHERE claimed_by = 'device-zainab'`).length, 1, 'recorded like any enrollment');
+      assert.equal((await open(token)).json().newDevice, 'used');
+      assert.equal((await newDevice(token, 'device-zainab-2')).json().error, 'device_not_allowed', 'one device only');
+
+      const exchanged = await post('/invitations/link/code', { token }, asDevice(credential.credential));
+      assert.equal(exchanged.statusCode, 200, 'the new device continues to PIN setup');
+      assert.equal((await post('/staff/session/enrol', { staffId: person.id, pin: '583920', setupCode: exchanged.json().code }, asDevice(credential.credential))).statusCode, 200);
+    });
+
+    it('stops working when revoked or replaced', async () => {
+      const person = await newcomer('Ayo Linkholder');
+      await inviteWithDevice(person.id, 'ayo@example.org');
+      const first = lastLinkSentTo('ayo@example.org');
+      await aMinutePasses(person.id);
+      await inviteWithDevice(person.id, 'ayo@example.org');
+      assert.equal((await open(first)).json().status, 'revoked', 'a resend replaces the earlier link');
+      assert.equal((await newDevice(first, 'device-ayo')).json().error, 'invalid_invitation');
+      const second = lastLinkSentTo('ayo@example.org');
+      await post(`/staff/${person.id}/invitations/revoke`, {}, await as(a.admin.id));
+      assert.equal((await linkCode(second)).json().error, 'invalid_invitation');
+      assert.equal((await newDevice(second, 'device-ayo')).json().error, 'invalid_invitation');
+    });
+  });
 });

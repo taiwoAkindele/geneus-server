@@ -1,6 +1,6 @@
 import { randomInt } from 'node:crypto';
 import { Device, SCHEMA_VERSION, type DeviceCredential } from '#shared';
-import { isPostgresError, UNIQUE_VIOLATION, type Sql } from '../db/client.ts';
+import { isPostgresError, UNIQUE_VIOLATION, type Sql, type Tx } from '../db/client.ts';
 import { findRecord, insertRecord } from '../db/records.ts';
 import { recordAuditEvent } from '../audit/auditEvents.ts';
 import { issueCredential } from './credentials.ts';
@@ -20,7 +20,7 @@ const CODE_TTL_MS = 15 * 60 * 1000;
 export type EnrollmentCodeRecord = { code: string; facilityId: string; expiresOn: string };
 
 export const issueEnrollmentCode = async (
-  sql: Sql,
+  sql: Sql | Tx,
   facilityId: string,
   issuedBy: string,
   issuedFrom: string,
@@ -50,52 +50,63 @@ export const enrollDevice = async (
   syncEndpoint: string,
 ): Promise<EnrollmentOutcome> => {
   try {
-    return await sql.begin(async (tx): Promise<EnrollmentOutcome> => {
-      const [claimed] = await tx<ClaimedCode[]>`
-        UPDATE enrollment_codes
-        SET claimed_on = now(), claimed_by = ${request.deviceId}
-        WHERE code = ${request.code.trim().toUpperCase()}
-          AND claimed_on IS NULL
-          AND expires_on >= now()
-        RETURNING facility_id, issued_by, issued_from`;
-      if (!claimed) return { ok: false, error: 'invalid_code' };
-
-      const now = new Date().toISOString();
-      const device = Device.parse({
-        id: request.deviceId,
-        type: 'device',
-        facilityId: claimed.facility_id,
-        schemaVersion: SCHEMA_VERSION,
-        createdBy: claimed.issued_by,
-        createdOn: now,
-        deviceId: claimed.issued_from,
-        label: request.deviceLabel,
-        enrolledBy: claimed.issued_by,
-        status: 'active',
-        wipeRequested: false,
-        enrolledOn: now,
-      });
-      await insertRecord(tx, 'device', device);
-      const credential = await issueCredential(tx, device.id);
-      await recordAuditEvent(tx, {
-        facilityId: device.facilityId,
-        deviceId: device.id,
-        actorStaffId: claimed.issued_by,
-        action: 'enroll',
-        entityType: 'device',
-        entityId: device.id,
-      });
-
-      return {
-        ok: true,
-        device,
-        credential: { deviceId: device.id, facilityId: device.facilityId, credential, syncEndpoint },
-      };
-    });
+    return await sql.begin((tx) => claimCodeAndEnroll(tx, request, syncEndpoint));
   } catch (cause) {
     if (isPostgresError(cause, UNIQUE_VIOLATION)) return { ok: false, error: 'device_already_enrolled' };
     throw cause;
   }
+};
+
+/**
+ * The body of `enrollDevice`, inside a transaction the caller holds — so an
+ * invitation link can spend its device allowance and enrol in one commit. A
+ * device that is already enrolled fails with a unique violation the caller maps.
+ */
+export const claimCodeAndEnroll = async (
+  tx: Tx,
+  request: { code: string; deviceId: string; deviceLabel?: string },
+  syncEndpoint: string,
+): Promise<EnrollmentOutcome> => {
+  const [claimed] = await tx<ClaimedCode[]>`
+    UPDATE enrollment_codes
+    SET claimed_on = now(), claimed_by = ${request.deviceId}
+    WHERE code = ${request.code.trim().toUpperCase()}
+      AND claimed_on IS NULL
+      AND expires_on >= now()
+    RETURNING facility_id, issued_by, issued_from`;
+  if (!claimed) return { ok: false, error: 'invalid_code' };
+
+  const now = new Date().toISOString();
+  const device = Device.parse({
+    id: request.deviceId,
+    type: 'device',
+    facilityId: claimed.facility_id,
+    schemaVersion: SCHEMA_VERSION,
+    createdBy: claimed.issued_by,
+    createdOn: now,
+    deviceId: claimed.issued_from,
+    label: request.deviceLabel,
+    enrolledBy: claimed.issued_by,
+    status: 'active',
+    wipeRequested: false,
+    enrolledOn: now,
+  });
+  await insertRecord(tx, 'device', device);
+  const credential = await issueCredential(tx, device.id);
+  await recordAuditEvent(tx, {
+    facilityId: device.facilityId,
+    deviceId: device.id,
+    actorStaffId: claimed.issued_by,
+    action: 'enroll',
+    entityType: 'device',
+    entityId: device.id,
+  });
+
+  return {
+    ok: true,
+    device,
+    credential: { deviceId: device.id, facilityId: device.facilityId, credential, syncEndpoint },
+  };
 };
 
 export type RevocationOutcome = { ok: true; device: Device } | { ok: false; error: 'unknown_device' };

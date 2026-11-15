@@ -11,6 +11,7 @@ import type { Signer } from './lib/signing.ts';
 import { registerDeviceRoutes } from './routes/devices.ts';
 import { registerFacilityRoutes } from './routes/facilities.ts';
 import { registerStaffRoutes } from './routes/staff.ts';
+import { registerInvitationLinkRoutes } from './routes/invitationLinks.ts';
 import { registerSyncRoutes } from './routes/sync.ts';
 import { registerPatientRoutes } from './routes/patients.ts';
 import { registerWorkforceRoutes } from './routes/workforce.ts';
@@ -70,6 +71,10 @@ const RATE_LIMITED_ROUTES = new Set([
   // Sends an invitation email, or checks an invitation code. (Each also has limits counted in PostgreSQL.)
   'POST /staff/:staffId/invitations',
   'POST /staff/:staffId/invitations/check',
+  // Invitation links: reached without a device credential, or exchanged for a setup code.
+  'POST /invitations/link/open',
+  'POST /invitations/link/device',
+  'POST /invitations/link/code',
 ]);
 const RATE_LIMIT_PER_MINUTE = 10;
 
@@ -236,7 +241,9 @@ export const buildApp = ({ config, sql, signer, mailer: givenMailer, paystackFet
   registerInvestigationRoutes(app, sql);
   registerResultTemplateRoutes(app, sql);
   registerOrganizationFacilityRoutes(app, sql, config.powerSyncPublicUrl);
-  registerStaffRoutes(app, sql, mailer);
+  // Invitation links open in the web app: the first configured app origin is its public address.
+  registerStaffRoutes(app, sql, mailer, config.corsOrigins[0]);
+  registerInvitationLinkRoutes(app, sql, config);
   registerSyncRoutes(app, sql, config, signer);
   registerBillingRoutes(app, sql, config, paystackFetch);
 
