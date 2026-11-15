@@ -2,7 +2,7 @@ import { StaffPinEnrol, StaffSessionOpen, UploadRequest, isConfigurationWrite, t
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { recordAuditEvent } from '../audit/auditEvents.ts';
 import { authenticateDevice } from '../auth/deviceAuth.ts';
-import { StaffSessionRefusal, endSession, enrolPin, sessionStaff, signInSession } from '../auth/staffSessions.ts';
+import { StaffSessionRefusal, endSession, enrolPin, requestStaff, signInSession } from '../auth/staffSessions.ts';
 import type { Sql } from '../db/client.ts';
 import type { Signer } from '../lib/signing.ts';
 import { processUpload } from '../sync/upload.ts';
@@ -59,8 +59,8 @@ export const registerStaffSessionRoutes = (app: FastifyInstance, sql: Sql, signe
    */
   app.post('/config/save', async (request, reply) => {
     const identity = await authenticateDevice(sql, request, reply); if (!identity) return;
-    const staff = await sessionStaff(sql, identity, header(request.headers['x-staff-session']));
-    if (!staff) return refuse(reply, 403, 'staff_session_required', 'Confirm your PIN to save settings');
+    const staff = await requestStaff(sql, identity, request.headers);
+    if (!staff) return refuse(reply, 403, 'staff_session_required', 'Sign in as an active member of this facility to save settings');
     const body = UploadRequest.safeParse(request.body);
     if (!body.success) return refuse(reply, 400, 'invalid_request', 'The change is malformed');
     for (const m of body.data.mutations) {

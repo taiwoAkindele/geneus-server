@@ -93,8 +93,10 @@ describe('server-verified staff sessions and online configuration', () => {
       assert.match(queued.json().rejected[0].reason, /saved online/);
       assert.equal(await findRecord(db.sql, 'fee_item', 'fee_item:queued'), undefined);
     });
-    it('needs the person\'s session, in their own name, for configuration only', async () => {
-      assert.equal((await save([fee('fee_item:a', f.admin)])).json().error, 'staff_session_required');
+    it('needs the person signed in on the device, in their own name, for configuration only', async () => {
+      assert.equal((await save([fee('fee_item:a', f.admin)])).json().error, 'staff_session_required', 'someone must be signed in');
+      const unknown = await app.inject({ method: 'POST', url: '/config/save', headers: { ...device(), 'x-actor-staff-id': 'staff:nobody' }, payload: { transactionId: null, ...VERSIONS, mutations: [fee('fee_item:a', f.admin)] } });
+      assert.equal(unknown.json().error, 'staff_session_required', 'an unknown person is refused');
       const admin = (await signIn(f.admin.id, '246810')).json().token;
       assert.equal((await save([fee('fee_item:a', clerk)], admin)).json().error, 'attribution_mismatch', 'nobody saves in another person\'s name');
       const patient = { clientId: clientId(), op: 'put', table: 'patient', id: 'p', data: {} } as unknown as UploadMutation;

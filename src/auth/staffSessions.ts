@@ -117,14 +117,20 @@ export const endSession = (sql: Sql, identity: DeviceIdentity, token: string) =>
   sql`UPDATE staff_sessions SET ended_on = now() WHERE token_hash = ${sha(token)} AND device_id = ${identity.deviceId} AND ended_on IS NULL`;
 
 /**
- * The verified person behind a request: their PIN-proven staff session, or —
- * for screens not yet moved to it — an emailed-code session. Either way the
- * staff record is read fresh, so revoked permissions apply at once.
+ * The person behind a request: their PIN-proven staff session or emailed-code
+ * session when the device has one, otherwise the person the enrolled device
+ * says is signed in on it (x-actor-staff-id), as offline uploads and documents
+ * already are. That person must be active in the device's own facility; the
+ * staff record is read fresh, so each route's role and permission checks and
+ * any revocation apply at once.
  */
 export const requestStaff = async (sql: Sql, identity: DeviceIdentity, headers: Record<string, string | string[] | undefined>): Promise<Staff | undefined> => {
   const pick = (value: string | string[] | undefined) => (typeof value === 'string' ? value : undefined);
   const viaSession = await sessionStaff(sql, identity, pick(headers['x-staff-session']));
   if (viaSession) return viaSession;
   const { privateStaff } = await import('../workforce/privateAccess.ts');
-  return privateStaff(sql, identity, pick(headers['x-workforce-access']));
+  const viaEmail = await privateStaff(sql, identity, pick(headers['x-workforce-access']));
+  if (viaEmail) return viaEmail;
+  const actor = pick(headers['x-actor-staff-id']);
+  return actor && actor.length <= 200 ? activeStaff(sql, identity.facilityId, actor) : undefined;
 };
