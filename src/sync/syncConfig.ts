@@ -1,4 +1,4 @@
-import { SCHEMA_BY_TYPE, FACILITY_DOCUMENT_TYPES, RESTRICTED_FACILITY_DOCUMENT_TYPES, INSURANCE_SYNCED_TYPES, Permission, type DocType } from '#shared';
+import { SCHEMA_BY_TYPE, FACILITY_DOCUMENT_TYPES, RESTRICTED_FACILITY_DOCUMENT_TYPES, INSURANCE_SYNCED_TYPES, CARE_SERVICE_FIELDS, Permission, type DocType } from '#shared';
 import { snakeCase, TABLE_FOR } from '../db/records.ts';
 
 /**
@@ -34,9 +34,11 @@ const CARE_FIELDS: Partial<Record<DocType, readonly string[]>> = { facility: ['a
 /** Sent only to devices that negotiated result templates; others keep the plain result summary. */
 const TEMPLATE_FIELDS: Partial<Record<DocType, readonly string[]>> = { encounter_entry: ['labReport'] };
 const RESULT_TEMPLATE_TYPES: readonly DocType[] = ['result_template', 'result_part', 'answer_list', 'standard_test', 'standard_template'];
-const selectListFor = (type: DocType, legacy = false, care = true, templates?: boolean): string[] =>
+/** Sent only to devices that negotiated care services (CARE_SERVICE_FIELDS); strict older parsers would refuse them. */
+const careServiceFields = (type: DocType): readonly string[] => (CARE_SERVICE_FIELDS as Partial<Record<DocType, readonly string[]>>)[type] ?? [];
+const selectListFor = (type: DocType, legacy = false, care = true, templates?: boolean, careServices?: boolean): string[] =>
   Object.keys(SCHEMA_BY_TYPE[type].shape)
-    .filter((field) => field !== 'type' && (!legacy || !LEGACY_OMISSIONS[type]?.includes(field)) && (care || !CARE_FIELDS[type]?.includes(field)) && (templates === true || !TEMPLATE_FIELDS[type]?.includes(field)))
+    .filter((field) => field !== 'type' && (!legacy || !LEGACY_OMISSIONS[type]?.includes(field)) && (care || !CARE_FIELDS[type]?.includes(field)) && (templates === true || !TEMPLATE_FIELDS[type]?.includes(field)) && (careServices === true || !careServiceFields(type).includes(field)))
     .map((field) => {
       const column = snakeCase(field);
       return column === field ? column : `${column} AS "${field}"`;
@@ -57,8 +59,8 @@ const entityTypeNotIn = (types: readonly string[]): string => types.map((t) => `
 const INSURANCE_PERMISSIONS = ['payment:refund', 'insurance_contract:read', 'insurance_contract:manage', 'insurance_contract:activate', 'cover:record', 'cover:verify', 'coverage:elect_self_pay', 'coverage:confirm'] as const satisfies readonly Permission[];
 const isInsuranceType = (type: DocType) => (INSURANCE_SYNCED_TYPES as readonly string[]).includes(type);
 
-const queryFor = (type: DocType, legacy: boolean, care = true, templates?: boolean, wardOnly = false, pharmacyOnly = false): string[] => {
-  const lines=[`SELECT ${selectListFor(type,legacy,care,templates).join(', ')}`,`FROM ${TABLE_FOR[type]}`,`WHERE facility_id = auth.parameter('${FACILITY_CLAIM}')`];
+const queryFor = (type: DocType, legacy: boolean, care = true, templates?: boolean, wardOnly = false, pharmacyOnly = false, careServices?: boolean): string[] => {
+  const lines=[`SELECT ${selectListFor(type,legacy,care,templates,careServices).join(', ')}`,`FROM ${TABLE_FOR[type]}`,`WHERE facility_id = auth.parameter('${FACILITY_CLAIM}')`];
   lines.push(legacy ? "  AND (auth.parameter('facility_contract') IS NULL OR auth.parameter('facility_contract') <> 1)" : "  AND auth.parameter('facility_contract') = 1");
   lines.push(care ? "  AND auth.parameter('clinical_workflow') = 1" : "  AND (auth.parameter('clinical_workflow') IS NULL OR auth.parameter('clinical_workflow') <> 1)");
   // Legacy screens assume complete demographics; they receive this record
@@ -78,6 +80,8 @@ const queryFor = (type: DocType, legacy: boolean, care = true, templates?: boole
   if (type === 'audit_event' || type === 'sync_rejection') lines.push(`  AND (auth.parameter('inpatient_workflow') = 1 OR (${entityTypeNotIn(['inpatient_event','bed_ready_event'])}))`);
   if (type === 'staff') lines.push("  AND (auth.parameter('inpatient_workflow') = 1 OR instr(additional_permissions, '\"admission:manage\"') = 0)");
   if (RESULT_TEMPLATE_TYPES.includes(type) || templates === true) lines.push("  AND auth.parameter('result_template_workflow') = 1");
+  if (careServices === true) lines.push("  AND auth.parameter('care_service') = 1");
+  if (careServices === false) lines.push("  AND (auth.parameter('care_service') IS NULL OR auth.parameter('care_service') <> 1)");
   if (templates === false) lines.push("  AND (auth.parameter('result_template_workflow') IS NULL OR auth.parameter('result_template_workflow') <> 1)");
   if (type === 'staff') lines.push("  AND (auth.parameter('result_template_workflow') = 1 OR instr(additional_permissions, '\"result_template:manage\"') = 0)");
   if (type === 'audit_event' || type === 'sync_rejection') lines.push(`  AND (auth.parameter('result_template_workflow') = 1 OR (${entityTypeNotIn(RESULT_TEMPLATE_TYPES)}))`);
@@ -132,14 +136,18 @@ export const buildSyncConfig = (): string => {
     if (isInsuranceType(type)) {
       lines.push('    queries:', '      - |', ...queryFor(type,false,true).map((line)=>`        ${line}`));
     } else if(FACILITY_DOCUMENT_TYPES.some((t)=>t===type)) {
-      lines.push('    queries:', '      - |', ...queryFor(type,false,true).map((line)=>`        ${line}`), '      - |', ...queryFor(type,false,false).map((line)=>`        ${line}`));
+      lines.push('    queries:');
+      for (const careServices of careServiceFields(type).length ? [true, false] : [undefined]) lines.push('      - |', ...queryFor(type,false,true,undefined,false,false,careServices).map((line)=>`        ${line}`));
+      lines.push('      - |', ...queryFor(type,false,false).map((line)=>`        ${line}`));
     } else {
       lines.push('    queries:');
       for (const care of [true,false]) for (const legacy of [false,true]) {
         if (type === 'sync_rejection' && legacy) continue;
         // Only the current clinical workflow can negotiate result templates.
         const split = Boolean(TEMPLATE_FIELDS[type]) && care && !legacy;
-        for (const templates of split ? [true, false] : [undefined]) lines.push('      - |', ...queryFor(type,legacy,care,templates).map((line)=>`        ${line}`));
+        // Only the current facility contract can negotiate care services.
+        const careSplit = careServiceFields(type).length > 0 && care && !legacy;
+        for (const templates of split ? [true, false] : [undefined]) for (const careServices of careSplit ? [true, false] : [undefined]) lines.push('      - |', ...queryFor(type,legacy,care,templates,false,false,careServices).map((line)=>`        ${line}`));
       }
     }
     if (type === 'sync_rejection') {

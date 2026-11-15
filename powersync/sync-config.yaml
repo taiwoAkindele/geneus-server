@@ -95,12 +95,22 @@ streams:
     auto_subscribe: true
     queries:
       - |
+        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", workflow_version AS "workflowVersion", patient_id AS "patientId", opened_on AS "openedOn", setting, appointment_id AS "appointmentId", collect_later_reason AS "collectLaterReason", visit_type AS "visitType", offering_id AS "offeringId", inpatient_context AS "inpatientContext"
+        FROM encounters
+        WHERE facility_id = auth.parameter('facility_id')
+          AND auth.parameter('facility_contract') = 1
+          AND auth.parameter('clinical_workflow') = 1
+          AND (inpatient_context IS NULL OR auth.parameter('ward_care') = 1)
+          AND auth.parameter('care_service') = 1
+          AND (auth.parameter('clinical_workflow') = 1 OR workflow_version IS NULL)
+      - |
         SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", workflow_version AS "workflowVersion", patient_id AS "patientId", opened_on AS "openedOn", setting, appointment_id AS "appointmentId", collect_later_reason AS "collectLaterReason", visit_type AS "visitType", inpatient_context AS "inpatientContext"
         FROM encounters
         WHERE facility_id = auth.parameter('facility_id')
           AND auth.parameter('facility_contract') = 1
           AND auth.parameter('clinical_workflow') = 1
           AND (inpatient_context IS NULL OR auth.parameter('ward_care') = 1)
+          AND (auth.parameter('care_service') IS NULL OR auth.parameter('care_service') <> 1)
           AND (auth.parameter('clinical_workflow') = 1 OR workflow_version IS NULL)
       - |
         SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", patient_id AS "patientId", opened_on AS "openedOn", setting, appointment_id AS "appointmentId", collect_later_reason AS "collectLaterReason", visit_type AS "visitType", inpatient_context AS "inpatientContext"
@@ -415,11 +425,19 @@ streams:
     auto_subscribe: true
     queries:
       - |
+        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", patient_id AS "patientId", reason, scheduled_for AS "scheduledFor", status, attendance, activity, visit_type AS "visitType", offering_id AS "offeringId", charge_ids AS "chargeIds", allocation
+        FROM appointments
+        WHERE facility_id = auth.parameter('facility_id')
+          AND auth.parameter('facility_contract') = 1
+          AND auth.parameter('clinical_workflow') = 1
+          AND auth.parameter('care_service') = 1
+      - |
         SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", patient_id AS "patientId", reason, scheduled_for AS "scheduledFor", status, attendance, activity, visit_type AS "visitType", charge_ids AS "chargeIds", allocation
         FROM appointments
         WHERE facility_id = auth.parameter('facility_id')
           AND auth.parameter('facility_contract') = 1
           AND auth.parameter('clinical_workflow') = 1
+          AND (auth.parameter('care_service') IS NULL OR auth.parameter('care_service') <> 1)
       - |
         SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", patient_id AS "patientId", reason, scheduled_for AS "scheduledFor", status, attendance, activity, visit_type AS "visitType", charge_ids AS "chargeIds"
         FROM appointments
@@ -616,11 +634,19 @@ streams:
     auto_subscribe: true
     queries:
       - |
+        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", allow_custom_investigations AS "allowCustomInvestigations", code, name, lga, state, time_zone AS "timeZone", time_zone_history AS "timeZoneHistory", workforce_policy AS "workforcePolicy", level, country, address, phone, currency
+        FROM facilities
+        WHERE facility_id = auth.parameter('facility_id')
+          AND auth.parameter('facility_contract') = 1
+          AND auth.parameter('clinical_workflow') = 1
+          AND auth.parameter('care_service') = 1
+      - |
         SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", allow_custom_investigations AS "allowCustomInvestigations", code, name, lga, state, time_zone AS "timeZone", time_zone_history AS "timeZoneHistory", workforce_policy AS "workforcePolicy", level
         FROM facilities
         WHERE facility_id = auth.parameter('facility_id')
           AND auth.parameter('facility_contract') = 1
           AND auth.parameter('clinical_workflow') = 1
+          AND (auth.parameter('care_service') IS NULL OR auth.parameter('care_service') <> 1)
       - |
         SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", code, name, lga, state, level
         FROM facilities
@@ -1350,11 +1376,19 @@ streams:
     auto_subscribe: true
     queries:
       - |
+        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", service_definition_id AS "serviceDefinitionId", unit_id AS "unitId", name, fee_item_id AS "feeItemId", location_ids AS "locationIds", delivery, required_actions AS "requiredActions", intake_policy AS "intakePolicy", time_zone AS "timeZone", configuration, revision, resource_readiness AS "resourceReadiness", visit_types AS "visitTypes"
+        FROM service_offerings
+        WHERE facility_id = auth.parameter('facility_id')
+          AND auth.parameter('facility_contract') = 1
+          AND auth.parameter('clinical_workflow') = 1
+          AND auth.parameter('care_service') = 1
+      - |
         SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", service_definition_id AS "serviceDefinitionId", unit_id AS "unitId", name, fee_item_id AS "feeItemId", location_ids AS "locationIds", delivery, required_actions AS "requiredActions", intake_policy AS "intakePolicy", time_zone AS "timeZone", configuration, revision, resource_readiness AS "resourceReadiness"
         FROM service_offerings
         WHERE facility_id = auth.parameter('facility_id')
           AND auth.parameter('facility_contract') = 1
           AND auth.parameter('clinical_workflow') = 1
+          AND (auth.parameter('care_service') IS NULL OR auth.parameter('care_service') <> 1)
       - |
         SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", service_definition_id AS "serviceDefinitionId", unit_id AS "unitId", name, location_ids AS "locationIds", delivery, required_actions AS "requiredActions", intake_policy AS "intakePolicy", time_zone AS "timeZone", configuration, revision, resource_readiness AS "resourceReadiness"
         FROM service_offerings
