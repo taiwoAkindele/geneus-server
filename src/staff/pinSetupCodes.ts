@@ -1,6 +1,6 @@
 import { pbkdf2Sync, randomBytes, randomInt, randomUUID } from 'node:crypto';
 import { normalizePinSetupCode, PinSetupCode, SCHEMA_VERSION } from '#shared';
-import type { Sql } from '../db/client.ts';
+import type { Sql, Tx } from '../db/client.ts';
 import { insertRecord } from '../db/records.ts';
 import { findRecord } from '../db/records.ts';
 import { mayApproveWorkforcePin, workforceEnforcementActive, type Facility, type Staff } from '#shared';
@@ -23,7 +23,10 @@ import { findStaffInFacility } from '../auth/staffAuthorization.ts';
 /** Same alphabet as enrollment codes: no I/O/0/1, because it is read out over the phone. */
 const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const CODE_LENGTH = 8;
-const CODE_TTL_MS = 24 * 60 * 60 * 1000;
+/** Read aloud or sent as an invitation, a code lives this long. */
+export const PIN_SETUP_CODE_TTL_MS = 24 * 60 * 60 * 1000;
+
+export const newPinSetupCode = (): string => Array.from({ length: CODE_LENGTH }, () => ALPHABET[randomInt(ALPHABET.length)]).join('');
 /** Kept low enough that a sub-$100 phone checks a code in well under a second. */
 export const PIN_SETUP_CODE_ITERATIONS = 100_000;
 const HASH_BYTES = 32;
@@ -43,8 +46,46 @@ export type PinSetupCodeOutcome =
   | { ok: false; error: 'unknown_staff' | 'clinical_review_required' };
 
 /**
+ * Why `issuedBy` may not give `staffId` a PIN code, or undefined when they may.
+ * A code read aloud and a code sent as an invitation hand over the same power,
+ * so both pass this one check. `clinicalReview` is false only when the code
+ * goes to the person's own proven inbox (an admin who forgot their PIN).
+ */
+export const pinAuthorityRefusal = async (
+  tx: Tx,
+  input: { facilityId: string; staffId: string; issuedBy: string; issuedFrom: string },
+  clinicalReview: boolean,
+): Promise<'unknown_staff' | 'clinical_review_required' | undefined> => {
+  const staff = await findStaffInFacility(tx, input.facilityId, input.staffId);
+  if (!staff || !staff.active) return 'unknown_staff';
+  const facility = await findRecord<Facility>(tx, 'facility', input.facilityId);
+  if (clinicalReview && workforceEnforcementActive(facility?.workforcePolicy, Date.now())) {
+    const actor = await findRecord<Staff>(tx, 'staff', input.issuedBy), target = await findRecord<Staff>(tx, 'staff', input.staffId);
+    const now = Date.now();
+    if (!actor || !target || !mayApproveWorkforcePin(actor, serverContext(actor, input.issuedFrom, now), await deriveAuthority(tx, actor, input.issuedFrom, now), target,
+      (await deriveAuthority(tx, target, input.issuedFrom, now)).snapshot, now)) return 'clinical_review_required';
+  }
+  return undefined;
+};
+
+/**
+ * Revokes every unused code read aloud for this person. The revocation syncs to
+ * the facility's devices; a device that has not synced since can still accept
+ * the old code offline until it does — the documented limit of offline checks.
+ */
+export const revokeOpenPinSetupCodes = async (tx: Tx, input: { facilityId: string; staffId: string; issuedBy: string }): Promise<void> => {
+  const now = new Date().toISOString();
+  await tx`
+    UPDATE pin_setup_codes
+    SET revoked_on = ${now}, updated_by = ${input.issuedBy}, updated_on = ${now}
+    WHERE facility_id = ${input.facilityId} AND staff_id = ${input.staffId}
+      AND used_on IS NULL AND revoked_on IS NULL`;
+};
+
+/**
  * Issues a code for `staffId` and revokes any earlier unused one for the same
- * person, in one transaction, so at most one code per person is ever live.
+ * person — and any invitation still waiting — in one transaction, so at most
+ * one code per person is ever live.
  */
 export const issuePinSetupCode = async (
   sql: Sql,
@@ -52,24 +93,16 @@ export const issuePinSetupCode = async (
 ): Promise<PinSetupCodeOutcome> =>
   sql.begin(async (tx): Promise<PinSetupCodeOutcome> => {
     await tx`SELECT id FROM facilities WHERE id=${input.facilityId} FOR UPDATE`;
-    const staff = await findStaffInFacility(tx, input.facilityId, input.staffId);
-    if (!staff || !staff.active) return { ok: false, error: 'unknown_staff' };
-    const facility = await findRecord<Facility>(tx, 'facility', input.facilityId);
-    if ((input.channel ?? 'admin') === 'admin' && workforceEnforcementActive(facility?.workforcePolicy, Date.now())) {
-      const actor = await findRecord<Staff>(tx, 'staff', input.issuedBy), target = await findRecord<Staff>(tx, 'staff', input.staffId);
-      const now = Date.now();
-      if (!actor || !target || !mayApproveWorkforcePin(actor, serverContext(actor, input.issuedFrom, now), await deriveAuthority(tx, actor, input.issuedFrom, now), target,
-        (await deriveAuthority(tx, target, input.issuedFrom, now)).snapshot, now)) return { ok: false, error: 'clinical_review_required' };
-    }
+    const refusal = await pinAuthorityRefusal(tx, input, (input.channel ?? 'admin') === 'admin');
+    if (refusal) return { ok: false, error: refusal };
 
     const now = new Date();
+    await revokeOpenPinSetupCodes(tx, input);
     await tx`
-      UPDATE pin_setup_codes
-      SET revoked_on = ${now.toISOString()}, updated_by = ${input.issuedBy}, updated_on = ${now.toISOString()}
-      WHERE facility_id = ${input.facilityId} AND staff_id = ${input.staffId}
-        AND used_on IS NULL AND revoked_on IS NULL`;
+      UPDATE staff_invitations SET revoked_on = now(), revoked_by = ${input.issuedBy}, revoked_reason = 'pin_code_issued'
+      WHERE facility_id = ${input.facilityId} AND staff_id = ${input.staffId} AND accepted_on IS NULL AND revoked_on IS NULL`;
 
-    const code = Array.from({ length: CODE_LENGTH }, () => ALPHABET[randomInt(ALPHABET.length)]).join('');
+    const code = newPinSetupCode();
     const codeSalt = randomBytes(16).toString('base64');
     const record = PinSetupCode.parse({
       id: `pin_setup_code:${randomUUID()}`,
@@ -83,7 +116,7 @@ export const issuePinSetupCode = async (
       codeHash: hashPinSetupCode(code, codeSalt, PIN_SETUP_CODE_ITERATIONS),
       codeSalt,
       codeIterations: PIN_SETUP_CODE_ITERATIONS,
-      expiresOn: new Date(now.getTime() + CODE_TTL_MS).toISOString(),
+      expiresOn: new Date(now.getTime() + PIN_SETUP_CODE_TTL_MS).toISOString(),
     });
     await insertRecord(tx, 'pin_setup_code', record);
     await recordAuditEvent(tx, {

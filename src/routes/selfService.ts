@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { FacilityDetailsUpdate, FacilityTimeZone, OwnEmailCodeRequest, OwnEmailConfirm, hasRole, staffPermissions, type ApiErrorBody, type OwnEmailStatus, type Staff, type StaffEmailRequestView } from '#shared';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
@@ -9,7 +8,7 @@ import type { Sql } from '../db/client.ts';
 import { findRecord } from '../db/records.ts';
 import { checkVerificationCode, consumeVerification, createVerificationCode, findStaffEmail, saveStaffEmail, staffEmailSubject, verificationEmail } from '../email/verifications.ts';
 import { maskEmail, type Mailer } from '../lib/email.ts';
-import { requestStaff } from '../auth/staffSessions.ts';
+import { requestStaff, verifiedRequestStaff } from '../auth/staffSessions.ts';
 import { recordFacilityTimeZone, TimeZoneRefusal, timeZoneChanges } from '../facility/timeZone.ts';
 import { activationBlockers } from '../insurance/contracts.ts';
 
@@ -96,7 +95,7 @@ export const registerSelfServiceRoutes = (app: FastifyInstance, sql: Sql, mailer
     const identity = await authenticateDevice(sql, request, reply); if (!identity) return;
     const body = z.strictObject({ staffId: z.string().min(1) }).safeParse(request.body);
     if (!body.success || !(await activeStaff(identity.facilityId, body.data.staffId))) return refuse(reply, 404, 'unknown_staff', 'No such member of staff here');
-    const session = await requestStaff(sql, identity, request.headers);
+    const session = await verifiedRequestStaff(sql, identity, request.headers);
     const own = session?.id === body.data.staffId;
     const email = await findStaffEmail(sql, identity.facilityId, body.data.staffId);
     const pending = await pendingFor(identity.facilityId, body.data.staffId);
@@ -121,10 +120,11 @@ export const registerSelfServiceRoutes = (app: FastifyInstance, sql: Sql, mailer
   });
 
   /**
-   * Step two. Someone already verified by their current email changes it at
-   * once. Otherwise the proven address waits for a verified administrator to
-   * confirm it belongs to this person: the device alone cannot prove who is
-   * holding it, so no one can claim a colleague's identity with an inbox.
+   * Step two. The address belongs to whoever proved they can read it AND is
+   * this person by the server's own proof — their PIN-proven or emailed-code
+   * session, never a staff id the device asserts. Proving an address shows
+   * possession of the inbox only; it grants no permission. A request left from
+   * the retired administrator-confirmation flow is superseded by it.
    */
   app.post('/staff/me/email', async (request, reply) => {
     const identity = await authenticateDevice(sql, request, reply); if (!identity) return;
@@ -134,30 +134,34 @@ export const registerSelfServiceRoutes = (app: FastifyInstance, sql: Sql, mailer
     if (!(await activeStaff(identity.facilityId, staffId))) return refuse(reply, 404, 'unknown_staff', 'No such member of staff here');
     const proof = await checkVerificationCode(sql, { purpose: 'staff_email', subject: staffEmailSubject(identity.facilityId, staffId), email, code: body.data.code });
     if (!proof) return refuse(reply, 403, 'invalid_email_code', 'The code is not right, or has expired — ask for a new one');
-    const session = await requestStaff(sql, identity, request.headers);
-    // The address belongs to whoever proved it AND is signed in as this person: the server verified both.
+    const session = await verifiedRequestStaff(sql, identity, request.headers);
     if (session?.id !== staffId) return refuse(reply, 403, 'staff_session_required', 'Confirm your PIN to change your email');
-    const outcome = await sql.begin(async (tx) => {
-      if (!(await consumeVerification(tx, proof))) return 'spent' as const;
-      if (session?.id === staffId) {
-        await saveStaffEmail(tx, identity.facilityId, staffId, email);
-        await tx`UPDATE staff_email_requests SET status = 'superseded', decided_on = now() WHERE facility_id = ${identity.facilityId} AND staff_id = ${staffId} AND status = 'pending'`;
-        await recordAuditEvent(tx, { facilityId: identity.facilityId, deviceId: identity.deviceId, actorStaffId: staffId, action: 'update', entityType: 'staff', entityId: staffId, metadata: { context: 'staff_email_changed', email: maskEmail(email) } });
-        return 'verified' as const;
-      }
+    const saved = await sql.begin(async (tx) => {
+      if (!(await consumeVerification(tx, proof))) return false;
+      await saveStaffEmail(tx, identity.facilityId, staffId, email);
       await tx`UPDATE staff_email_requests SET status = 'superseded', decided_on = now() WHERE facility_id = ${identity.facilityId} AND staff_id = ${staffId} AND status = 'pending'`;
-      const id = `staff_email_request:${randomUUID()}`;
-      await tx`INSERT INTO staff_email_requests (id, facility_id, staff_id, email, requested_from) VALUES (${id}, ${identity.facilityId}, ${staffId}, ${email}, ${identity.deviceId})`;
-      await recordAuditEvent(tx, { facilityId: identity.facilityId, deviceId: identity.deviceId, actorStaffId: staffId, action: 'create', entityType: 'staff', entityId: staffId, metadata: { context: 'staff_email_requested', requestId: id, email: maskEmail(email) } });
-      return 'pending_approval' as const;
+      await recordAuditEvent(tx, { facilityId: identity.facilityId, deviceId: identity.deviceId, actorStaffId: staffId, action: 'update', entityType: 'staff', entityId: staffId, metadata: { context: 'staff_email_changed', email: maskEmail(email) } });
+      return true;
     });
-    if (outcome === 'spent') return refuse(reply, 403, 'invalid_email_code', 'The code was already used — ask for a new one');
-    return { status: outcome };
+    if (!saved) return refuse(reply, 403, 'invalid_email_code', 'The code was already used — ask for a new one');
+    return { status: 'verified' as const };
   });
 
-  /** Addresses waiting for an administrator to confirm who they belong to. */
+  /**
+   * Requests left from the retired administrator-confirmation flow, kept until
+   * each is decided. Deciding binds an address, so only a server-verified
+   * administrator may list or decide them.
+   */
+  const provenAdministrator = async (request: FastifyRequest, reply: FastifyReply) => {
+    const identity = await authenticateDevice(sql, request, reply);
+    if (!identity) return;
+    const staff = await verifiedRequestStaff(sql, identity, request.headers);
+    if (!staff) { refuse(reply, 403, 'staff_session_required', 'Confirm your PIN to continue'); return; }
+    return { identity, staff };
+  };
+
   app.post('/staff/email-requests/list', async (request, reply) => {
-    const who = await verifiedStaff(request, reply); if (!who) return;
+    const who = await provenAdministrator(request, reply); if (!who) return;
     if (!staffPermissions(who.staff).includes('staff:manage')) return refuse(reply, 403, 'forbidden', 'Confirming staff email addresses needs staff:manage');
     const rows = await sql<{ id: string; staff_id: string; full_name: string; email: string; requested_on: Date; current: string | null }[]>`
       SELECT r.id, r.staff_id, s.full_name, r.email, r.requested_on, c.email AS current FROM staff_email_requests r JOIN staff s ON s.facility_id = r.facility_id AND s.id = r.staff_id
@@ -167,7 +171,7 @@ export const registerSelfServiceRoutes = (app: FastifyInstance, sql: Sql, mailer
   });
 
   app.post<{ Params: { id: string } }>('/staff/email-requests/:id/decide', async (request, reply) => {
-    const who = await verifiedStaff(request, reply); if (!who) return;
+    const who = await provenAdministrator(request, reply); if (!who) return;
     if (!staffPermissions(who.staff).includes('staff:manage')) return refuse(reply, 403, 'forbidden', 'Confirming staff email addresses needs staff:manage');
     const body = z.strictObject({ decision: z.enum(['approve', 'reject']), note: z.string().trim().max(500).optional() }).safeParse(request.body);
     if (!body.success) return refuse(reply, 400, 'invalid_request', 'Approve or reject');

@@ -67,6 +67,9 @@ const RATE_LIMITED_ROUTES = new Set([
   'POST /staff/:staffId/pin-codes/email',
   'POST /workforce/access/code',
   'POST /workforce/access/verify',
+  // Sends an invitation email, or checks an invitation code. (Each also has limits counted in PostgreSQL.)
+  'POST /staff/:staffId/invitations',
+  'POST /staff/:staffId/invitations/check',
 ]);
 const RATE_LIMIT_PER_MINUTE = 10;
 

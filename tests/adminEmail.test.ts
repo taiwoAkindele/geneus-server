@@ -4,7 +4,7 @@ import type { FastifyInstance } from 'fastify';
 import type { FacilityRegistrationResult, PinSetupCode, Staff } from '#shared';
 import { fromRow } from '../src/db/records.ts';
 import { hashPinSetupCode } from '../src/staff/pinSetupCodes.ts';
-import { addStaff, asDevice, lastCodeSentTo, mailbox, registerScratchFacility, scratchDatabase, testApp, type ScratchDatabase } from './postgres.ts';
+import { addStaff, asDevice, lastCodeSentTo, mailbox, registerScratchFacility, scratchDatabase, staffSessionFor, testApp, type ScratchDatabase } from './postgres.ts';
 
 /**
  * A facility admin's recovery email, and the PIN code sent to it (SCHEMA.md
@@ -19,11 +19,12 @@ describe('admin recovery email', () => {
   let b: FacilityRegistrationResult;
   let nurse: Staff;
 
-  const asA = () => asDevice(a.device.credential);
-  const requestCode = (staffId: string, email: string, requestedBy = staffId) =>
-    app.inject({ method: 'POST', url: `/staff/${staffId}/email/code`, headers: asA(), payload: { email, requestedBy } });
-  const confirm = (staffId: string, payload: Record<string, unknown>) =>
-    app.inject({ method: 'POST', url: `/staff/${staffId}/email`, headers: asA(), payload: { requestedBy: staffId, ...payload } });
+  /** As the person named in `requestedBy`, in their own PIN-proven session — the only way the server accepts a recovery email. */
+  const provenAs = async (credential: string, staffId: string) => ({ ...asDevice(credential), 'x-staff-session': (await staffSessionFor(app, credential, staffId)) ?? '' });
+  const requestCode = async (staffId: string, email: string, requestedBy = staffId) =>
+    app.inject({ method: 'POST', url: `/staff/${staffId}/email/code`, headers: await provenAs(a.device.credential, requestedBy), payload: { email, requestedBy } });
+  const confirm = async (staffId: string, payload: Record<string, unknown>) =>
+    app.inject({ method: 'POST', url: `/staff/${staffId}/email`, headers: await provenAs(a.device.credential, staffId), payload: { requestedBy: staffId, ...payload } });
   const emailPinCode = (staffId: string, credential = a.device.credential) =>
     app.inject({ method: 'POST', url: `/staff/${staffId}/pin-codes/email`, headers: asDevice(credential) });
   const contactOf = async (staffId: string) =>
@@ -102,7 +103,7 @@ describe('admin recovery email', () => {
 
     it('adds a first email with the new address\'s code alone', async () => {
       await db.sql`DELETE FROM staff_contacts WHERE staff_id = ${b.admin.id}`;
-      const asB = asDevice(b.device.credential);
+      const asB = await provenAs(b.device.credential, b.admin.id);
       await app.inject({ method: 'POST', url: `/staff/${b.admin.id}/email/code`, headers: asB, payload: { email: 'first@example.org', requestedBy: b.admin.id } });
       const before = mailbox.length;
 

@@ -5,7 +5,7 @@ import { AuthoritySnapshot, EncounterEntry, type SyncRejection, authoritySignatu
 import { findRecord, fromRow, insertRecord, toRow } from '../src/db/records.ts';
 import { applyGovernanceRecord, provisionWorkforceContact } from '../src/workforce/operations.ts';
 import { workforcePayloadHash } from '../src/workforce/digests.ts';
-import { addStaff, asDevice, lastCodeSentTo, registerScratchFacility, scratchDatabase, signer, type ScratchDatabase } from './postgres.ts';
+import { addStaff, asDevice, lastCodeSentTo, registerScratchFacility, scratchDatabase, signer, staffSessionFor, type ScratchDatabase } from './postgres.ts';
 import { put, setupWorkforce } from './workforceFixtures.ts';
 const privateLogin = async (f: Awaited<ReturnType<typeof setupWorkforce>>, staffId = f.facility.admin.id, email = 'admin@example.org') => {
   const code = await f.app.inject({ method: 'POST', url: '/workforce/access/code', headers: asDevice(f.facility.device.credential), payload: { staffId } });
@@ -70,10 +70,11 @@ describe('workforce evidence and clinical security', { timeout: 120000 }, () => 
     try {
       const admin = await addStaff(db.sql, f.facility, { role: 'facility_admin' });
       await f.enable();
-      const denied = await f.app.inject({ method: 'POST', url: `/staff/${f.worker.id}/pin-codes`, headers: asDevice(f.facility.device.credential), payload: { issuedBy: admin.id } });
+      const as = async (staffId: string) => ({ ...asDevice(f.facility.device.credential), 'x-staff-session': (await staffSessionFor(f.app, f.facility.device.credential, staffId))! });
+      const denied = await f.app.inject({ method: 'POST', url: `/staff/${f.worker.id}/pin-codes`, headers: await as(admin.id), payload: { issuedBy: admin.id } });
       assert.equal(denied.statusCode, 403);
       assert.equal(denied.json().error, 'clinical_review_required');
-      const allowed = await f.app.inject({ method: 'POST', url: `/staff/${f.worker.id}/pin-codes`, headers: asDevice(f.facility.device.credential), payload: { issuedBy: f.facility.admin.id } });
+      const allowed = await f.app.inject({ method: 'POST', url: `/staff/${f.worker.id}/pin-codes`, headers: await as(f.facility.admin.id), payload: { issuedBy: f.facility.admin.id } });
       assert.equal(allowed.statusCode, 201);
     }
     finally {
