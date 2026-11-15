@@ -119,10 +119,11 @@ describe('insurance foundation', () => {
       assert.equal((await call('/insurance/setup', { state: 'active' }, f.admin.id)).statusCode, 400, 'active is not a choice here');
       assert.equal((await call('/insurance/setup', { state: 'off' }, officer.id)).statusCode, 403, 'the officer does not switch insurance');
     });
-    it('refuses contract access to a staff id the device merely asserts', async () => {
-      const response = await app.inject({ method: 'POST', url: '/insurance/contracts/list', headers: { ...asDevice(f.device.credential), 'x-actor-staff-id': officer.id }, payload: {} });
-      assert.equal(response.statusCode, 403);
-      assert.equal(response.json().error, 'staff_session_required');
+    it('acts for the person signed in on the enrolled device, with their own permissions, and nobody else', async () => {
+      const as = (staffId: string) => app.inject({ method: 'POST', url: '/insurance/contracts/list', headers: { ...asDevice(f.device.credential), 'x-actor-staff-id': staffId }, payload: {} });
+      assert.equal((await as(officer.id)).statusCode, 200, 'no separate PIN step');
+      assert.equal((await as('staff:nobody')).json().error, 'staff_session_required', 'an unknown person is refused');
+      assert.equal((await app.inject({ method: 'POST', url: '/insurance/contracts/list', headers: asDevice(f.device.credential), payload: {} })).statusCode, 403, 'someone must be signed in');
       assert.equal((await call('/insurance/contracts/list', {}, officer.id)).statusCode, 200);
     });
     it('never gives contract access to supervisors or cashiers, and refunds only to those allowed', async () => {

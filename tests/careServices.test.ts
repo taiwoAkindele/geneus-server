@@ -114,5 +114,12 @@ describe('care services on bookings and visits', () => {
     it('refuses anyone but an administrator', async () => {
       assert.equal((await save({ ...details, name: 'Not allowed' }, nurse.id)).statusCode, 403);
     });
+    it('acts for the person signed in on the enrolled device without a PIN step, never for someone outside the facility', async () => {
+      const as = (staffId: string) => app.inject({ method: 'POST', url: '/facility/details', payload: { ...details, phone: '+234 800 111 2222' }, headers: { ...asDevice(f.device.credential), 'x-actor-staff-id': staffId } });
+      assert.equal((await as(f.admin.id)).statusCode, 200);
+      assert.equal((await findRecord<Facility>(db.sql, 'facility', f.facility.id))!.phone, '+234 800 111 2222');
+      assert.equal((await as(nurse.id)).statusCode, 403, 'the nurse’s own role still applies');
+      assert.equal((await as(other.admin.id)).statusCode, 403, 'another facility’s administrator is not a member here');
+    });
   });
 });
