@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import { FacilityTimeZone, OwnEmailCodeRequest, OwnEmailConfirm, hasRole, staffPermissions, type ApiErrorBody, type OwnEmailStatus, type Staff, type StaffEmailRequestView } from '#shared';
+import { FacilityDetailsUpdate, FacilityTimeZone, OwnEmailCodeRequest, OwnEmailConfirm, hasRole, staffPermissions, type ApiErrorBody, type OwnEmailStatus, type Staff, type StaffEmailRequestView } from '#shared';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { recordAuditEvent } from '../audit/auditEvents.ts';
 import { authenticateDevice } from '../auth/deviceAuth.ts';
@@ -58,6 +58,28 @@ export const registerSelfServiceRoutes = (app: FastifyInstance, sql: Sql, mailer
       if (cause instanceof TimeZoneRefusal) return refuse(reply, 409, cause.code, cause.message);
       throw cause;
     }
+  });
+
+  /**
+   * A facility administrator corrects what the hospital says about itself.
+   * The code is its permanent identity: not part of the request, never changed.
+   */
+  app.post('/facility/details', async (request, reply) => {
+    const who = await verifiedStaff(request, reply); if (!who) return;
+    if (!hasRole(who.staff, 'facility_admin')) return refuse(reply, 403, 'forbidden', 'Only a facility administrator changes the facility details');
+    const body = FacilityDetailsUpdate.safeParse(request.body);
+    if (!body.success) return refuse(reply, 400, 'invalid_request', body.error.issues.map((i) => i.message).join('; '));
+    const d = body.data, facilityId = who.identity.facilityId;
+    const [before] = await sql`SELECT name, level, state, lga, country, address, phone, currency FROM facilities WHERE id = ${facilityId}`;
+    if (!before) return refuse(reply, 404, 'not_found', 'Facility not found');
+    const next = { name: d.name, level: d.level, state: d.state, lga: d.lga, country: d.country, address: d.address || null, phone: d.phone || null, currency: d.currency };
+    const changed = Object.keys(next).filter((key) => (before[key] ?? null) !== next[key as keyof typeof next]);
+    if (changed.length) await sql.begin(async (tx) => {
+      await tx`UPDATE facilities SET name = ${next.name}, level = ${next.level}, state = ${next.state}, lga = ${next.lga}, country = ${next.country}, address = ${next.address}, phone = ${next.phone}, currency = ${next.currency},
+        updated_by = ${who.staff.id}, updated_on = now() WHERE id = ${facilityId}`;
+      await recordAuditEvent(tx, { facilityId, deviceId: who.identity.deviceId, actorStaffId: who.staff.id, action: 'update', entityType: 'facility', entityId: facilityId, metadata: { context: 'facility_details', changed: changed.join(',') } });
+    });
+    return { changed };
   });
 
   /* ---------------- Staff email self-service ---------------- */

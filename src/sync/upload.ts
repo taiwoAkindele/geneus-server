@@ -41,7 +41,8 @@ import {
   type UploadMutation,
   type UploadRejection,
   type UploadRequest,
-  type UploadResponse, isConfigurationWrite } from '#shared';
+  type UploadResponse, isConfigurationWrite, careServiceVisitIssues } from '#shared';
+import { recordsInFacility } from '../workforce/records.ts';
 import {
   CHECK_VIOLATION,
   FOREIGN_KEY_VIOLATION,
@@ -449,6 +450,11 @@ const evaluatePut = async ({ tx, identity, uploadedAt }: Context, mutation: Uplo
   }
 
   if (record.type === 'appointment' && ((record.activity?.length ?? 0) > 0 || (record.attendance && record.attendance !== 'booked'))) return refuse('validation', 'Create a booking before recording attendance changes');
+  if ((record.type === 'appointment' || record.type === 'encounter') && record.offeringId) {
+    const [offerings, definitions] = await Promise.all([recordsInFacility(tx, identity.facilityId, 'service_offering'), recordsInFacility(tx, identity.facilityId, 'service_definition')]);
+    const issues = careServiceVisitIssues(record, { offerings, definitions }, { recorded: true });
+    if (issues.length) return refuse('validation', issues.join('; '));
+  }
   if (record.type === 'encounter' && record.appointmentId) {
     // Use the same lock as attendance changes so cancellation cannot race a visit.
     await tx`SELECT id FROM appointments WHERE facility_id = ${identity.facilityId} AND id = ${record.appointmentId} FOR UPDATE`;

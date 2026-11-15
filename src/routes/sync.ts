@@ -39,7 +39,7 @@ export const registerSyncRoutes = (app: FastifyInstance, sql: Sql, config: Confi
     const identity = await authenticateDevice(sql, request, reply);
     if (!identity) return;
 
-    const version = z.object({ insuranceWorkflowVersion: z.literal(1).optional(), pharmacyWorkflowVersion: z.literal(1).optional(), wardCareVersion: z.literal(1).optional(), resultTemplateWorkflowVersion: z.literal(1).optional(), documentWorkflowVersion:z.literal(1).optional(),inpatientWorkflowVersion: z.literal(1).optional(), clinicalWorkflowVersion: z.literal(1).optional(), facilityContractVersion: z.number().int().optional(), schemaVersion: z.number().int().optional(), policyVersion: z.number().int().optional(), pendingMutationCount: z.number().int().nonnegative().optional() }).safeParse(request.body ?? {});
+    const version = z.object({ careServiceVersion: z.literal(1).optional(), insuranceWorkflowVersion: z.literal(1).optional(), pharmacyWorkflowVersion: z.literal(1).optional(), wardCareVersion: z.literal(1).optional(), resultTemplateWorkflowVersion: z.literal(1).optional(), documentWorkflowVersion:z.literal(1).optional(),inpatientWorkflowVersion: z.literal(1).optional(), clinicalWorkflowVersion: z.literal(1).optional(), facilityContractVersion: z.number().int().optional(), schemaVersion: z.number().int().optional(), policyVersion: z.number().int().optional(), pendingMutationCount: z.number().int().nonnegative().optional() }).safeParse(request.body ?? {});
     if (!version.success) return reply.code(400).send({ error: 'invalid_request', message: 'Invalid client compatibility metadata' } satisfies ApiErrorBody);
     if (version.data.pharmacyWorkflowVersion === 1 && (version.data.clinicalWorkflowVersion !== 1 || version.data.facilityContractVersion !== 1 || (version.data.schemaVersion ?? 0) < 5 || (version.data.policyVersion ?? 0) < 13)) return reply.code(409).send({ error: 'upgrade_required', message: 'Pharmacy requires the current clinical contract' });
     if (version.data.wardCareVersion === 1 && (version.data.inpatientWorkflowVersion !== 1 || version.data.clinicalWorkflowVersion !== 1 || version.data.facilityContractVersion !== 1 || (version.data.schemaVersion ?? 0) < 5 || (version.data.policyVersion ?? 0) < 13)) return reply.code(409).send({ error: 'upgrade_required', message: 'Ward care requires the current inpatient and clinical contracts' });
@@ -48,6 +48,7 @@ export const registerSyncRoutes = (app: FastifyInstance, sql: Sql, config: Confi
     if (version.data.resultTemplateWorkflowVersion === 1 && (version.data.clinicalWorkflowVersion !== 1 || version.data.facilityContractVersion !== 1 || (version.data.schemaVersion ?? 0) < 5 || (version.data.policyVersion ?? 0) < 13)) return reply.code(409).send({ error: 'upgrade_required', message: 'Result templates require the current clinical workflow, facility contract 1, schema 5 and policy 13' } satisfies ApiErrorBody);
     if (version.data.clinicalWorkflowVersion === 1 && (version.data.facilityContractVersion !== 1 || (version.data.schemaVersion ?? 0) < 4 || (version.data.policyVersion ?? 0) < 10)) return reply.code(409).send({ error: 'upgrade_required', message: 'The current clinical workflow requires facility contract 1, schema 4 and policy 10' } satisfies ApiErrorBody);
     if (version.data.insuranceWorkflowVersion === 1 && (version.data.facilityContractVersion !== 1 || (version.data.schemaVersion ?? 0) < 5 || (version.data.policyVersion ?? 0) < 14)) return reply.code(409).send({ error: 'upgrade_required', message: 'Insurance requires facility contract 1, schema 5 and policy 14' } satisfies ApiErrorBody);
+    if (version.data.careServiceVersion === 1 && (version.data.facilityContractVersion !== 1 || (version.data.schemaVersion ?? 0) < 4)) return reply.code(409).send({ error: 'upgrade_required', message: 'Care services require facility contract 1 and schema 4' } satisfies ApiErrorBody);
     if (version.data.facilityContractVersion !== undefined && version.data.facilityContractVersion !== 1) return reply.code(409).send({ error: 'upgrade_required', message: 'This server supports facility contract version one' } satisfies ApiErrorBody);
     await sql.begin(async (tx) => {
       await tx`SELECT id FROM facilities WHERE id=${identity.facilityId} FOR UPDATE`;
@@ -77,6 +78,7 @@ export const registerSyncRoutes = (app: FastifyInstance, sql: Sql, config: Confi
       documentWorkflowVersion: version.data.documentWorkflowVersion,
       resultTemplateWorkflowVersion: version.data.resultTemplateWorkflowVersion,
       insuranceWorkflowVersion: insurance,
+      careServiceVersion: version.data.careServiceVersion,
     });
     await touchDevice(sql, identity.deviceId);
 
@@ -92,6 +94,7 @@ export const registerSyncRoutes = (app: FastifyInstance, sql: Sql, config: Confi
       documentWorkflowVersion: version.data.documentWorkflowVersion,
       resultTemplateWorkflowVersion: version.data.resultTemplateWorkflowVersion,
       insuranceWorkflowVersion: insurance,
+      careServiceVersion: version.data.careServiceVersion,
       ...(insurance ? { insuranceBillingActive: state === 'active', insuranceBillingPeriods: periods.slice(-200) } : {}),
     };
     return response;
