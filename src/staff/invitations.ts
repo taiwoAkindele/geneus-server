@@ -1,7 +1,10 @@
-import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
-import type { Sql, Tx } from '../db/client.ts';
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
+import { isPostgresError, UNIQUE_VIOLATION, type Sql, type Tx } from '../db/client.ts';
 import { recordAuditEvent } from '../audit/auditEvents.ts';
+import type { DeviceCredential } from '#shared';
+import { authorizeStaff } from '../auth/staffAuthorization.ts';
 import type { DeviceIdentity } from '../devices/credentials.ts';
+import { claimCodeAndEnroll, issueEnrollmentCode } from '../devices/enrollment.ts';
 import { findStaffEmail, saveStaffEmail } from '../email/verifications.ts';
 import { EmailNotSent, maskEmail, type Mailer } from '../lib/email.ts';
 import { hashPinSetupCode, newPinSetupCode, PIN_SETUP_CODE_ITERATIONS, PIN_SETUP_CODE_TTL_MS, pinAuthorityRefusal, revokeOpenPinSetupCodes } from './pinSetupCodes.ts';
@@ -47,17 +50,19 @@ export type InvitationView = {
   acceptedOn?: string;
   revokedOn?: string;
   revokedReason?: 'resent' | 'revoked' | 'pin_code_issued';
+  /** Whether the link may enrol one new device, chosen by an administrator who may enrol devices. */
+  allowsNewDevice: boolean;
 };
 
 type InvitationRow = {
   id: string; channel: 'email'; destination: string; failed_attempts: number;
   created_on: Date; expires_on: Date; delivery_status: InvitationDelivery;
-  accepted_on: Date | null; revoked_on: Date | null; revoked_reason: InvitationView['revokedReason'] | null;
+  accepted_on: Date | null; revoked_on: Date | null; revoked_reason: InvitationView['revokedReason'] | null; allows_new_device: boolean;
 };
 
 const iso = (value: Date | string) => new Date(value).toISOString();
 
-const statusOf = (row: InvitationRow, now = Date.now()): InvitationStatus =>
+const statusOf = (row: Pick<InvitationRow, 'accepted_on' | 'revoked_on' | 'failed_attempts' | 'expires_on'>, now = Date.now()): InvitationStatus =>
   row.accepted_on ? 'accepted'
     : row.revoked_on ? 'revoked'
       : row.failed_attempts >= INVITATION_LIMITS.failedAttempts ? 'locked'
@@ -75,13 +80,13 @@ const viewOf = (row: InvitationRow, verifiedEmail?: string): InvitationView => {
   return {
     id: row.id, channel: row.channel,
     destination: proven ? maskEmail(row.destination) : row.destination,
-    status, delivery: row.delivery_status, createdOn: iso(row.created_on), expiresOn: iso(row.expires_on),
+    status, delivery: row.delivery_status, createdOn: iso(row.created_on), expiresOn: iso(row.expires_on), allowsNewDevice: row.allows_new_device,
     ...(row.accepted_on ? { acceptedOn: iso(row.accepted_on) } : {}),
     ...(row.revoked_on ? { revokedOn: iso(row.revoked_on), ...(row.revoked_reason ? { revokedReason: row.revoked_reason } : {}) } : {}),
   };
 };
 
-const VIEW_COLUMNS = ['id', 'channel', 'destination', 'failed_attempts', 'created_on', 'expires_on', 'delivery_status', 'accepted_on', 'revoked_on', 'revoked_reason'];
+const VIEW_COLUMNS = ['id', 'channel', 'destination', 'failed_attempts', 'created_on', 'expires_on', 'delivery_status', 'accepted_on', 'revoked_on', 'revoked_reason', 'allows_new_device'];
 
 const same = (a: string, b: string) => { const x = Buffer.from(a), y = Buffer.from(b); return x.length === y.length && timingSafeEqual(x, y); };
 
@@ -95,19 +100,24 @@ export type InvitationRefusal =
   | 'too_soon' | 'daily_limit' | 'facility_limit';
 
 export type IssuedInvitation =
-  | { ok: true; code: string; destination: string; invitation: InvitationView; staffName: string; facilityName: string; verifiedEmail?: string }
+  | { ok: true; code: string; linkToken: string; destination: string; invitation: InvitationView; staffName: string; facilityName: string; verifiedEmail?: string }
   | { ok: false; error: InvitationRefusal; retryAfterSeconds?: number };
+
+/** A link token is 256 random bits: unguessable, so a fast hash is enough to keep it out of the database. */
+const newLinkToken = () => randomBytes(32).toString('base64url');
+const linkHash = (token: string) => createHash('sha256').update(token.trim()).digest('hex');
 
 /**
  * Creates an invitation for `staffId` to `email`. In one transaction, under the
  * facility row lock so limits are counted exactly: checks authority as for a
  * PIN code, the contact rules and the limits; revokes any code read aloud and
- * any earlier invitation; stores the new code's hash. Sending is a separate
- * step (`deliverInvitation`), after commit.
+ * any earlier invitation; stores the hashes of the new code and link. Sending
+ * is a separate step (`deliverInvitation`), after commit. `allowNewDevice` is
+ * only passed by a route that has checked the sender may enrol devices.
  */
 export const issueStaffInvitation = async (
   sql: Sql,
-  input: { facilityId: string; staffId: string; issuedBy: string; issuedFrom: string; email: string },
+  input: { facilityId: string; staffId: string; issuedBy: string; issuedFrom: string; email: string; allowNewDevice?: boolean },
 ): Promise<IssuedInvitation> =>
   sql.begin(async (tx): Promise<IssuedInvitation> => {
     const [facility] = await tx<{ name: string }[]>`SELECT name FROM facilities WHERE id = ${input.facilityId} FOR UPDATE`;
@@ -144,32 +154,39 @@ export const issueStaffInvitation = async (
       WHERE facility_id = ${input.facilityId} AND staff_id = ${input.staffId} AND accepted_on IS NULL AND revoked_on IS NULL`;
 
     const code = newPinSetupCode();
+    const linkToken = newLinkToken();
     const salt = randomBytes(16).toString('base64');
     const id = `staff_invitation:${randomUUID()}`;
     const expiresOn = new Date(Date.now() + PIN_SETUP_CODE_TTL_MS).toISOString();
     const [row] = await tx<InvitationRow[]>`
-      INSERT INTO staff_invitations (id, facility_id, staff_id, channel, destination, code_hash, code_salt, code_iterations, created_by, created_from, expires_on)
+      INSERT INTO staff_invitations (id, facility_id, staff_id, channel, destination, code_hash, code_salt, code_iterations, created_by, created_from, expires_on, link_hash, allows_new_device)
       VALUES (${id}, ${input.facilityId}, ${input.staffId}, 'email', ${email}, ${hashPinSetupCode(code, salt, PIN_SETUP_CODE_ITERATIONS)}, ${salt},
-        ${PIN_SETUP_CODE_ITERATIONS}, ${input.issuedBy}, ${input.issuedFrom}, ${expiresOn})
+        ${PIN_SETUP_CODE_ITERATIONS}, ${input.issuedBy}, ${input.issuedFrom}, ${expiresOn}, ${linkHash(linkToken)}, ${input.allowNewDevice === true})
       RETURNING ${tx(VIEW_COLUMNS)}`;
     const [staff] = await tx<{ full_name: string }[]>`SELECT full_name FROM staff WHERE facility_id = ${input.facilityId} AND id = ${input.staffId}`;
     await recordAuditEvent(tx, {
       facilityId: input.facilityId, deviceId: input.issuedFrom, actorStaffId: input.issuedBy, action: 'create', entityType: 'staff', entityId: input.staffId,
-      metadata: { context: 'staff_invitation_created', invitationId: id, channel: 'email', email: maskEmail(email), resend: counts.since_last_ms !== null },
+      metadata: { context: 'staff_invitation_created', invitationId: id, channel: 'email', email: maskEmail(email), resend: counts.since_last_ms !== null, allowsNewDevice: input.allowNewDevice === true },
     });
-    return { ok: true, code, destination: email, invitation: viewOf(row, verified), staffName: staff.full_name, facilityName: facility.name, ...(verified ? { verifiedEmail: verified } : {}) };
+    return { ok: true, code, linkToken, destination: email, invitation: viewOf(row, verified), staffName: staff.full_name, facilityName: facility.name, ...(verified ? { verifiedEmail: verified } : {}) };
   });
 
-const invitationEmail = (input: { code: string; expiresOn: string; staffName: string; facilityName: string }) => ({
+/** Where the invitation opens. The token is in the fragment, which browsers never send to a server or pass on as a referrer. */
+export const invitationLink = (appUrl: string, token: string) => `${appUrl.replace(/\/+$/, '')}/onboarding/invitation#token=${token}`;
+
+const invitationEmail = (input: { code: string; link: string; expiresOn: string; staffName: string; facilityName: string }) => ({
   subject: `Your Geneus invitation from ${input.facilityName}`,
   text: [
     `${input.staffName}, you have been added as staff at ${input.facilityName} on Geneus.`,
     '',
-    `Your Geneus PIN code is ${input.code}.`,
+    'Accept invitation:',
+    input.link,
     '',
-    `To start: open Geneus on one of ${input.facilityName}'s phones or computers, tap your name on the sign-in screen, choose "I have a code from my admin", enter this code and choose your PIN. The device needs an internet connection for this step; after it, you sign in with your PIN, even offline.`,
+    `Open the link on one of ${input.facilityName}'s phones or computers, or on the device your administrator set up for you. It guides you through choosing your PIN. The device needs an internet connection for this step; after it, you sign in with your PIN, even offline.`,
     '',
-    `The code works once, until ${new Date(input.expiresOn).toUTCString()}. Never share it — nobody from Geneus or your facility will ask for it.`,
+    `If the link does not open on the facility device: tap your name on the sign-in screen, choose "I have a code from my admin" and enter it there. Your Geneus PIN code is ${input.code}.`,
+    '',
+    `The link and the code work once, until ${new Date(input.expiresOn).toUTCString()}. Never share them — nobody from Geneus or your facility will ask for them.`,
     'If you were not expecting this, you can ignore this email.',
   ].join('\n'),
 });
@@ -183,11 +200,12 @@ const invitationEmail = (input: { code: string; expiresOn: string; staffName: st
 export const deliverInvitation = async (
   sql: Sql,
   mailer: Mailer,
-  issued: { code: string; destination: string; invitation: InvitationView; staffName: string; facilityName: string; verifiedEmail?: string },
+  issued: { code: string; linkToken: string; destination: string; invitation: InvitationView; staffName: string; facilityName: string; verifiedEmail?: string },
+  appUrl: string,
 ): Promise<InvitationView> => {
   let delivery: InvitationDelivery, messageId: string | null = null, problem: string | null = null;
   try {
-    const receipt = await mailer.send({ to: issued.destination, ...invitationEmail({ code: issued.code, expiresOn: issued.invitation.expiresOn, staffName: issued.staffName, facilityName: issued.facilityName }) });
+    const receipt = await mailer.send({ to: issued.destination, ...invitationEmail({ code: issued.code, link: invitationLink(appUrl, issued.linkToken), expiresOn: issued.invitation.expiresOn, staffName: issued.staffName, facilityName: issued.facilityName }) });
     delivery = mailer.configured ? 'provider_accepted' : 'not_configured';
     messageId = receipt?.providerMessageId ?? null;
   } catch (cause) {
@@ -304,3 +322,113 @@ export const onboardingSummaries = async (sql: Sql, facilityId: string): Promise
   for (const row of latest) summaries.set(row.staff_id, { staffId: row.staff_id, activated: activated.has(row.staff_id), invitation: { status: statusOf(row), delivery: row.delivery_status, expiresOn: iso(row.expires_on) } });
   return [...summaries.values()];
 };
+
+/* ------------------------------------------------------------------ */
+/* Invitation links                                                    */
+/* ------------------------------------------------------------------ */
+
+/** What the person opening a link sees: who it is for and what this link can still do. Never a code. */
+export type InvitationLinkView = {
+  staffId: string; staffName: string; role: string; facilityId: string; facilityName: string; expiresOn: string;
+  status: InvitationStatus;
+  /** Whether a device not yet enrolled at the facility can be enrolled from this link. */
+  newDevice: 'allowed' | 'used' | 'not_allowed';
+};
+
+type LinkRow = {
+  id: string; facility_id: string; staff_id: string; failed_attempts: number; expires_on: Date;
+  accepted_on: Date | null; revoked_on: Date | null; allows_new_device: boolean; device_enrolled_on: Date | null;
+  created_by: string; created_from: string; full_name: string; role: string; staff_active: boolean; facility_name: string;
+};
+
+const findByLink = async (tx: Sql | Tx, token: string, lock: boolean): Promise<LinkRow | undefined> => {
+  const [row] = await tx<LinkRow[]>`
+    SELECT i.id, i.facility_id, i.staff_id, i.failed_attempts, i.expires_on, i.accepted_on, i.revoked_on, i.allows_new_device,
+      i.device_enrolled_on, i.created_by, i.created_from, s.full_name, s.role, s.active AS staff_active, f.name AS facility_name
+    FROM staff_invitations i
+    JOIN staff s ON s.facility_id = i.facility_id AND s.id = i.staff_id
+    JOIN facilities f ON f.id = i.facility_id
+    WHERE i.link_hash = ${linkHash(token)}
+    ${lock ? tx`FOR UPDATE OF i` : tx``}`;
+  return row;
+};
+
+/** Pending, and still for an active member of staff: the only state in which a link does anything. */
+const usable = (row: LinkRow | undefined): row is LinkRow => Boolean(row && row.staff_active && statusOf(row) === 'pending');
+
+/** Reads a link without spending anything. Undefined when no invitation has this link. */
+export const openInvitationLink = async (sql: Sql, token: string): Promise<InvitationLinkView | undefined> => {
+  const row = await findByLink(sql, token, false);
+  if (!row) return undefined;
+  return {
+    staffId: row.staff_id, staffName: row.full_name, role: row.role, facilityId: row.facility_id, facilityName: row.facility_name, expiresOn: iso(row.expires_on),
+    status: row.staff_active ? statusOf(row) : 'revoked',
+    newDevice: !row.allows_new_device ? 'not_allowed' : row.device_enrolled_on ? 'used' : 'allowed',
+  };
+};
+
+export type LinkDeviceOutcome =
+  | { ok: true; credential: DeviceCredential }
+  | { ok: false; error: 'invalid_invitation' | 'device_not_allowed' | 'device_already_enrolled' };
+
+/**
+ * Enrols the device opening the link, when the invitation allows one new device
+ * and its sender may still enrol devices. In one transaction: the allowance is
+ * locked and spent, and an enrollment code is issued in the sender's name and
+ * claimed by this device through the same path as a code typed by hand, so the
+ * device, its credential and the audit trail are exactly those of any enrollment.
+ * The person's PIN is set up afterwards, as on any facility device.
+ */
+export const enrolDeviceFromInvitation = async (
+  sql: Sql,
+  request: { token: string; deviceId: string; deviceLabel?: string },
+  syncEndpoint: string,
+): Promise<LinkDeviceOutcome> => {
+  try {
+    return await sql.begin(async (tx): Promise<LinkDeviceOutcome> => {
+      const row = await findByLink(tx, request.token, true);
+      if (!usable(row)) return { ok: false, error: 'invalid_invitation' };
+      if (!row.allows_new_device || row.device_enrolled_on) return { ok: false, error: 'device_not_allowed' };
+      // The allowance is the sender's authority, so it lapses if they lose it.
+      if ('denial' in await authorizeStaff(tx, row.facility_id, row.created_by, 'device:enroll')) return { ok: false, error: 'device_not_allowed' };
+      const { code } = await issueEnrollmentCode(tx, row.facility_id, row.created_by, row.created_from);
+      const enrolled = await claimCodeAndEnroll(tx, { code, deviceId: request.deviceId, deviceLabel: request.deviceLabel }, syncEndpoint);
+      if (!enrolled.ok) throw new Error(`An enrollment code issued for invitation ${row.id} could not be claimed: ${enrolled.error}`);
+      await tx`UPDATE staff_invitations SET device_enrolled_on = now(), device_enrolled_id = ${request.deviceId} WHERE id = ${row.id}`;
+      await recordAuditEvent(tx, {
+        facilityId: row.facility_id, deviceId: request.deviceId, actorStaffId: row.created_by, action: 'enroll', entityType: 'device', entityId: request.deviceId,
+        metadata: { context: 'staff_invitation_device_enrolled', invitationId: row.id, staffId: row.staff_id },
+      });
+      return { ok: true, credential: enrolled.credential };
+    });
+  } catch (cause) {
+    if (isPostgresError(cause, UNIQUE_VIOLATION)) return { ok: false, error: 'device_already_enrolled' };
+    throw cause;
+  }
+};
+
+export type LinkCodeOutcome = { ok: true; staffId: string; code: string } | { ok: false; error: 'invalid_invitation' | 'other_facility' };
+
+/**
+ * On a device enrolled at the invitation's facility, exchanges the link for a
+ * fresh one-time PIN setup code, so the person never copies one by hand. It
+ * replaces the stored code (the one in the email stops working) and spends
+ * nothing: the invitation is accepted, as before, only when the PIN is enrolled
+ * with this code through POST /staff/session/enrol.
+ */
+export const invitationLinkCode = async (sql: Sql, identity: DeviceIdentity, token: string): Promise<LinkCodeOutcome> =>
+  sql.begin(async (tx): Promise<LinkCodeOutcome> => {
+    const row = await findByLink(tx, token, true);
+    if (!usable(row)) return { ok: false, error: 'invalid_invitation' };
+    if (row.facility_id !== identity.facilityId) return { ok: false, error: 'other_facility' };
+    const code = newPinSetupCode();
+    const salt = randomBytes(16).toString('base64');
+    await tx`
+      UPDATE staff_invitations SET code_hash = ${hashPinSetupCode(code, salt, PIN_SETUP_CODE_ITERATIONS)}, code_salt = ${salt}, code_iterations = ${PIN_SETUP_CODE_ITERATIONS}
+      WHERE id = ${row.id}`;
+    await recordAuditEvent(tx, {
+      facilityId: row.facility_id, deviceId: identity.deviceId, actorStaffId: row.staff_id, action: 'update', entityType: 'staff', entityId: row.staff_id,
+      metadata: { context: 'staff_invitation_link_opened', invitationId: row.id },
+    });
+    return { ok: true, staffId: row.staff_id, code };
+  });

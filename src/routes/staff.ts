@@ -65,7 +65,8 @@ const pinCodeEmail = (code: string, expiresOn: string) => ({
 const refuse = (reply: FastifyReply, status: number, error: string, message: string) =>
   reply.code(status).send({ error, message } satisfies ApiErrorBody);
 
-export const registerStaffRoutes = (app: FastifyInstance, sql: Sql, mailer: Mailer) => {
+/** `appUrl` is where invitation links open: the web app's public origin. */
+export const registerStaffRoutes = (app: FastifyInstance, sql: Sql, mailer: Mailer, appUrl: string) => {
   /** Only an active facility admin of the device's facility has a recovery email. */
   const findAdmin = async (facilityId: string, staffId: string) => {
     const staff = await findStaffInFacility(sql, facilityId, staffId);
@@ -275,21 +276,26 @@ export const registerStaffRoutes = (app: FastifyInstance, sql: Sql, mailer: Mail
   app.post<{ Params: { staffId: string } }>('/staff/:staffId/invitations', async (request, reply) => {
     const who = await provenManager(request, reply); if (!who) return;
     // A pasted address often carries spaces or capitals; neither makes it a different address.
-    const body = z.strictObject({ channel: z.literal('email'), email: z.string().trim().toLowerCase().pipe(z.email().max(254)).optional() }).safeParse(request.body);
+    const body = z.strictObject({ channel: z.literal('email'), email: z.string().trim().toLowerCase().pipe(z.email().max(254)).optional(), allowNewDevice: z.boolean().optional() }).safeParse(request.body);
     if (!body.success) return refuse(reply, 400, 'invalid_request', 'Enter a valid email address');
     const target = await findStaffInFacility(sql, who.identity.facilityId, request.params.staffId);
     if (!target?.active) return refuse(reply, 404, 'unknown_staff', 'No active member of staff with that id at this facility');
     if (!mayApprovePin(who.actor, target)) return refuse(reply, 403, 'forbidden', 'You cannot invite someone with access you do not hold');
+    // Letting the link enrol a device is enrolling a device: only someone who may do that can allow it.
+    if (body.data.allowNewDevice) {
+      const enrol = await authorizeStaff(sql, who.identity.facilityId, who.actor.id, 'device:enroll');
+      if ('denial' in enrol) return refuse(reply, 403, 'device_enroll_forbidden', 'Only someone who may add devices can let an invitation set up a new device');
+    }
     const email = body.data.email ?? await findStaffEmail(sql, who.identity.facilityId, target.id);
     if (!email) return refuse(reply, 400, 'email_required', 'Enter the email address to send the invitation to');
 
-    const issued = await issueStaffInvitation(sql, { facilityId: who.identity.facilityId, staffId: target.id, issuedBy: who.actor.id, issuedFrom: who.identity.deviceId, email });
+    const issued = await issueStaffInvitation(sql, { facilityId: who.identity.facilityId, staffId: target.id, issuedBy: who.actor.id, issuedFrom: who.identity.deviceId, email, allowNewDevice: body.data.allowNewDevice === true });
     if (!issued.ok) {
       const [status, message] = INVITATION_REFUSALS[issued.error];
       if (issued.retryAfterSeconds) reply.header('retry-after', String(issued.retryAfterSeconds));
       return refuse(reply, status, issued.error, message);
     }
-    const invitation = await deliverInvitation(sql, mailer, issued);
+    const invitation = await deliverInvitation(sql, mailer, issued, appUrl);
     // Never the code or the address: the facility, the person and what the provider said.
     request.log.info({ facilityId: who.identity.facilityId, staffId: target.id, invitationId: invitation.id, delivery: invitation.delivery }, 'staff invitation sent');
     return reply.code(201).send({ invitation });
