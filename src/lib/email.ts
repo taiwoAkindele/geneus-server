@@ -10,10 +10,16 @@
  */
 export type EmailMessage = { to: string; subject: string; text: string };
 
+/**
+ * What the provider said when it took a message. Acceptance only: whether the
+ * message then reached the inbox is a separate fact this server does not see.
+ */
+export type EmailReceipt = { providerMessageId?: string };
+
 export type Mailer = {
   /** Whether messages actually leave the server. */
   configured: boolean;
-  send: (message: EmailMessage) => Promise<void>;
+  send: (message: EmailMessage) => Promise<EmailReceipt | void>;
 };
 
 export class EmailNotSent extends Error {
@@ -46,6 +52,8 @@ export const createMailer = (
         });
         // Resend's error body names the problem (a bad key, an unverified domain); it carries no message content.
         if (!response.ok) throw new EmailNotSent(`Resend answered ${response.status}: ${await response.text()}`);
+        const accepted = (await response.json().catch(() => undefined)) as { id?: unknown } | undefined;
+        return typeof accepted?.id === 'string' ? { providerMessageId: accepted.id } : {};
       },
     };
   }

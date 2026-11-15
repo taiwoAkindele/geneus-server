@@ -4,7 +4,7 @@ import type { FastifyInstance } from 'fastify';
 import { staffPermissions, type FacilityRegistrationResult, type Staff, type UploadMutation } from '#shared';
 import { findRecord } from '../src/db/records.ts';
 import { findStaffInFacility, staffDenial } from '../src/auth/staffAuthorization.ts';
-import { addStaff, clientId, envelopeFor, registerScratchFacility, scratchDatabase, testApp, upload, type ScratchDatabase } from './postgres.ts';
+import { addStaff, clientId, envelopeFor, registerScratchFacility, scratchDatabase, staffSessionFor, testApp, upload, type ScratchDatabase } from './postgres.ts';
 
 describe('staff editing and combined authorization', () => {
   let db: ScratchDatabase, app: FastifyInstance, facility: FacilityRegistrationResult;
@@ -88,14 +88,14 @@ describe('staff editing and combined authorization', () => {
     const create = await send(facility, put('staff', id, { ...envelopeFor(facility), createdBy: delegate.id, staffId: id, fullName: 'Must Not Exist', role: 'facility_admin' }));
     assert.equal(create.rejected[0]?.category, 'authorization');
     assert.equal(await findRecord(db.sql, 'staff', id), undefined);
-    const pin = await app.inject({ method: 'POST', url: `/staff/${facility.admin.id}/pin-codes`, headers: { authorization: `Bearer ${facility.device.credential}` }, payload: { issuedBy: delegate.id } });
+    const pin = await app.inject({ method: 'POST', url: `/staff/${facility.admin.id}/pin-codes`, headers: { authorization: `Bearer ${facility.device.credential}`, 'x-staff-session': (await staffSessionFor(app, facility.device.credential, delegate.id))! }, payload: { issuedBy: delegate.id } });
     assert.equal(pin.statusCode, 403);
   });
 
   it('recognizes a secondary admin and prevents supervisors resetting that account', async () => {
     const secondary = await addStaff(db.sql, facility, { role: 'nurse', additionalRoles: ['facility_admin'] });
     const target = await addStaff(db.sql, facility, { role: 'cashier' });
-    const response = await app.inject({ method: 'POST', url: `/staff/${target.id}/pin-codes`, headers: { authorization: `Bearer ${facility.device.credential}` }, payload: { issuedBy: secondary.id } });
+    const response = await app.inject({ method: 'POST', url: `/staff/${target.id}/pin-codes`, headers: { authorization: `Bearer ${facility.device.credential}`, 'x-staff-session': (await staffSessionFor(app, facility.device.credential, secondary.id))! }, payload: { issuedBy: secondary.id } });
     assert.equal(response.statusCode, 201);
     const server = await findStaffInFacility(db.sql, facility.facility.id, secondary.id);
     assert.equal(staffDenial(server, secondary.id, 'staff:permission'), undefined);

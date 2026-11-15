@@ -4,7 +4,7 @@ import type { FastifyInstance } from 'fastify';
 import { PinSetupCode, PinSetupCodeIssued, type FacilityRegistrationResult, type Staff } from '#shared';
 import { fromRow } from '../src/db/records.ts';
 import { hashPinSetupCode } from '../src/staff/pinSetupCodes.ts';
-import { addStaff, asDevice, clientId, registerScratchFacility, scratchDatabase, testApp, upload, type ScratchDatabase } from './postgres.ts';
+import { addStaff, asDevice, clientId, registerScratchFacility, scratchDatabase, staffSessionFor, testApp, upload, type ScratchDatabase } from './postgres.ts';
 
 /**
  * A PIN setup code is how a member of staff gets approval to set their PIN on
@@ -20,8 +20,9 @@ describe('PIN setup codes', () => {
   let nurse: Staff;
   let chew: Staff;
 
-  const issue = (credential: string, staffId: string, issuedBy: string) =>
-    app.inject({ method: 'POST', url: `/staff/${staffId}/pin-codes`, headers: asDevice(credential), payload: { issuedBy } });
+  /** Issued by `issuedBy` in their own PIN-proven session, as the app does. */
+  const issue = async (credential: string, staffId: string, issuedBy: string) =>
+    app.inject({ method: 'POST', url: `/staff/${staffId}/pin-codes`, headers: { ...asDevice(credential), 'x-staff-session': (await staffSessionFor(app, credential, issuedBy)) ?? '' }, payload: { issuedBy } });
 
   const codesFor = async (staffId: string): Promise<PinSetupCode[]> => {
     const rows = await db.sql<Record<string, unknown>[]>`SELECT * FROM pin_setup_codes WHERE staff_id = ${staffId} ORDER BY created_on`;

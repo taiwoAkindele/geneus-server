@@ -4,6 +4,7 @@ import type { Sql, Tx } from '../db/client.ts';
 import { findRecord } from '../db/records.ts';
 import type { DeviceIdentity } from '../devices/credentials.ts';
 import { hashPinSetupCode } from '../staff/pinSetupCodes.ts';
+import { acceptInvitation, matchInvitationCode } from '../staff/invitations.ts';
 import { completePrivateAccess } from '../workforce/privateAccess.ts';
 
 /**
@@ -47,21 +48,28 @@ const openSession = async (tx: Tx, identity: DeviceIdentity, staffId: string): P
 /**
  * Registers a PIN with the server for this person on this device, and opens a
  * session. Proof of who they are: a PIN setup code an administrator issued to
- * them (the same one that let them set the PIN), or a code sent to their own
- * verified email, for PINs set before server sessions existed.
+ * them (read aloud, or sent as an invitation — accepted here, online only), or
+ * a code sent to their own verified email, for PINs set before server sessions
+ * existed.
  */
 export const enrolPin = async (sql: Sql, identity: DeviceIdentity, input: { staffId: string; pin: string; setupCode?: string; emailCode?: string }): Promise<StaffSession> => {
   if (!(await activeStaff(sql, identity.facilityId, input.staffId))) throw new StaffSessionRefusal('unknown_staff', 'No such member of staff here');
-  let proof: 'setup_code' | 'email';
+  let proof: 'setup_code' | 'email' | 'invitation';
+  let invitationId: string | undefined;
   if (input.setupCode) {
     const codes = await sql<{ id: string; code_hash: string; code_salt: string; code_iterations: number; used_on: Date | null; used_on_device: string | null }[]>`
       SELECT id, code_hash, code_salt, code_iterations, used_on, used_on_device FROM pin_setup_codes
       WHERE facility_id = ${identity.facilityId} AND staff_id = ${input.staffId} AND revoked_on IS NULL AND expires_on > now()
         AND (used_on IS NULL OR (used_on_device = ${identity.deviceId} AND used_on > now() - interval '1 day'))`;
     const match = codes.find((c) => same(hashPinSetupCode(input.setupCode!, c.code_salt, c.code_iterations), c.code_hash));
-    if (!match) throw new StaffSessionRefusal('invalid_setup_code', 'This PIN code is not right, has expired or was already used. Ask your administrator for a new one');
-    if (!match.used_on) await sql`UPDATE pin_setup_codes SET used_on = now(), used_on_device = ${identity.deviceId}, updated_by = ${input.staffId}, updated_on = now() WHERE id = ${match.id} AND used_on IS NULL`;
-    proof = 'setup_code';
+    if (match) {
+      if (!match.used_on) await sql`UPDATE pin_setup_codes SET used_on = now(), used_on_device = ${identity.deviceId}, updated_by = ${input.staffId}, updated_on = now() WHERE id = ${match.id} AND used_on IS NULL`;
+      proof = 'setup_code';
+    } else {
+      invitationId = await matchInvitationCode(sql, identity.facilityId, input.staffId, input.setupCode);
+      if (!invitationId) throw new StaffSessionRefusal('invalid_setup_code', 'This PIN code is not right, has expired or was already used. Ask your administrator for a new one');
+      proof = 'invitation';
+    }
   } else {
     const session = await completePrivateAccess(sql, identity, input.staffId, input.emailCode ?? '');
     if (!session) throw new StaffSessionRefusal('invalid_email_code', 'The email code is not right, or has expired');
@@ -69,6 +77,10 @@ export const enrolPin = async (sql: Sql, identity: DeviceIdentity, input: { staf
   }
   const salt = randomBytes(16).toString('base64');
   return sql.begin(async (tx) => {
+    // Accepted with the PIN or not at all: a revocation or expiry that won the race stops both.
+    if (invitationId && !(await acceptInvitation(tx, identity, input.staffId, invitationId))) {
+      throw new StaffSessionRefusal('invalid_setup_code', 'This invitation code has expired or was withdrawn. Ask your administrator to send a new one');
+    }
     await tx`INSERT INTO staff_device_pins (facility_id, staff_id, device_id, salt, hash, iterations, enrolled_by)
       VALUES (${identity.facilityId}, ${input.staffId}, ${identity.deviceId}, ${salt}, ${pinHash(input.pin, salt, PIN_ITERATIONS)}, ${PIN_ITERATIONS}, ${proof})
       ON CONFLICT (facility_id, staff_id, device_id) DO UPDATE SET salt = EXCLUDED.salt, hash = EXCLUDED.hash, iterations = EXCLUDED.iterations, failures = 0, locked_until = NULL, enrolled_by = EXCLUDED.enrolled_by, enrolled_on = now()`;
@@ -116,21 +128,34 @@ export const sessionStaff = async (sql: Sql, identity: DeviceIdentity, token: st
 export const endSession = (sql: Sql, identity: DeviceIdentity, token: string) =>
   sql`UPDATE staff_sessions SET ended_on = now() WHERE token_hash = ${sha(token)} AND device_id = ${identity.deviceId} AND ended_on IS NULL`;
 
+type RequestHeaders = Record<string, string | string[] | undefined>;
+const pick = (value: string | string[] | undefined) => (typeof value === 'string' ? value : undefined);
+
 /**
- * The person behind a request: their PIN-proven staff session or emailed-code
- * session when the device has one, otherwise the person the enrolled device
- * says is signed in on it (x-actor-staff-id), as offline uploads and documents
- * already are. That person must be active in the device's own facility; the
- * staff record is read fresh, so each route's role and permission checks and
- * any revocation apply at once.
+ * The person behind a request as the server itself has proven them: a
+ * PIN-proven staff session, or an emailed-code session. Never a staff id the
+ * device merely asserts. Binding or changing a contact and handing out PIN
+ * authority use this, because an asserted id there would let anyone holding a
+ * facility phone take over a colleague's account.
  */
-export const requestStaff = async (sql: Sql, identity: DeviceIdentity, headers: Record<string, string | string[] | undefined>): Promise<Staff | undefined> => {
-  const pick = (value: string | string[] | undefined) => (typeof value === 'string' ? value : undefined);
+export const verifiedRequestStaff = async (sql: Sql, identity: DeviceIdentity, headers: RequestHeaders): Promise<Staff | undefined> => {
   const viaSession = await sessionStaff(sql, identity, pick(headers['x-staff-session']));
   if (viaSession) return viaSession;
   const { privateStaff } = await import('../workforce/privateAccess.ts');
-  const viaEmail = await privateStaff(sql, identity, pick(headers['x-workforce-access']));
-  if (viaEmail) return viaEmail;
+  return privateStaff(sql, identity, pick(headers['x-workforce-access']));
+};
+
+/**
+ * The person behind a request: their verified session when the device has
+ * one, otherwise the person the enrolled device says is signed in on it
+ * (x-actor-staff-id), as offline uploads and documents already are. That
+ * person must be active in the device's own facility; the staff record is
+ * read fresh, so each route's role and permission checks and any revocation
+ * apply at once. Contact and PIN-authority routes use `verifiedRequestStaff`.
+ */
+export const requestStaff = async (sql: Sql, identity: DeviceIdentity, headers: RequestHeaders): Promise<Staff | undefined> => {
+  const verified = await verifiedRequestStaff(sql, identity, headers);
+  if (verified) return verified;
   const actor = pick(headers['x-actor-staff-id']);
   return actor && actor.length <= 200 ? activeStaff(sql, identity.facilityId, actor) : undefined;
 };
