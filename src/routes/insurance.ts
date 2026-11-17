@@ -11,7 +11,7 @@ import { authenticateDevice } from '../auth/deviceAuth.ts';
 import type { Sql, Tx } from '../db/client.ts';
 import { findRecord, insertRecord } from '../db/records.ts';
 import type { DeviceIdentity } from '../devices/credentials.ts';
-import { requestStaff } from '../auth/staffSessions.ts';
+import { verifiedRequestStaff } from '../auth/staffSessions.ts';
 import { confirmAllocations } from '../insurance/allocations.ts';
 import { ContractRefusal, activateContract, activationBlockers, contractVersions, endContract, findContractVersion, insuranceState, saveDraft } from '../insurance/contracts.ts';
 import { chargePositions, chargesById } from '../insurance/coverage.ts';
@@ -66,7 +66,7 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
   const verified = async (request: FastifyRequest, reply: FastifyReply, permission: Permission, needs: 'any' | 'configure' | 'billing' = 'configure'): Promise<Verified | undefined> => {
     const identity = await authenticateDevice(sql, request, reply);
     if (!identity) return;
-    const staff = await requestStaff(sql, identity, request.headers);
+    const staff = await verifiedRequestStaff(sql, identity, request.headers);
     if (!staff) { reply.code(403).send({ error: 'staff_session_required', message: 'Confirm your PIN to continue' } satisfies ApiErrorBody); return; }
     if (!staffPermissions(staff).includes(permission)) { reply.code(403).send({ error: 'forbidden', message: `This action needs ${permission}` } satisfies ApiErrorBody); return; }
     // Off for every hospital until an operator enables it after the rollout checks — refunds included.

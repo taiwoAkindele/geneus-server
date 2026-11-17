@@ -217,7 +217,29 @@ const patchPermissions = (table: DocType, changes: Record<string, unknown>): Per
 
 type Refusal = { category: RejectionCategory; reason: string; conflicts?: ConflictingColumn[]; dependencies?: FacilityDependency[] };
 /** How an upload arrived: through a device's offline queue, or saved online by a person the server verified. */
-export type UploadOptions = { online?: { staffId: string } };
+export type UploadOptions = { online?: { staffId: string; billingPolicy?: boolean } };
+
+/** Release 1: old fee forms cannot opt patients into automatic bills or reclassify insured services. */
+const feeCatalogueRefusal = async (tx: Tx, identity: DeviceIdentity, mutation: UploadMutation, options: UploadOptions): Promise<Refusal | undefined> => {
+  if (mutation.table !== 'fee_item') return undefined;
+  if (mutation.op === 'put' && mutation.data.chargeWhen !== 'when_ordered') {
+    return refuse('validation', 'New catalogue items must be charged only when selected. Create the item first, then explicitly configure its automatic charging policy.');
+  }
+  if (mutation.op !== 'patch') return undefined;
+  const current = await findRecord<AnyDocument>(tx, 'fee_item', mutation.id);
+  if (!current || current.type !== 'fee_item' || current.facilityId !== identity.facilityId) return undefined;
+  if (mutation.data.category !== undefined && mutation.data.category !== current.category) {
+    return refuse('validation', 'This item’s category cannot change until its insurance impact can be reviewed. Its existing category and historical coverage are preserved.');
+  }
+  const policyChanged = (['chargeWhen', 'exemptions'] as const).some((key) => mutation.data[key] !== undefined && !isDeepStrictEqual(mutation.data[key], current[key]));
+  if (policyChanged && !options.online?.billingPolicy) {
+    return refuse('authorization', 'Change automatic charging and exemptions through the separate policy editor. Ordinary catalogue edits cannot change this policy.');
+  }
+  if (options.online?.billingPolicy && Object.keys(mutation.data).some((key) => !['chargeWhen', 'exemptions', 'updatedBy', 'updatedOn'].includes(key))) {
+    return refuse('validation', 'A policy save can change only automatic charging and exemptions.');
+  }
+  return undefined;
+};
 class OnlineRefusal extends Error { readonly refusal: Refusal; constructor(refusal: Refusal) { super(refusal.reason); this.refusal = refusal; } }
 
 /**
@@ -898,7 +920,7 @@ const processMutation = async (
     const handled = workforceType(mutation.table) || ['unit','billing_department'].includes(mutation.table);
     // Configuration is saved online only, confirmed by the server; a queued change (made offline, or by an older app) is refused.
     const refusal = configuration && !options.online ? refuse('authorization', 'Settings are saved online, with the server. This change was made offline or by an older version of the app, so it was not applied — make it again while connected')
-      : configuration && options.online ? (await staleConfiguration(tx, mutation)) ?? (handled ? await evaluateWorkforce(context, mutation, signer) : mutation.op === 'put' ? await evaluatePut(context, mutation) : await evaluatePatch(context, mutation))
+      : configuration && options.online ? (await feeCatalogueRefusal(tx, identity, mutation, options)) ?? (await staleConfiguration(tx, mutation)) ?? (handled ? await evaluateWorkforce(context, mutation, signer) : mutation.op === 'put' ? await evaluatePut(context, mutation) : await evaluatePatch(context, mutation))
       : handled ? await evaluateWorkforce(context, mutation, signer) :
       mutation.op === 'delete'
         ? refuse('authorization', 'records are never deleted; retire them instead')

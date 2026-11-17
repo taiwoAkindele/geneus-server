@@ -119,9 +119,9 @@ describe('insurance foundation', () => {
       assert.equal((await call('/insurance/setup', { state: 'active' }, f.admin.id)).statusCode, 400, 'active is not a choice here');
       assert.equal((await call('/insurance/setup', { state: 'off' }, officer.id)).statusCode, 403, 'the officer does not switch insurance');
     });
-    it('acts for the person signed in on the enrolled device, with their own permissions, and nobody else', async () => {
+    it('requires a proven actor instead of trusting the person asserted by the enrolled device', async () => {
       const as = (staffId: string) => app.inject({ method: 'POST', url: '/insurance/contracts/list', headers: { ...asDevice(f.device.credential), 'x-actor-staff-id': staffId }, payload: {} });
-      assert.equal((await as(officer.id)).statusCode, 200, 'no separate PIN step');
+      assert.equal((await as(officer.id)).json().error, 'staff_session_required', 'an asserted officer ID is not a verified session');
       assert.equal((await as('staff:nobody')).json().error, 'staff_session_required', 'an unknown person is refused');
       assert.equal((await app.inject({ method: 'POST', url: '/insurance/contracts/list', headers: asDevice(f.device.credential), payload: {} })).statusCode, 403, 'someone must be signed in');
       assert.equal((await call('/insurance/contracts/list', {}, officer.id)).statusCode, 200);
@@ -289,6 +289,18 @@ describe('insurance foundation', () => {
       await assert.rejects(insert('alloc:forged-price', 9_000, 400), /match its charge/, 'a list price other than the charge');
       await assert.rejects(insert('alloc:forged-share', 5_000, 400, 100), /match its charge/, 'a patient share other than the synced projection');
       assert.equal((await db.sql`SELECT 1 FROM coverage_allocations WHERE charge_id = 'charge:forged'`).length, 0);
+    });
+    it('blocks fee reclassification without changing the contract, original charge or confirmed responsibility', async () => {
+      const snapshot = await details('charge:consult');
+      const original = await db.sql`SELECT * FROM charges WHERE id = 'charge:consult'`;
+      const contracts = await db.sql`SELECT * FROM payer_contract_versions WHERE facility_id = ${f.facility.id} ORDER BY id`;
+      const response = await call('/config/save', { ...VERSIONS, transactionId: null, mutations: [{ clientId: clientId(), op: 'patch', table: 'fee_item', id: 'fee:consult', data: { category: 'laboratory', updatedBy: f.admin.id, updatedOn: new Date().toISOString() } }] }, f.admin.id);
+      assert.equal(response.statusCode, 409, response.body);
+      assert.match(response.json().message, /insurance impact/);
+      assert.deepEqual(await details('charge:consult'), snapshot);
+      assert.deepEqual(await db.sql`SELECT * FROM charges WHERE id = 'charge:consult'`, original);
+      assert.deepEqual(await db.sql`SELECT * FROM payer_contract_versions WHERE facility_id = ${f.facility.id} ORDER BY id`, contracts);
+      assert.equal((await db.sql`SELECT category FROM fee_items WHERE id = 'fee:consult'`)[0].category, 'consultation');
     });
     it('a later contract version changes estimates, never confirmed snapshots', async () => {
       await charge('charge:later', 'fee:consult', 'consultation', 5_000);

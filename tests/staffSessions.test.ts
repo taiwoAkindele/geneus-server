@@ -26,7 +26,7 @@ describe('server-verified staff sessions and online configuration', () => {
   const signIn = (staffId: string, pin: string) => post('/staff/session', { staffId, pin });
   const fee = (id: string, by: Staff | FacilityRegistrationResult['admin'], amountMinor = 150_000): UploadMutation => ({
     clientId: Date.now() * 1000 + clientId(), op: 'put', table: 'fee_item', id,
-    data: { ...envelopeFor(f), createdBy: by.id, schemaVersion: 5, type: 'fee_item', name: 'Consultation', category: 'consultation', amountMinor, currency: 'NGN', chargeWhen: 'every_visit' },
+    data: { ...envelopeFor(f), createdBy: by.id, schemaVersion: 5, type: 'fee_item', name: 'Consultation', category: 'consultation', amountMinor, currency: 'NGN', chargeWhen: 'when_ordered' },
   });
   const save = (mutations: UploadMutation[], token?: string) => post('/config/save', { transactionId: null, ...VERSIONS, mutations }, token);
 
