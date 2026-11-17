@@ -5,6 +5,7 @@ import type { FastifyInstance } from 'fastify';
 import type { FacilityRegistrationResult, Staff } from '#shared';
 import { buildApp } from '../src/app.ts';
 import { findRecord, insertRecord } from '../src/db/records.ts';
+import { issuePinSetupCode } from '../src/staff/pinSetupCodes.ts';
 import { config, signer, addStaff, clientId, envelopeFor, registerScratchFacility, scratchDatabase, upload, type ScratchDatabase } from './postgres.ts';
 
 describe('hospital department billing and Paystack reconciliation', () => {
@@ -30,7 +31,22 @@ describe('hospital department billing and Paystack reconciliation', () => {
     }
     return new Response(JSON.stringify({ status: true, data }), { status: 200, headers: { 'content-type': 'application/json' } });
   };
-  const post = (path: string, body: Record<string, unknown>, credential = facility.device.credential) => app.inject({ method: 'POST', url: `/billing/${path}`, headers: { authorization: `Bearer ${credential}` }, payload: body });
+  const enrolled = new Set<string>();
+  let activeStaff = ''; let session: Promise<string> | undefined;
+  const post = async (path: string, body: Record<string, unknown>, credential = facility.device.credential) => {
+    const staffId = String(body.actorStaffId ?? '');
+    if (credential === facility.device.credential && staffId && activeStaff !== staffId) {
+      activeStaff = staffId;
+      session = (async () => {
+        const proof = !enrolled.has(staffId) ? await issuePinSetupCode(db.sql, { facilityId: facility.facility.id, staffId, issuedBy: facility.admin.id, issuedFrom: facility.device.deviceId }) : undefined;
+        if (proof) assert.ok(proof.ok);
+        const response = await app.inject({ method: 'POST', url: proof ? '/staff/session/enrol' : '/staff/session', headers: { authorization: `Bearer ${credential}` }, payload: { staffId, pin: '246810', ...(proof?.ok ? { setupCode: proof.code } : {}) } });
+        assert.equal(response.statusCode, 200, response.body); enrolled.add(staffId); return response.json().token as string;
+      })();
+    }
+    const token = credential === facility.device.credential ? await session : undefined;
+    return app.inject({ method: 'POST', url: `/billing/${path}`, headers: { authorization: `Bearer ${credential}`, ...(token ? { 'x-staff-session': token } : {}) }, payload: body });
+  };
   const notify = (reference: string, valid = true) => {
     // The received amount is deliberately false: only server verification supplies the ledger amount.
     const raw = JSON.stringify({ event: 'charge.success', data: { reference, amount: 1 } });
@@ -62,6 +78,9 @@ describe('hospital department billing and Paystack reconciliation', () => {
     assert(saved.encrypted_secret !== secret); assert(!saved.encrypted_secret.includes(secret));
     const state = await post('connection/status', { actorStaffId: facility.admin.id });
     assert.equal(state.json().mode, 'live'); assert(!state.body.includes(secret));
+    const audit = await db.sql`SELECT actor_staff_id, device_id, metadata FROM audit_events WHERE facility_id = ${facility.facility.id} AND metadata->>'context' = 'billing_provider_connected'`;
+    assert.equal(audit.length, 1); assert.equal(audit[0].actor_staff_id, facility.admin.id); assert.equal(audit[0].device_id, facility.device.deviceId);
+    assert.ok(!JSON.stringify(audit).includes(secret), 'audit contains attribution and mode, never provider secrets');
   });
   it('links multiple department accounts within the hospital connection and retains account ownership', async () => {
     for (const [providerAccountId, departmentId] of [['101', 'pharmacy'], ['102', 'oncology']]) {

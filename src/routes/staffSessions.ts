@@ -2,7 +2,7 @@ import { StaffPinEnrol, StaffSessionOpen, UploadRequest, isConfigurationWrite, t
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { recordAuditEvent } from '../audit/auditEvents.ts';
 import { authenticateDevice } from '../auth/deviceAuth.ts';
-import { StaffSessionRefusal, endSession, enrolPin, requestStaff, signInSession } from '../auth/staffSessions.ts';
+import { StaffSessionRefusal, endSession, enrolPin, requestStaff, verifiedRequestStaff, signInSession } from '../auth/staffSessions.ts';
 import type { Sql } from '../db/client.ts';
 import type { Signer } from '../lib/signing.ts';
 import { processUpload } from '../sync/upload.ts';
@@ -59,16 +59,18 @@ export const registerStaffSessionRoutes = (app: FastifyInstance, sql: Sql, signe
    */
   app.post('/config/save', async (request, reply) => {
     const identity = await authenticateDevice(sql, request, reply); if (!identity) return;
-    const staff = await requestStaff(sql, identity, request.headers);
-    if (!staff) return refuse(reply, 403, 'staff_session_required', 'Sign in as an active member of this facility to save settings');
     const body = UploadRequest.safeParse(request.body);
     if (!body.success) return refuse(reply, 400, 'invalid_request', 'The change is malformed');
+    const financial = body.data.mutations.some((m) => m.table === 'fee_item' || m.table === 'billing_department');
+    const staff = await (financial ? verifiedRequestStaff : requestStaff)(sql, identity, request.headers);
+    if (!staff) return refuse(reply, 403, 'staff_session_required', 'Confirm your PIN to save financial settings');
     for (const m of body.data.mutations) {
       if (!isConfigurationWrite(m.table, m.op, Object.keys(m.data ?? {}))) return refuse(reply, 400, 'not_configuration', `${m.table} is not saved through settings`);
       const by = m.op === 'put' ? m.data.createdBy : m.data.updatedBy;
       if (by !== staff.id) return refuse(reply, 403, 'attribution_mismatch', 'A change is saved in the name of the person signed in');
     }
-    const response = await processUpload(sql, identity, body.data, Date.now(), signer, { online: { staffId: staff.id } });
+    const billingPolicy = (request.query as Record<string, unknown>).billingPolicy === '1';
+    const response = await processUpload(sql, identity, body.data, Date.now(), signer, { online: { staffId: staff.id, billingPolicy } });
     const result: ConfigurationSaveResponse = { applied: response.applied, duplicates: response.duplicates, rejected: response.rejected.map((r) => ({ table: r.table, id: r.id, category: r.category, reason: r.reason })) };
     return reply.code(result.rejected.length ? 409 : 200).send(result.rejected.length ? { error: 'configuration_refused', message: result.rejected.map((r) => r.reason).join('; '), details: result } : result);
   });

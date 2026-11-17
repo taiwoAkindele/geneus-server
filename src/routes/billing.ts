@@ -2,9 +2,10 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
-import { Payment, PaymentAllocation, SCHEMA_VERSION, type IncomingTransfer, type Permission } from '#shared';
+import { Payment, PaymentAllocation, SCHEMA_VERSION, staffPermissions, type IncomingTransfer, type Permission } from '#shared';
 import { authenticateDevice } from '../auth/deviceAuth.ts';
-import { authorizeStaff } from '../auth/staffAuthorization.ts';
+import { verifiedRequestStaff } from '../auth/staffSessions.ts';
+import { recordAuditEvent } from '../audit/auditEvents.ts';
 import { availableOnCharge } from '../billing/ledger.ts';
 import { accountFromTerminal, callPaystack, openPaystackSecret, PaystackAccount, PaystackTerminal, sealPaystackSecret, validPaystackSignature, VerifiedPaystackTransfer, type PaystackFetch } from '../billing/paystack.ts';
 import type { Sql } from '../db/client.ts';
@@ -15,7 +16,7 @@ import type { Config } from '../lib/config.ts';
 export const billingRawBodies = new WeakMap<FastifyRequest, string>();
 const conflict = (message: string) => Object.assign(new Error(message), { statusCode: 409 });
 const parseBody = <T>(schema: z.ZodType<T>, value: unknown): T => { const result = schema.safeParse(value); if (!result.success) throw Object.assign(new Error('Missing or invalid billing request fields'), { statusCode: 400 }); return result.data; };
-const Actor = z.object({ actorStaffId: z.string().min(1) });
+const Actor = z.object({ actorStaffId: z.string().min(1).optional() });
 const LinkAccount = Actor.extend({ providerAccountId: z.string().regex(/^(?:\d+|VT_[A-Za-z0-9]+)$/), departmentId: z.string().min(1).optional() });
 const Match = Actor.extend({ patientId: z.string().min(1), allocations: z.array(PaymentAllocation).min(1), requestId: z.string().uuid() })
   .refine((value) => new Set(value.allocations.map((a) => a.chargeId)).size === value.allocations.length);
@@ -26,11 +27,16 @@ export const registerBillingRoutes = (app: FastifyInstance, sql: Sql, config: Co
   const authorize = async (request: FastifyRequest, reply: Parameters<typeof authenticateDevice>[2], permission: Permission) => {
     const identity = await authenticateDevice(sql, request, reply);
     if (!identity) return;
-    const actor = Actor.safeParse(request.body);
-    if (!actor.success) { reply.code(400).send({ error: 'invalid_request', message: 'The acting staff member is required' }); return; }
-    const result = await authorizeStaff(sql, identity.facilityId, actor.data.actorStaffId, permission);
-    if ('denial' in result) { reply.code(403).send({ error: 'forbidden', message: 'Your account cannot perform this billing action' }); return; }
-    return { ...identity, actorStaffId: actor.data.actorStaffId };
+    const staff = await verifiedRequestStaff(sql, identity, request.headers);
+    if (!staff) { reply.code(403).send({ error: 'staff_session_required', message: 'Confirm your PIN to continue' }); return; }
+    const actor = Actor.safeParse(request.body ?? {});
+    if (!actor.success) { reply.code(400).send({ error: 'invalid_request', message: 'Invalid billing request' }); return; }
+    const assertedHeader = request.headers['x-actor-staff-id'];
+    if ((actor.data.actorStaffId && actor.data.actorStaffId !== staff.id) || (assertedHeader !== undefined && assertedHeader !== staff.id)) {
+      reply.code(403).send({ error: 'attribution_mismatch', message: 'A billing action must belong to the verified staff member' }); return;
+    }
+    if (!staffPermissions(staff).includes(permission)) { reply.code(403).send({ error: 'forbidden', message: 'Your account cannot perform this billing action' }); return; }
+    return { ...identity, actorStaffId: staff.id };
   };
   const connection = async (facilityId: string) => {
     if (!config.billingEncryptionKey) throw conflict('Paystack setup requires BILLING_ENCRYPTION_KEY on the server');
@@ -57,6 +63,7 @@ export const registerBillingRoutes = (app: FastifyInstance, sql: Sql, config: Co
     await sql`INSERT INTO billing_connections (facility_id, encrypted_secret, mode, updated_by)
       VALUES (${who.facilityId}, ${encrypted}, ${mode}, ${who.actorStaffId})
       ON CONFLICT (facility_id) DO UPDATE SET encrypted_secret = EXCLUDED.encrypted_secret, mode = EXCLUDED.mode, updated_by = EXCLUDED.updated_by, updated_on = now()`;
+    await recordAuditEvent(sql, { facilityId: who.facilityId, deviceId: who.deviceId, actorStaffId: who.actorStaffId, action: 'update', metadata: { context: 'billing_provider_connected', mode } });
     return { configured: true, mode };
   });
   app.post('/billing/accounts/list', async (request, reply) => {
@@ -88,6 +95,7 @@ export const registerBillingRoutes = (app: FastifyInstance, sql: Sql, config: Co
     const id = randomUUID();
     await sql`INSERT INTO billing_receiving_accounts (id, facility_id, provider_account_id, account_number, account_name, bank_name, department_id, mode, created_by)
       VALUES (${id}, ${who.facilityId}, ${body.providerAccountId}, ${account.account_number}, ${account.account_name}, ${account.bank.name}, ${body.departmentId ?? null}, ${key.mode}, ${who.actorStaffId})`;
+    await recordAuditEvent(sql, { facilityId: who.facilityId, deviceId: who.deviceId, actorStaffId: who.actorStaffId, action: 'create', metadata: { context: 'billing_account_linked', accountId: id, mode: key.mode } });
     return { id, accountNumber: account.account_number, accountName: account.account_name, bankName: account.bank.name, departmentId: body.departmentId, mode: key.mode };
   });
 
@@ -105,6 +113,7 @@ export const registerBillingRoutes = (app: FastifyInstance, sql: Sql, config: Co
     const account = accountFromTerminal(terminal); const id = randomUUID();
     await sql`INSERT INTO billing_receiving_accounts (id, facility_id, provider_account_id, account_number, account_name, bank_name, department_id, mode, created_by)
       VALUES (${id}, ${who.facilityId}, ${terminal.code}, ${account.account_number}, ${account.account_name}, ${account.bank.name}, ${body.departmentId}, ${key.mode}, ${who.actorStaffId})`;
+    await recordAuditEvent(sql, { facilityId: who.facilityId, deviceId: who.deviceId, actorStaffId: who.actorStaffId, action: 'create', metadata: { context: 'billing_terminal_created', accountId: id, mode: key.mode } });
     return { id, accountNumber: account.account_number, accountName: account.account_name, bankName: account.bank.name, departmentId: body.departmentId, mode: key.mode };
   });
 

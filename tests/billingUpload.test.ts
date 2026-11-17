@@ -109,7 +109,7 @@ describe('billing on upload', () => {
         category: 'consultation',
         amountMinor: 150000,
         currency: 'NGN',
-        chargeWhen: 'every_visit',
+        chargeWhen: 'when_ordered',
         exemptions: [{ reason: 'Under-5 policy', ageUnderYears: 5 }],
       }),
       put('appointment', 'appointment:1', {
@@ -160,7 +160,7 @@ describe('billing on upload', () => {
           category: 'card',
           amountMinor: 50000,
           currency: 'NGN',
-          chargeWhen: 'first_visit',
+          chargeWhen: 'when_ordered',
         }),
       );
 

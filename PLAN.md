@@ -481,3 +481,29 @@ Existing clinical dispensing authority covers only these derived effects, withou
 granting manual billing or stock permissions. Pharmacy workflow 1 negotiation and
 a dedicated stream isolate partial supplies from older clients. See
 [design, operational limits and rollout](../docs/PHARMACY-STOCK-BILLING-2026-11-08.md).
+
+## Billing Release 1 (17 November 2026; local review)
+
+All staff-operated online billing and insurance endpoints now use existing
+`verifiedRequestStaff`; asserted staff IDs grant no authority. Billing derives its
+actor from the verified session, refuses mismatched assertions and rereads current
+permissions. Financial `/config/save` batches require the same proof. Other
+configuration and operational upload identity rules remain scoped as before.
+Paystack webhooks still use signature/provider verification without a staff token.
+Provider/account audit events contain the verified actor and safe metadata.
+
+The existing upload implementation adds guards only for online fee configuration:
+new fees must use `when_ordered`, existing categories cannot change until Release
+2 insurance-impact validation, and policy changes require an explicit narrow
+`/config/save?billingPolicy=1` patch. Old full-form clients cannot accidentally
+enable automation. Existing intentional automatic fees, prices, IDs, contracts,
+coverage snapshots and charges are preserved. Offline configuration was already
+refused; operational cash/clinical uploads retain their existing authorization.
+
+No migration, schema, permission, dependency or pricing-engine change. The full
+server suite passed 459 tests; subsequent focused runs passed 45 insurance tests
+(including an added historical-snapshot preservation regression) and 18 financial
+security/provider tests. Both typechecks and six real Chrome workflows with
+PostgreSQL/PowerSync pass. No existing facility database was migrated and no live
+provider was called. Releases 2–4, commits, pushes and deployment are deferred.
+See the [implementation report](../docs/billing-release-1-2026-11-17/README.md).
