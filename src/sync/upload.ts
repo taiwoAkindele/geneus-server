@@ -1,4 +1,5 @@
 import { careWorkflowIssues, chargeOrderIssues, routeReferral } from '../clinical/careWorkflow.ts';
+import { assertCatalogueUpload, chargePriceIssues, stockPriceIssue } from '../billing/catalogue.ts';
 import { labReportUploadIssues } from '../clinical/labReports.ts';
 import { inpatientUploadIssues, inpatientLocationIssues } from '../clinical/inpatient.ts';
 import { wardUploadIssues, dischargeReadinessIssues } from '../clinical/wardCare.ts';
@@ -124,7 +125,7 @@ const ADMIN_LAST_WRITE_WINS: readonly DocType[] = ['staff', 'roster_shift', 'uni
 const SERVER_OWNED_COLUMNS: Partial<Record<DocType, readonly string[]>> = {
   roster_shift: ['signature'],
   staff: ['personId'],
-  fee_item: ['priceVersion'],
+  fee_item: ['priceVersion', 'priceEvidenceVersion'],
   payment: ['incomingTransferId'],
   patient_identity_event: ['revision'],
 };
@@ -433,6 +434,7 @@ const evaluatePut = async ({ tx, identity, uploadedAt }: Context, mutation: Uplo
     if (issues.length) return refuse('validation', issues.join(' '));
   }
   const staff = await findStaffInFacility(tx, identity.facilityId, record.createdBy);
+  if(record.type==='stock_item'){const issue=await stockPriceIssue(tx,record);if(issue)return refuse('validation',issue);}
   if (staff === undefined) return refuse('identity', describeDenial({ kind: 'not_member', staffId: record.createdBy }));
   const historical = (record.type === 'encounter_entry' || record.type === 'clinical_event' || record.type === 'ward_care_event') && await historicalReviewValid(tx, record, identity.deviceId, uploadedAt);
   if (record.type === 'encounter' || record.type === 'encounter_entry' || record.type === 'ward_care_event') {
@@ -492,7 +494,7 @@ const evaluatePut = async ({ tx, identity, uploadedAt }: Context, mutation: Uplo
     const [destination] = await tx`SELECT id FROM facilities WHERE id=${record.toFacilityId}`;
     if (!destination) return refuse('validation', 'The receiving facility does not exist');
   }
-  if (record.type === 'charge') { const issues = await chargeOrderIssues(tx, record); if (issues.length) return refuse('validation', issues.join('. ')); }
+  if (record.type === 'charge') { const issues = [...await chargeOrderIssues(tx, record), ...await chargePriceIssues(tx, record)]; if (issues.length) return refuse('validation', issues.join('. ')); }
   if (record.type === 'encounter_entry') {
     if (record.step === 'dispense' && record.pharmacyVersion !== 1) {
       const [tracked] = await tx`SELECT id FROM encounter_entries WHERE facility_id=${record.facilityId} AND encounter_id=${record.encounterId} AND pharmacy_version=1 LIMIT 1`;
@@ -720,6 +722,7 @@ const evaluatePatch = async ({ tx, identity, uploadedAt }: Context, mutation: Up
     if (order.includes(changes.status) && order.indexOf(changes.status) < order.indexOf(current.status)) return refuse('conflict', 'This handoff has already progressed. Review its current state rather than reopening it');
   }
   if (!merged.success) return refuse('validation', `does not match the contract: ${merged.error.issues.map((issue) => issue.path.join('.') + ' ' + issue.message).join('; ')}`);
+  if(merged.data.type==='stock_item'){const issue=await stockPriceIssue(tx,merged.data,current.type==='stock_item'?current:undefined);if(issue)return refuse('validation',issue);}
   if (current.type === 'patient' && merged.data.type === 'patient') {
     const issues = patientIdentificationIssues(current, merged.data, updatedBy, String(changes.updatedOn ?? ''));
     if (issues.length) return refuse('validation', issues.join('; '));
@@ -912,6 +915,7 @@ const processMutation = async (
     // One order everywhere, including operator changes: facility, then record/calendar locks.
     await tx`SELECT id FROM facilities WHERE id=${identity.facilityId} FOR UPDATE`;
     await assertWorkforceCompatibility(tx, identity.facilityId, request, uploadedAt);
+    await assertCatalogueUpload(tx, identity.facilityId, request);
     const ledger = { deviceId: identity.deviceId, clientId: mutation.clientId, transactionId };
     if (!(await claimMutation(tx, ledger, mutation.table, mutation.id, 'applied'))) return { outcome: 'duplicate' };
 

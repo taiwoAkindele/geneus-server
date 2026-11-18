@@ -119,7 +119,7 @@ export const buildApp = ({ config, sql, signer, mailer: givenMailer, paystackFet
     if (origin && config.corsOrigins.includes(origin)) {
       reply.header('access-control-allow-origin', origin);
       reply.header('vary', 'origin');
-      reply.header('access-control-allow-headers', 'content-type, authorization, x-workforce-access, x-actor-staff-id, x-file-mime, x-file-sha256, x-document-meta, x-operator-session, x-staff-session');
+      reply.header('access-control-allow-headers', 'content-type, authorization, x-workforce-access, x-actor-staff-id, x-file-mime, x-file-sha256, x-document-meta, x-operator-session, x-staff-session, x-billing-catalogue-version');
       reply.header('access-control-allow-methods', 'GET, POST, OPTIONS');
     }
     if (request.method === 'OPTIONS') return reply.code(204).send();

@@ -149,7 +149,7 @@ describe('POST /facilities', () => {
     const response = await app.inject({ method: 'GET', url: '/health' });
 
     assert.equal(response.json().postgres, 'reachable');
-    assert.equal(response.json().schemaVersion, 5);
+    assert.equal(response.json().schemaVersion, 6);
   });
 
   describe('admin email', () => {
