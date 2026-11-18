@@ -11,11 +11,13 @@ export const recordClientVersion = async (sql: Sql | Tx, identity: DeviceIdentit
   policyVersion?: number;
   pendingMutationCount?: number;
   insuranceWorkflowVersion?: number;
+  billingCatalogueVersion?: number;
 }, now: number): Promise<void> => {
   const compatible = input.facilityContractVersion === 1 && (input.schemaVersion ?? 0) >= 4 && (input.schemaVersion ?? Infinity) <= SCHEMA_VERSION && (input.policyVersion ?? 0) >= 10 && (input.policyVersion ?? Infinity) <= POLICY_VERSION;
   await sql`INSERT INTO workforce_client_versions(device_id,facility_id,contract_version,schema_version,policy_version,pending_mutation_count,recorded_on,insurance_version)
     VALUES(${identity.deviceId},${identity.facilityId},${compatible ? 1 : 0},${input.schemaVersion ?? 0},${input.policyVersion ?? 0},${input.pendingMutationCount ?? 1},${new Date(now).toISOString()},${input.insuranceWorkflowVersion === 1 ? 1 : null})
     ON CONFLICT(device_id) DO UPDATE SET contract_version=EXCLUDED.contract_version,schema_version=EXCLUDED.schema_version,policy_version=EXCLUDED.policy_version,pending_mutation_count=EXCLUDED.pending_mutation_count,recorded_on=EXCLUDED.recorded_on,insurance_version=EXCLUDED.insurance_version`;
+  await sql`UPDATE workforce_client_versions SET billing_catalogue_version=${compatible && input.billingCatalogueVersion===1 && (input.schemaVersion??0)>=6 ? 1 : null} WHERE device_id=${identity.deviceId}`;
 };
 const clinicalMember = (staff: Staff) => staff.active && staff.permission === 'read_write' && rolesFor(staff).some((role) => ['chew', 'nurse', 'doctor', 'supervisor', 'laboratory_staff', 'pharmacy_staff'].includes(role));
 export const workforceReadiness = async (sql: Sql | Tx, facilityId: string, now = Date.now()) => {

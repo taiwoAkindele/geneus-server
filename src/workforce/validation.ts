@@ -176,6 +176,9 @@ export const validateWorkforceRecord = async (tx: Tx, identity: DeviceIdentity, 
       issues = facilityReferenceIssues(record, data);
       break;
     case 'service_definition':
+      if(record.feeItemId){const fee=await findRecord(tx,'fee_item',record.feeItemId);if(!fee || fee.facilityId!==identity.facilityId || fee.type!=='fee_item' || fee.category!=='laboratory' || !fee.active)issues.push('Choose an active central Laboratory item in this facility');}
+      if(record.feeItemId && [current,...data.offerings.filter(o=>o.serviceDefinitionId===record.id)].some(o=>o && 'feeItemId' in o && o.feeItemId && o.feeItemId!==record.feeItemId))
+        issues.push('Review the existing clinical fee association before linking a different central item');
       if (!record.active && data.offerings.some((o) => o.serviceDefinitionId === record.id && o.configuration === 'active'))
         issues.push('Retire or replace active offerings before retiring this definition');
       // A device may add a lab test offline: a standard one must match this facility's standard list exactly,

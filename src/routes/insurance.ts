@@ -1,3 +1,4 @@
+import { catalogueEnabled, BillingCompatibilityError } from '../billing/catalogue.ts';
 import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import {
@@ -68,6 +69,7 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
     if (!identity) return;
     const staff = await verifiedRequestStaff(sql, identity, request.headers);
     if (!staff) { reply.code(403).send({ error: 'staff_session_required', message: 'Confirm your PIN to continue' } satisfies ApiErrorBody); return; }
+    if (await catalogueEnabled(sql,identity.facilityId) && request.headers['x-billing-catalogue-version']!=='1') throw new BillingCompatibilityError('Update this financial client before continuing');
     if (!staffPermissions(staff).includes(permission)) { reply.code(403).send({ error: 'forbidden', message: `This action needs ${permission}` } satisfies ApiErrorBody); return; }
     // Off for every hospital until an operator enables it after the rollout checks — refunds included.
     const state = await insuranceState(sql, identity.facilityId);

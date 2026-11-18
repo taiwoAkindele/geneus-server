@@ -61,7 +61,8 @@ export const registerStaffSessionRoutes = (app: FastifyInstance, sql: Sql, signe
     const identity = await authenticateDevice(sql, request, reply); if (!identity) return;
     const body = UploadRequest.safeParse(request.body);
     if (!body.success) return refuse(reply, 400, 'invalid_request', 'The change is malformed');
-    const financial = body.data.mutations.some((m) => m.table === 'fee_item' || m.table === 'billing_department');
+    const financial = body.data.mutations.some((m) => m.table === 'fee_item' || m.table === 'billing_department'
+      || (['stock_item','service_definition','service_offering'].includes(m.table) && 'feeItemId' in m.data));
     const staff = await (financial ? verifiedRequestStaff : requestStaff)(sql, identity, request.headers);
     if (!staff) return refuse(reply, 403, 'staff_session_required', 'Confirm your PIN to save financial settings');
     for (const m of body.data.mutations) {

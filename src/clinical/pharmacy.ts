@@ -19,10 +19,16 @@ export const pharmacyRecords = async (tx: Tx, entry: EncounterEntry): Promise<Ph
 };
 export const pharmacyUpload = async (tx: Tx, entry: EncounterEntry): Promise<{ issues: string[]; effects: AnyDocument[] }> => {
   const data = await pharmacyRecords(tx, entry), d = dispensingDetails(entry);
+  if(d?.catalogueVersion===1 && d.billing==='charge'){
+    const selected=data.fees.find(f=>f.id===d.feeItemId);
+    const legacyStock=data.items.find(s=>s.id===d.stockItemId && s.feeItemId===d.feeItemId);
+    if(selected?.category!=='pharmacy' && !legacyStock)return {issues:['Choose a central Pharmacy price, or retain this stock item’s explicit legacy link'],effects:[]};
+  }
   if ((d?.action === 'supply' || d?.action === 'price') && d.billing === 'charge' && d.feePriceVersion) {
-    const [version] = await tx`SELECT amount_minor,currency FROM fee_price_versions WHERE facility_id=${entry.facilityId} AND id=${d.feePriceVersion} AND fee_item_id=${d.feeItemId!}`;
+    const [version] = await tx`SELECT amount_minor,currency,category,exemptions FROM fee_price_versions WHERE facility_id=${entry.facilityId} AND id=${d.feePriceVersion} AND fee_item_id=${d.feeItemId!}`;
     if (!version || Number(version.amount_minor) !== d.unitPriceMinor || version.currency !== d.currency) return { issues: ['The medicine price does not match its signed facility price version'], effects: [] };
-    data.fees = data.fees.map((fee) => fee.id === d.feeItemId ? { ...fee, amountMinor: d.unitPriceMinor!, currency: d.currency! } : fee);
+    if(d.catalogueVersion===1 && (!version.category || !Array.isArray(version.exemptions)))return {issues:['Sync the complete price evidence before selecting this new catalogue price'],effects:[]};
+    data.fees = data.fees.map((fee) => fee.id === d.feeItemId ? { ...fee, amountMinor: d.unitPriceMinor!, currency: d.currency!, ...(d.catalogueVersion===1 ? {category:version.category,exemptions:version.exemptions}: {}) } as FeeItem : fee);
   }
   const issues = pharmacyIssues(entry, data);
   return { issues, effects: issues.length ? [] : pharmacyEffects(entry, data) };

@@ -1,3 +1,4 @@
+import { catalogueEnabled, newCategoryTerms, BillingCompatibilityError } from '../billing/catalogue.ts';
 import { createHash, randomUUID } from 'node:crypto';
 import {
   CLAIM_EXPORT_FIELDS, DEFAULT_CLAIM_COLUMNS, SubmissionProfile, assessClaimDiagnoses, claimSettlement, currentCompletions, diagnosisSystemKey, effectiveEncounterEntries, normaliseDiagnosisCode, serviceDateOf, serviceFulfillment,
@@ -40,6 +41,7 @@ export const listAuthorizations = async (sql: Db, facilityId: string, patientIds
 
 /** Records an authorization or referral as obtained. A change is a new record replacing the latest one. */
 export const recordAuthorization = async (tx: Tx, facilityId: string, staffId: string, input: AuthorizationInput): Promise<ClaimAuthorization> => {
+  if (newCategoryTerms(input) && !await catalogueEnabled(tx,facilityId)) throw new BillingCompatibilityError('Update active devices before using new authorization categories');
   const [payer] = await tx`SELECT id FROM payers WHERE facility_id = ${facilityId} AND id = ${input.payerId}`;
   if (!payer) throw new ClaimRefusal('unknown_payer', 'Choose a payer of this hospital');
   const patient = await findRecord<Patient>(tx, 'patient', input.patientId);

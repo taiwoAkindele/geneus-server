@@ -2,6 +2,7 @@ import { careEntryIssues, effectiveEncounterEntries, ENCOUNTER_STEP_VALUES, type
 import type { Tx } from '../db/client.ts';
 import { findRecord, fromRow } from '../db/records.ts';
 import { labReportUploadIssues } from './labReports.ts';
+import { isDeepStrictEqual } from 'node:util';
 
 export const careWorkflowIssues = async (tx: Tx, entry: EncounterEntry): Promise<string[]> => {
   const encounter = await findRecord<Encounter>(tx, 'encounter', entry.encounterId);
@@ -20,6 +21,21 @@ export const careWorkflowIssues = async (tx: Tx, entry: EncounterEntry): Promise
       // A clinician may always request a test that is not in the catalogue; it carries no catalogue price.
       if (item.custom) {
         if (item.feeItemId || item.priceMinor !== undefined) return ['Unlisted requests cannot invent a catalogue price'];
+        continue;
+      }
+      if(item.catalogueSource==='billing'){
+        const fee=await findRecord<FeeItem>(tx,'fee_item',item.feeItemId!);
+        const [price]=await tx`SELECT * FROM fee_price_versions WHERE facility_id=${entry.facilityId} AND id=${item.feePriceVersion!} AND fee_item_id=${item.feeItemId!}`;
+        if(!fee || fee.facilityId!==entry.facilityId || !price || price.category!=='laboratory' || Number(price.amount_minor)!==item.priceMinor || price.currency!==item.currency)return ['The investigation must preserve its central Laboratory price evidence'];
+        if(!isDeepStrictEqual(item.exemptions,price.exemptions))return ['The investigation must retain its selected exemption policy'];
+        if(item.serviceDefinitionId){
+          const [profile]=await tx`SELECT snapshot FROM service_definition_versions WHERE facility_id=${entry.facilityId} AND source_id=${item.serviceDefinitionId} AND revision=${item.definitionRevision??0}`;
+          const [legacy]=item.offeringId?await tx`SELECT snapshot FROM service_offering_versions WHERE facility_id=${entry.facilityId} AND source_id=${item.offeringId} AND revision=${item.catalogueRevision??0}`:[];
+          const explicitlyLinked=legacy?.snapshot.fee_item_id===item.feeItemId && legacy?.snapshot.service_definition_id===item.serviceDefinitionId && legacy?.snapshot.configuration==='active' && legacy?.snapshot.resource_readiness==='available';
+          if(!profile || (profile.snapshot.fee_item_id!==item.feeItemId && !explicitlyLinked))return ['The clinical profile must belong to this selected central Laboratory item'];
+        }
+        const manual=await tx`SELECT id FROM charges WHERE facility_id=${entry.facilityId} AND patient_id=${entry.patientId} AND fee_item_id=${item.feeItemId!} AND order_item_id IS NULL AND dispense_entry_id IS NULL AND (encounter_id IS NULL OR encounter_id=${entry.encounterId}) LIMIT 1`;
+        if(manual.length && !item.billingReviewReason && !item.additionalChargeReason)return ['An existing manual bill may cover this investigation. Review billing before adding another charge'];
         continue;
       }
       const offering = await findRecord<ServiceOffering>(tx, 'service_offering', item.offeringId!);
@@ -51,12 +67,14 @@ export const careWorkflowIssues = async (tx: Tx, entry: EncounterEntry): Promise
   return [];
 };
 
-export const chargeOrderIssues = async (tx: Tx, charge: { facilityId: string; encounterId?: string; patientId: string; feeItemId: string; orderItemId?: string; orderEntryId?: string; listPriceMinor: number; currency: string }): Promise<string[]> => {
+export const chargeOrderIssues = async (tx: Tx, charge: { facilityId: string; encounterId?: string; patientId: string; feeItemId: string; orderItemId?: string; orderEntryId?: string; listPriceMinor: number; currency: string; feePriceVersion?:string;quantity?:number }): Promise<string[]> => {
   if (!charge.orderItemId && !charge.orderEntryId) return [];
   if (!charge.orderEntryId || !charge.orderItemId) return ['Order charges require both order and item identities'];
   const order = await findRecord<EncounterEntry>(tx, 'encounter_entry', charge.orderEntryId);
   if (!order || order.step !== 'lab_order' || order.facilityId !== charge.facilityId || order.encounterId !== charge.encounterId || order.patientId !== charge.patientId) return ['This charge must reference its own patient and encounter order'];
   const item = (order.values.items as InvestigationItem[] | undefined)?.find((i) => i.id === charge.orderItemId);
+  if(item?.billingReviewReason)return ['This investigation is awaiting billing review; it cannot create another automatic charge'];
+  if(item?.catalogueSource==='billing' && (charge.feePriceVersion!==item.feePriceVersion || charge.quantity!==1))return ['Preserve the central order price version and its single investigation quantity'];
   return !item || item.feeItemId !== charge.feeItemId || item.priceMinor !== charge.listPriceMinor || item.currency !== charge.currency ? ['The charge must preserve the signed order item price'] : [];
 };
 

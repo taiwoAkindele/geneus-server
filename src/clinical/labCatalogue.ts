@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { Location, SCHEMA_VERSION, ServiceDefinition, ServiceOffering, Unit, unitIsRoutable } from '#shared';
+import { Location, ServiceDefinition, ServiceOffering, Unit, unitIsRoutable } from '#shared';
 import type { DeviceIdentity } from '../devices/credentials.ts';
 import type { Tx } from '../db/client.ts';
 import { insertRecord } from '../db/records.ts';
@@ -53,7 +53,8 @@ export const addLabTests = async (tx: Tx, identity: DeviceIdentity, staffId: str
   if (!facility) throw new CatalogueRefusal('This facility was not found');
   const definitions = await recordsInFacility(tx, identity.facilityId, 'service_definition');
   const taken = takenTestKeys(definitions), now = new Date().toISOString(), added: string[] = [], skipped: string[] = [];
-  const envelope = { facilityId: identity.facilityId, deviceId: identity.deviceId, createdBy: staffId, createdOn: now, schemaVersion: SCHEMA_VERSION };
+  // This legacy operational shape must remain readable before catalogue cutover.
+  const envelope = { facilityId: identity.facilityId, deviceId: identity.deviceId, createdBy: staffId, createdOn: now, schemaVersion: 5 };
   let placement: Awaited<ReturnType<typeof laboratoryPlacement>> | undefined;
   for (const draft of drafts) {
     const name = draft.name.trim().replace(/\s+/g, ' ');

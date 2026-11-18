@@ -7,6 +7,7 @@ import { authenticateDevice } from '../auth/deviceAuth.ts';
 import { verifiedRequestStaff } from '../auth/staffSessions.ts';
 import { recordAuditEvent } from '../audit/auditEvents.ts';
 import { availableOnCharge } from '../billing/ledger.ts';
+import { catalogueEnabled, catalogueReadiness, BillingCompatibilityError } from '../billing/catalogue.ts';
 import { accountFromTerminal, callPaystack, openPaystackSecret, PaystackAccount, PaystackTerminal, sealPaystackSecret, validPaystackSignature, VerifiedPaystackTransfer, type PaystackFetch } from '../billing/paystack.ts';
 import type { Sql } from '../db/client.ts';
 import { fromRow, insertRecord } from '../db/records.ts';
@@ -29,6 +30,7 @@ export const registerBillingRoutes = (app: FastifyInstance, sql: Sql, config: Co
     if (!identity) return;
     const staff = await verifiedRequestStaff(sql, identity, request.headers);
     if (!staff) { reply.code(403).send({ error: 'staff_session_required', message: 'Confirm your PIN to continue' }); return; }
+    if (await catalogueEnabled(sql,identity.facilityId) && request.headers['x-billing-catalogue-version']!=='1') throw new BillingCompatibilityError('Update this financial client before continuing');
     const actor = Actor.safeParse(request.body ?? {});
     if (!actor.success) { reply.code(400).send({ error: 'invalid_request', message: 'Invalid billing request' }); return; }
     const assertedHeader = request.headers['x-actor-staff-id'];
@@ -38,6 +40,10 @@ export const registerBillingRoutes = (app: FastifyInstance, sql: Sql, config: Co
     if (!staffPermissions(staff).includes(permission)) { reply.code(403).send({ error: 'forbidden', message: 'Your account cannot perform this billing action' }); return; }
     return { ...identity, actorStaffId: staff.id };
   };
+  app.post('/billing/catalogue/readiness', async (request,reply)=>{
+    const who=await authorize(request,reply,'fee_item:manage'); if(!who)return;
+    return catalogueReadiness(sql,who.facilityId);
+  });
   const connection = async (facilityId: string) => {
     if (!config.billingEncryptionKey) throw conflict('Paystack setup requires BILLING_ENCRYPTION_KEY on the server');
     const [row] = await sql<ConnectionRow[]>`SELECT encrypted_secret, mode FROM billing_connections WHERE facility_id = ${facilityId}`;

@@ -10,6 +10,17 @@
 
 **Version:** 2.0 · **Owner:** Solo founder-builder · **Supersedes:** 1.1 (CouchDB)
 
+### Billing Releases 2A/2B (18 November 2026)
+
+Migration 0041 adds catalogue compatibility metadata, expanded category constraints,
+complete immutable price/exemption heads, charge quantity/price/service-point
+evidence and optional clinical-definition fee references. Historical financial rows
+and old price versions remain intact. New formats wait for all active readers,
+drained queues and old-token expiry; incompatible uploads receive 409 before a
+mutation is acknowledged. Release 1 verified financial actors and category/policy
+safeguards remain. No generic charge-association table or reclassification engine
+is included. See [local report](../docs/billing-release-2ab-2026-11-18/README.md).
+
 ### Continuing inpatient care (5 November 2026)
 
 Migration 0028 links internal encounter sessions to the original admission and

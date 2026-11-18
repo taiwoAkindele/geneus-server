@@ -1,3 +1,4 @@
+import { catalogueEnabled, newCategoryTerms, BillingCompatibilityError } from '../billing/catalogue.ts';
 import {
   CALCULATION_VERSION, CoverSchedule, PayerContractTerms, PayerContractVersion, SCHEMA_VERSION, buildScheduleLines, contractIdFor,
   contractVersionId, insuranceConfigurable, serviceDateOf, unsupportedArrangements, type FeeCategory, type InsuranceState,
@@ -58,6 +59,7 @@ export const saveDraft = async (tx: Tx, facilityId: string, staffId: string, inp
   const parsed = PayerContractTerms.safeParse(input.terms);
   if (!parsed.success) throw new ContractRefusal('invalid_terms', parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; '));
   const terms = parsed.data;
+  if (newCategoryTerms(terms) && !await catalogueEnabled(tx,facilityId)) throw new BillingCompatibilityError('Update active devices before configuring new insurance categories');
   await tx`SELECT id FROM facilities WHERE id = ${facilityId} FOR UPDATE`;
   const [payer] = await tx`SELECT id FROM payers WHERE facility_id = ${facilityId} AND id = ${terms.payerId}`;
   if (!payer) throw new ContractRefusal('unknown_payer', 'Choose a payer of this hospital');

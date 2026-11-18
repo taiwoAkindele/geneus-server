@@ -114,7 +114,7 @@ export const fromRow = <T extends AnyDocument>(type: DocType, row: Row): T => {
   for (const [column, value] of Object.entries(row)) {
     if (type === 'authority_snapshot' && column === 'is_current') continue;
     if (value === null) continue;
-    record[camelCase(column)] = value;
+    record[camelCase(column)] = ['quantity','unit_price_minor'].includes(column) && typeof value==='string' ? Number(value) : value;
   }
   const parsed = parseDocument(record);
   if (!parsed.success) {

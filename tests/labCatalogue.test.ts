@@ -103,6 +103,6 @@ describe('server-owned laboratory catalogue', () => {
     const accepted = await send(records);
     assert.deepEqual(accepted.rejected, []);
     const priced = await send([entry('entry:priced-order', 'lab_order', { tests: ['Serum zinc'], items: [{ ...item, id: 'order_item:priced', name: 'Serum zinc', priceMinor: 100, currency: 'NGN' }] })]);
-    assert.match(priced.rejected[0].reason, /cannot invent a catalogue price/);
+    assert.match(priced.rejected[0].reason, /cannot (invent a catalogue price|carry catalogue prices)/);
   });
 });
