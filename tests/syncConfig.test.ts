@@ -33,7 +33,7 @@ describe('sync-config.yaml', () => {
         `${table} is not filtered to the token's facility`,
       );
     }
-    assert.equal((config.match(/auto_subscribe: true/g) ?? []).length, syncedTypes().length + 6);
+    assert.equal((config.match(/auto_subscribe: true/g) ?? []).length, syncedTypes().length + 9);
     assert.ok(config.includes('  sync_rejections_legacy:'));
     for (const type of ['audit_events','sync_rejections']) {
       assert.ok(config.includes(`  ${type}_ward_care:`));

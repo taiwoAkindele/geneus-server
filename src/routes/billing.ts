@@ -2,15 +2,19 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
-import { Payment, PaymentAllocation, SCHEMA_VERSION, staffPermissions, type IncomingTransfer, type Permission } from '#shared';
+import { Payment, PaymentAllocation, ServiceChargeAllocation,SCHEMA_VERSION, staffPermissions, type IncomingTransfer, type Permission } from '#shared';
 import { authenticateDevice } from '../auth/deviceAuth.ts';
 import { verifiedRequestStaff } from '../auth/staffSessions.ts';
 import { recordAuditEvent } from '../audit/auditEvents.ts';
 import { availableOnCharge } from '../billing/ledger.ts';
+import { reserveSource,sourceCapacity } from '../billing/sourceCapacity.ts';
+import {integratedEnabled,integratedReadiness} from '../billing/integrated.ts';
+import {buildPatientStatement} from '../billing/patientStatements.ts';
+import {confirmInsuranceReturn} from '../billing/insuranceReturns.ts';
 import { catalogueEnabled, catalogueReadiness, BillingCompatibilityError } from '../billing/catalogue.ts';
 import { accountFromTerminal, callPaystack, openPaystackSecret, PaystackAccount, PaystackTerminal, sealPaystackSecret, validPaystackSignature, VerifiedPaystackTransfer, type PaystackFetch } from '../billing/paystack.ts';
 import type { Sql } from '../db/client.ts';
-import { fromRow, insertRecord } from '../db/records.ts';
+import { findRecord,fromRow, insertRecord } from '../db/records.ts';
 import type { Config } from '../lib/config.ts';
 
 /** Exact request bytes, retained only for the lifetime of a webhook request. */
@@ -25,37 +29,85 @@ type ConnectionRow = { encrypted_secret: string; mode: 'test' | 'live' };
 type AccountRow = { id: string; department_id: string | null; account_number: string };
 
 export const registerBillingRoutes = (app: FastifyInstance, sql: Sql, config: Config, fetcher: PaystackFetch = fetch) => {
-  const authorize = async (request: FastifyRequest, reply: Parameters<typeof authenticateDevice>[2], permission: Permission) => {
+  const authorize = async (request: FastifyRequest, reply: Parameters<typeof authenticateDevice>[2], permission: Permission|readonly Permission[]) => {
     const identity = await authenticateDevice(sql, request, reply);
     if (!identity) return;
     const staff = await verifiedRequestStaff(sql, identity, request.headers);
     if (!staff) { reply.code(403).send({ error: 'staff_session_required', message: 'Confirm your PIN to continue' }); return; }
     if (await catalogueEnabled(sql,identity.facilityId) && request.headers['x-billing-catalogue-version']!=='1') throw new BillingCompatibilityError('Update this financial client before continuing');
+    if(await integratedEnabled(sql,identity.facilityId)&&request.headers['x-integrated-billing-version']!=='1')throw new BillingCompatibilityError('Update this financial client before continuing');
     const actor = Actor.safeParse(request.body ?? {});
     if (!actor.success) { reply.code(400).send({ error: 'invalid_request', message: 'Invalid billing request' }); return; }
     const assertedHeader = request.headers['x-actor-staff-id'];
     if ((actor.data.actorStaffId && actor.data.actorStaffId !== staff.id) || (assertedHeader !== undefined && assertedHeader !== staff.id)) {
       reply.code(403).send({ error: 'attribution_mismatch', message: 'A billing action must belong to the verified staff member' }); return;
     }
-    if (!staffPermissions(staff).includes(permission)) { reply.code(403).send({ error: 'forbidden', message: 'Your account cannot perform this billing action' }); return; }
+    if (!(typeof permission==='string'?[permission]:permission).some(p=>staffPermissions(staff).includes(p))) { reply.code(403).send({ error: 'forbidden', message: 'Your account cannot perform this billing action' }); return; }
     return { ...identity, actorStaffId: staff.id };
   };
   app.post('/billing/catalogue/readiness', async (request,reply)=>{
     const who=await authorize(request,reply,'fee_item:manage'); if(!who)return;
     return catalogueReadiness(sql,who.facilityId);
   });
+  app.post('/billing/integrated/readiness',async(request,reply)=>{const who=await authorize(request,reply,'fee_item:manage');if(who)return integratedReadiness(sql,who.facilityId);});
+  app.post('/billing/associations/insurance-return',async(request,reply)=>{
+    const who=await authorize(request,reply,'coverage:confirm');if(!who||!await authorize(request,reply,'charge:associate'))return;
+    if(!await integratedEnabled(sql,who.facilityId))throw conflict('Insured returns require compatible financial readers');
+    const body=parseBody(Actor.extend({requestId:z.string().uuid(),input:z.record(z.string(),z.unknown())}),request.body),now=Date.now();
+    const parsed=ServiceChargeAllocation.safeParse({...body.input,id:'service_charge_allocation:'+body.requestId,type:'service_charge_allocation',facilityId:who.facilityId,deviceId:who.deviceId,createdBy:who.actorStaffId,createdOn:new Date(now).toISOString(),schemaVersion:7,acceptedOn:undefined,creditMinor:undefined,updatedBy:undefined,updatedOn:undefined});
+    if(!parsed.success)return reply.code(400).send({error:'invalid_request',message:'Select the exact accepted supply allocation, returned quantity and reason'});
+    return sql.begin(async tx=>{
+      await tx`SELECT id FROM facilities WHERE id=${who.facilityId} FOR UPDATE`;
+      const prior=await findRecord<ServiceChargeAllocation>(tx,'service_charge_allocation',parsed.data.id);
+      if(prior){const content=(a:ServiceChargeAllocation)=>Object.fromEntries(Object.entries(a).filter(([k,v])=>v!==undefined&&!['acceptedOn','creditMinor','createdOn'].includes(k)));if(!isDeepStrictEqual(content(prior),content(parsed.data)))throw conflict('This return request was already used for another decision');const claims=await tx`SELECT claim_id FROM insurance_claim_lines WHERE facility_id=${who.facilityId} AND charge_id=${prior.chargeId} AND current`;return {record:prior,replayed:true,claimReviewRequired:claims.length>0};}
+      const result=await confirmInsuranceReturn(tx,parsed.data,now);
+      await recordAuditEvent(tx,{facilityId:who.facilityId,deviceId:who.deviceId,actorStaffId:who.actorStaffId,action:'create',entityType:'service_charge_allocation',entityId:result.record.id,metadata:{context:'insured_return_confirmed',allocationId:result.allocationId,claimReviewRequired:result.claimReviewRequired}});
+      return result;
+    });
+  });
+  app.post('/billing/statements/patient',async(request,reply)=>{
+    const who=await authorize(request,reply,['payment:receive','payment:waive','coverage:confirm','charge:create']);if(!who)return;
+    if(!await integratedEnabled(sql,who.facilityId))throw conflict('Comprehensive statements are waiting for compatible financial readers');
+    const body=parseBody(Actor.extend({patientId:z.string().min(1),currency:z.string().regex(/^[A-Z]{3}$/),cutoff:z.string().datetime({offset:true}).optional()}),request.body);
+    const cutoff=body.cutoff??new Date().toISOString();if(Date.parse(cutoff)>Date.now()+1000)throw conflict('A statement cutoff cannot be in the future');
+    const [patient]=await sql`SELECT id FROM patients WHERE facility_id=${who.facilityId} AND id=${body.patientId}`;if(!patient)throw conflict('Select a patient in this hospital');
+    reply.header('cache-control','no-store');
+    return sql.begin(async tx=>{await tx`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY`;return buildPatientStatement(tx,who.facilityId,body.patientId,body.currency,cutoff);});
+  });
+  app.post('/billing/reports/financial',async(request,reply)=>{
+    const who=await authorize(request,reply,['payment:receive','payment:waive','insurance_remittance:record','fee_item:manage']);if(!who)return;
+    if(!await integratedEnabled(sql,who.facilityId))throw conflict('Financial snapshots are waiting for compatible readers');
+    const body=parseBody(Actor.extend({currency:z.string().regex(/^[A-Z]{3}$/),cutoff:z.string().datetime({offset:true}).optional(),after:z.string().optional()}),request.body),cutoff=body.cutoff??new Date().toISOString();
+    if(Date.parse(cutoff)>Date.now()+1000)throw conflict('A report cutoff cannot be in the future');
+    reply.header('cache-control','no-store');
+    return sql.begin(async tx=>{await tx`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY`;
+      const patients=await tx`SELECT DISTINCT patient_id FROM charges WHERE facility_id=${who.facilityId} AND currency=${body.currency} AND created_on<=${cutoff} AND patient_id>${body.after??''} ORDER BY patient_id LIMIT 26`;
+      const statements=[];for(const patient of patients.slice(0,25))statements.push(await buildPatientStatement(tx,who.facilityId,String(patient.patient_id),body.currency,cutoff));
+      // Payer money not yet assigned to a claim cannot be attributed to a patient.
+      const [payerMoney]=await tx`SELECT COALESCE(SUM(r.amount_minor),0) AS received,
+       COALESCE(SUM((SELECT COALESCE(SUM(a.amount_minor),0) FROM insurance_remittance_allocations a WHERE a.facility_id=r.facility_id AND a.remittance_id=r.id AND a.recorded_on<=${cutoff})),0) AS allocated
+       FROM insurance_remittances r WHERE r.facility_id=${who.facilityId} AND r.currency=${body.currency} AND r.recorded_on<=${cutoff}
+       AND NOT EXISTS(SELECT 1 FROM insurance_remittance_reversals v WHERE v.facility_id=r.facility_id AND v.remittance_id=r.id AND v.reversed_on<=${cutoff})`;
+      return {cutoff,statements,payerReceiptsMinor:Number(payerMoney.received),unallocatedPayerReceiptsMinor:Number(payerMoney.received)-Number(payerMoney.allocated),...(patients.length>25?{nextAfter:String(patients[24].patient_id)}:{})};
+    });
+  });
+  app.post('/billing/transfers/capacity',async(request,reply)=>{
+    const who=await authorize(request,reply,['payment:receive','insurance_remittance:record']);if(!who)return;
+    const body=parseBody(Actor.extend({ids:z.array(z.string().min(1)).max(200)}),request.body);
+    return sql.begin(async tx=>{await tx`SELECT id FROM facilities WHERE id=${who.facilityId} FOR UPDATE`;const sources=[];for(const id of [...new Set(body.ids)].sort()){const c=await sourceCapacity(tx,who.facilityId,id);sources.push({id,patientMinor:c.patientMinor,payerMinor:c.payerMinor,availableMinor:Math.max(0,c.availableMinor),overRecognizedMinor:Math.max(0,-c.availableMinor)});}return {sources};});
+  });
   const connection = async (facilityId: string) => {
     if (!config.billingEncryptionKey) throw conflict('Paystack setup requires BILLING_ENCRYPTION_KEY on the server');
     const [row] = await sql<ConnectionRow[]>`SELECT encrypted_secret, mode FROM billing_connections WHERE facility_id = ${facilityId}`;
     if (!row) throw conflict('Connect this hospital\'s Paystack account first');
-    return { secret: openPaystackSecret(row.encrypted_secret, config.billingEncryptionKey, facilityId), mode: row.mode };
+    return { secret: openPaystackSecret(row.encrypted_secret, config.billingEncryptionKey, facilityId), mode: row.mode,encryptedSecret:row.encrypted_secret };
   };
   app.post('/billing/connection/status', async (request, reply) => {
     const who = await authorize(request, reply, 'fee_item:manage'); if (!who) return;
-    const [row] = await sql<{ mode: string }[]>`SELECT mode FROM billing_connections WHERE facility_id = ${who.facilityId}`;
+    const [row] = await sql<{ mode: string; receiving_account_id: string | null }[]>`SELECT mode,receiving_account_id FROM billing_connections WHERE facility_id = ${who.facilityId}`;
     const accounts = await sql`SELECT id, account_number AS "accountNumber", account_name AS "accountName", bank_name AS "bankName", department_id AS "departmentId", mode
       FROM billing_receiving_accounts WHERE facility_id = ${who.facilityId} ORDER BY created_on`;
-    return { configured: Boolean(row), mode: row?.mode, encryptionReady: Boolean(config.billingEncryptionKey), accounts,
+    return { configured: Boolean(row), mode: row?.mode, receivingAccountId:row?.receiving_account_id ?? undefined, encryptionReady: Boolean(config.billingEncryptionKey), accounts,
       webhookPath: `/billing/paystack/${encodeURIComponent(who.facilityId)}/webhook` };
   });
   app.post('/billing/connection', async (request, reply) => {
@@ -68,15 +120,36 @@ export const registerBillingRoutes = (app: FastifyInstance, sql: Sql, config: Co
     const encrypted = sealPaystackSecret(body.secretKey, config.billingEncryptionKey, who.facilityId);
     await sql`INSERT INTO billing_connections (facility_id, encrypted_secret, mode, updated_by)
       VALUES (${who.facilityId}, ${encrypted}, ${mode}, ${who.actorStaffId})
-      ON CONFLICT (facility_id) DO UPDATE SET encrypted_secret = EXCLUDED.encrypted_secret, mode = EXCLUDED.mode, updated_by = EXCLUDED.updated_by, updated_on = now()`;
+      ON CONFLICT (facility_id) DO UPDATE SET encrypted_secret = EXCLUDED.encrypted_secret,
+      receiving_account_id=NULL,
+      mode = EXCLUDED.mode, updated_by = EXCLUDED.updated_by, updated_on = now()`;
     await recordAuditEvent(sql, { facilityId: who.facilityId, deviceId: who.deviceId, actorStaffId: who.actorStaffId, action: 'update', metadata: { context: 'billing_provider_connected', mode } });
     return { configured: true, mode };
   });
   app.post('/billing/accounts/list', async (request, reply) => {
     const who = await authorize(request, reply, 'payment:receive'); if (!who) return;
-    return sql`SELECT a.id, a.account_number AS "accountNumber", a.account_name AS "accountName", a.bank_name AS "bankName", a.department_id AS "departmentId", a.mode
+    return sql`SELECT a.id, a.account_number AS "accountNumber", a.account_name AS "accountName", a.bank_name AS "bankName", a.department_id AS "departmentId", a.mode, (a.id=c.receiving_account_id) AS "general"
       FROM billing_receiving_accounts a JOIN billing_connections c ON c.facility_id = a.facility_id AND c.mode = a.mode
-      WHERE a.facility_id = ${who.facilityId} ORDER BY a.created_on`;
+      WHERE a.facility_id = ${who.facilityId} ORDER BY (a.id=c.receiving_account_id) DESC NULLS LAST,a.created_on`;
+  });
+  app.post('/billing/accounts/general',async(request,reply)=>{
+    const who=await authorize(request,reply,'fee_item:manage');if(!who)return;
+    const body=parseBody(Actor.extend({accountId:z.string().min(1)}),request.body);
+    const key=await connection(who.facilityId);
+    const [candidate]=await sql`SELECT * FROM billing_receiving_accounts WHERE facility_id=${who.facilityId} AND id=${body.accountId} AND mode=${key.mode}`;
+    if(!candidate)throw conflict('Select an account in this hospital and provider mode');
+    const id=String(candidate.provider_account_id),verified=id.startsWith('VT_')?accountFromTerminal(await callPaystack(key.secret,`/virtual_terminal/${id}`,fetcher)):PaystackAccount.parse(await callPaystack(key.secret,`/dedicated_account/${id}`,fetcher));
+    if(!verified.active||verified.currency!=='NGN'||String(verified.id)!==id||verified.account_number!==candidate.account_number)throw conflict('This receiving account is not verified under the current hospital connection');
+    await sql.begin(async tx=>{
+      await tx`SELECT id FROM facilities WHERE id=${who.facilityId} FOR UPDATE`;
+      const [current]=await tx`SELECT mode,encrypted_secret FROM billing_connections WHERE facility_id=${who.facilityId}`;
+      if(!current||current.mode!==key.mode||current.encrypted_secret!==key.encryptedSecret)throw conflict('The hospital connection changed. Refresh and select the receiving account again');
+      const [account]=await tx`SELECT a.id FROM billing_receiving_accounts a JOIN billing_connections c ON c.facility_id=a.facility_id AND c.mode=a.mode WHERE a.facility_id=${who.facilityId} AND a.id=${body.accountId}`;
+      if(!account)throw conflict('Select a linked receiving account in the current provider mode');
+      await tx`UPDATE billing_connections SET receiving_account_id=${body.accountId},updated_by=${who.actorStaffId},updated_on=now() WHERE facility_id=${who.facilityId}`;
+      await recordAuditEvent(tx,{facilityId:who.facilityId,deviceId:who.deviceId,actorStaffId:who.actorStaffId,action:'update',metadata:{context:'billing_general_account_selected',accountId:body.accountId}});
+    });
+    return {receivingAccountId:body.accountId};
   });
   app.post('/billing/accounts/discover', async (request, reply) => {
     const who = await authorize(request, reply, 'fee_item:manage'); if (!who) return;
@@ -101,26 +174,27 @@ export const registerBillingRoutes = (app: FastifyInstance, sql: Sql, config: Co
     const id = randomUUID();
     await sql`INSERT INTO billing_receiving_accounts (id, facility_id, provider_account_id, account_number, account_name, bank_name, department_id, mode, created_by)
       VALUES (${id}, ${who.facilityId}, ${body.providerAccountId}, ${account.account_number}, ${account.account_name}, ${account.bank.name}, ${body.departmentId ?? null}, ${key.mode}, ${who.actorStaffId})`;
+    if(!body.departmentId)await sql`UPDATE billing_connections SET receiving_account_id=${id},updated_by=${who.actorStaffId},updated_on=now() WHERE facility_id=${who.facilityId} AND mode=${key.mode} AND receiving_account_id IS NULL`;
     await recordAuditEvent(sql, { facilityId: who.facilityId, deviceId: who.deviceId, actorStaffId: who.actorStaffId, action: 'create', metadata: { context: 'billing_account_linked', accountId: id, mode: key.mode } });
     return { id, accountNumber: account.account_number, accountName: account.account_name, bankName: account.bank.name, departmentId: body.departmentId, mode: key.mode };
   });
 
   app.post('/billing/accounts/create-terminal', async (request, reply) => {
     const who = await authorize(request, reply, 'fee_item:manage'); if (!who) return;
-    const body = parseBody(Actor.extend({ departmentId: z.string().min(1), notificationPhone: z.string().regex(/^\+[1-9]\d{7,14}$/) }), request.body);
+    const body = parseBody(Actor.extend({ notificationPhone: z.string().regex(/^\+[1-9]\d{7,14}$/) }), request.body);
     const key = await connection(who.facilityId);
-    const [department] = await sql<{ name: string }[]>`SELECT name FROM billing_departments WHERE id = ${body.departmentId} AND facility_id = ${who.facilityId} AND active`;
-    if (!department) throw conflict('Save the department and let it sync before creating its payment point');
-    const [existing] = await sql`SELECT id FROM billing_receiving_accounts WHERE facility_id = ${who.facilityId} AND mode = ${key.mode} AND department_id = ${body.departmentId}`;
-    if (existing) throw conflict('This department already has a receiving account. Use its existing bank details.');
+    const [hospital] = await sql<{ name: string }[]>`SELECT name FROM facilities WHERE id = ${who.facilityId}`;
+    const [existing] = await sql`SELECT id FROM billing_receiving_accounts WHERE facility_id = ${who.facilityId} AND mode = ${key.mode} AND department_id IS NULL`;
+    if (existing) throw conflict('A general receiving account is already linked. Select its existing bank details.');
     const terminal = PaystackTerminal.parse(await callPaystack(key.secret, '/virtual_terminal', fetcher, {
-      name: department.name, currency: 'NGN', destinations: [{ target: body.notificationPhone, name: department.name }],
+      name: hospital.name, currency: 'NGN', destinations: [{ target: body.notificationPhone, name: hospital.name }],
     }));
     const account = accountFromTerminal(terminal); const id = randomUUID();
     await sql`INSERT INTO billing_receiving_accounts (id, facility_id, provider_account_id, account_number, account_name, bank_name, department_id, mode, created_by)
-      VALUES (${id}, ${who.facilityId}, ${terminal.code}, ${account.account_number}, ${account.account_name}, ${account.bank.name}, ${body.departmentId}, ${key.mode}, ${who.actorStaffId})`;
+      VALUES (${id}, ${who.facilityId}, ${terminal.code}, ${account.account_number}, ${account.account_name}, ${account.bank.name}, NULL, ${key.mode}, ${who.actorStaffId})`;
+    await sql`UPDATE billing_connections SET receiving_account_id=${id},updated_by=${who.actorStaffId},updated_on=now() WHERE facility_id=${who.facilityId} AND mode=${key.mode} AND receiving_account_id IS NULL`;
     await recordAuditEvent(sql, { facilityId: who.facilityId, deviceId: who.deviceId, actorStaffId: who.actorStaffId, action: 'create', metadata: { context: 'billing_terminal_created', accountId: id, mode: key.mode } });
-    return { id, accountNumber: account.account_number, accountName: account.account_name, bankName: account.bank.name, departmentId: body.departmentId, mode: key.mode };
+    return { id, accountNumber: account.account_number, accountName: account.account_name, bankName: account.bank.name, mode: key.mode };
   });
 
   const ingest = async (facilityId: string, reference: string, key: Awaited<ReturnType<typeof connection>>) => {
@@ -167,6 +241,7 @@ export const registerBillingRoutes = (app: FastifyInstance, sql: Sql, config: Co
     const who = await authorize(request, reply, 'payment:receive'); if (!who) return;
     const body = parseBody(Match, request.body);
     const payment = await sql.begin(async (tx) => {
+      await tx`SELECT id FROM facilities WHERE id=${who.facilityId} FOR UPDATE`;
       const id = `payment:${body.requestId}`;
       const sameRequest = (row: Record<string, unknown>) => row.incoming_transfer_id === request.params.id && row.patient_id === body.patientId && row.created_by === who.actorStaffId && isDeepStrictEqual(row.allocations, body.allocations);
       const [prior] = await tx`SELECT * FROM payments WHERE id = ${id} AND facility_id = ${who.facilityId}`;
@@ -180,15 +255,13 @@ export const registerBillingRoutes = (app: FastifyInstance, sql: Sql, config: Co
       // Recheck after waiting for a competing request with the same idempotency key.
       const [again] = await tx`SELECT * FROM payments WHERE id = ${id} AND facility_id = ${who.facilityId}`;
       if (again) { if (!sameRequest(again)) throw conflict('This allocation request was already used'); return fromRow<Payment>('payment', again); }
-      const priorPayments = await tx<{ amount_minor: number; reverses: string | null }[]>`SELECT amount_minor, reverses FROM payments WHERE facility_id = ${who.facilityId} AND incoming_transfer_id = ${request.params.id}`;
-      const available = source.amount_minor - priorPayments.reduce((n, p) => n + (p.reverses ? -1 : 1) * p.amount_minor, 0);
       const amountMinor = body.allocations.reduce((n, a) => n + a.amountMinor, 0);
-      if (amountMinor > available) throw conflict('This transfer has already been allocated. Refresh incoming transfers.');
+      await reserveSource(tx,who.facilityId,request.params.id,amountMinor,source.currency);
       const ids = body.allocations.map((a) => a.chargeId);
       const charges = await tx<{ id: string; patient_id: string; currency: string; department_id: string | null }[]>`SELECT id, patient_id, currency, department_id FROM charges WHERE facility_id = ${who.facilityId} AND id = ANY(${ids}) ORDER BY id FOR UPDATE`;
       for (const a of body.allocations) {
         const charge = charges.find((c) => c.id === a.chargeId);
-        if (!charge || charge.patient_id !== body.patientId || charge.currency !== source.currency || (source.department_id && source.department_id !== charge.department_id)) throw conflict('Select this patient\'s synced bills in the receiving department and currency');
+        if (!charge || charge.patient_id !== body.patientId || charge.currency !== source.currency) throw conflict('Select this patient\'s synced bills in the receipt currency');
         if (a.amountMinor > await availableOnCharge(tx, who.facilityId, a.chargeId)) throw conflict('An allocation exceeds the current bill balance. Refresh the patient account.');
       }
       await tx`SELECT id FROM facilities WHERE id = ${who.facilityId} FOR UPDATE`;

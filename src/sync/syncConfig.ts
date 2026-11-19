@@ -91,7 +91,10 @@ const queryFor = (type: DocType, legacy: boolean, care = true, templates?: boole
   if(type === 'encounter_entry') lines.push("  AND (auth.parameter('clinical_workflow') = 1 OR (step <> 'investigation_review' AND step <> 'result_review' AND step <> 'prescription' AND step <> 'injection_order' AND step <> 'disposition'))");
   if(type==='authority_snapshot') lines.push('  AND is_current = true');
   // Insurance records, and anything naming them, reach only clients that negotiated insurance.
-  if (isInsuranceType(type)) lines.push("  AND auth.parameter('insurance_workflow') = 1");
+  if (isInsuranceType(type)) lines.push(['refund','coverage_allocation'].includes(type)?"  AND (auth.parameter('insurance_workflow') = 1 OR auth.parameter('integrated_billing') = 1)":"  AND auth.parameter('insurance_workflow') = 1");
+  if(type==='service_charge_allocation'||type==='coverage_financial_summary')lines.push("  AND auth.parameter('integrated_billing') = 1");
+  if(type==='audit_event'||type==='sync_rejection')lines.push("  AND ifnull(entity_type, '') <> 'service_charge_allocation'","  AND ifnull(entity_type, '') <> 'coverage_financial_summary'");
+  if(type==='staff')lines.push("  AND auth.parameter('integrated_billing') IS NULL","  AND instr(additional_permissions, '\"charge:associate\"') = 0");
   // Without an OR: insurance entries travel in their own stream (insuranceEntityQuery), keeping branch counts flat.
   if (type === 'audit_event' || type === 'sync_rejection') lines.push(`  AND ${entityTypeNotIn(INSURANCE_SYNCED_TYPES)}`);
   if (type === 'staff') lines.push(`  AND (auth.parameter('insurance_workflow') = 1 OR (role <> 'insurance_officer' AND instr(additional_roles, 'insurance_officer') = 0 AND ${INSURANCE_PERMISSIONS.map((permission) => `instr(additional_permissions, '"${permission}"') = 0`).join(' AND ')}))`);
@@ -113,7 +116,7 @@ const queryFor = (type: DocType, legacy: boolean, care = true, templates?: boole
 /** Audit events and refusals about insurance records, for insurance clients only: one query per entity type, no OR beyond visibility. */
 const insuranceEntityQuery = (type: 'audit_event' | 'sync_rejection', entityType: string): string[] => [
   `SELECT ${selectListFor(type).join(', ')}`, `FROM ${TABLE_FOR[type]}`, `WHERE facility_id = auth.parameter('${FACILITY_CLAIM}')`,
-  "  AND auth.parameter('facility_contract') = 1", "  AND auth.parameter('clinical_workflow') = 1", "  AND auth.parameter('insurance_workflow') = 1",
+  "  AND auth.parameter('facility_contract') = 1", "  AND auth.parameter('clinical_workflow') = 1", ['refund','coverage_allocation'].includes(entityType)?"  AND (auth.parameter('insurance_workflow') = 1 OR auth.parameter('integrated_billing') = 1)":"  AND auth.parameter('insurance_workflow') = 1",
   `  AND entity_type = '${entityType}'`,
   ...(type === 'sync_rejection' ? ["  AND (visibility IS NULL OR visibility = 'facility')"] : []),
 ];
@@ -133,7 +136,7 @@ export const buildSyncConfig = (): string => {
   for (const type of syncedTypes()) {
     lines.push(`  ${streamNameFor(type)}:`);
     lines.push('    auto_subscribe: true');
-    if (isInsuranceType(type)) {
+    if (isInsuranceType(type)||type==='service_charge_allocation'||type==='coverage_financial_summary') {
       lines.push('    queries:', '      - |', ...queryFor(type,false,true).map((line)=>`        ${line}`));
     } else if(FACILITY_DOCUMENT_TYPES.some((t)=>t===type)) {
       lines.push('    queries:');
@@ -150,6 +153,7 @@ export const buildSyncConfig = (): string => {
         for (const templates of split ? [true, false] : [undefined]) for (const careServices of careSplit ? [true, false] : [undefined]) lines.push('      - |', ...queryFor(type,legacy,care,templates,false,false,careServices).map((line)=>`        ${line}`));
       }
     }
+    if(type==='staff')lines.push('  staff_integrated:', '    auto_subscribe: true','    queries:','      - |',`        SELECT ${selectListFor(type,false,true,true,true).join(', ')}`,'        FROM staff',`        WHERE facility_id = auth.parameter('${FACILITY_CLAIM}')`,"          AND auth.parameter('integrated_billing') = 1","          AND auth.parameter('facility_contract') = 1");
     if (type === 'sync_rejection') {
       lines.push(`  ${streamNameFor(type)}_legacy:`, '    auto_subscribe: true', '    queries:');
       for (const care of [true, false]) lines.push('      - |', ...queryFor(type,true,care).map((line)=>`        ${line}`));
@@ -158,6 +162,11 @@ export const buildSyncConfig = (): string => {
     // PowerSync limits total buckets per stream, including all its queries.
     // Ward-capable clients always negotiate the current facility/care contracts.
     if (type === 'audit_event' || type === 'sync_rejection') {
+      lines.push(`  ${streamNameFor(type)}_integrated:`, '    auto_subscribe: true','    queries:');
+      for(const entityType of ['service_charge_allocation','coverage_financial_summary'])lines.push('      - |',
+        `        SELECT ${selectListFor(type).join(', ')}`,`        FROM ${TABLE_FOR[type]}`,
+        `        WHERE facility_id = auth.parameter('${FACILITY_CLAIM}')`,"          AND auth.parameter('integrated_billing') = 1",
+        `          AND entity_type = '${entityType}'`,...(type==='sync_rejection'?["          AND (visibility IS NULL OR visibility = 'facility')"]:[]));
       lines.push(`  ${streamNameFor(type)}_insurance:`, '    auto_subscribe: true', '    queries:');
       for (const entityType of INSURANCE_SYNCED_TYPES) lines.push('      - |', ...insuranceEntityQuery(type, entityType).map((line) => `        ${line}`));
       lines.push(`  ${streamNameFor(type)}_ward_care:`, '    auto_subscribe: true', '    queries:', '      - |', ...queryFor(type,false,true,undefined,true).map((line)=>`        ${line}`));

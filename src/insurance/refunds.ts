@@ -36,6 +36,7 @@ const sameRequest = (refund: Refund, request: RefundRequest, staffId: string) =>
  */
 export const recordRefund = async (tx: Tx, input: { facilityId: string; deviceId: string; staffId: string; request: RefundRequest }): Promise<{ refund: Refund; replayed: boolean }> => {
   const { request } = input;
+  await tx`SELECT id FROM facilities WHERE id=${input.facilityId} FOR UPDATE`;
   await tx`SELECT pg_advisory_xact_lock(hashtext(${`${input.facilityId}:${request.id}`}))`;
   const [prior] = await tx`SELECT * FROM refunds WHERE facility_id = ${input.facilityId} AND id = ${request.id}`;
   if (prior) {

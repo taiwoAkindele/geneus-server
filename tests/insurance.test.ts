@@ -88,10 +88,10 @@ describe('insurance foundation', () => {
   after(async () => { if (app) await app.close(); if (db) await db.drop(); });
 
   describe('off until enabled, then protected by verified staff and granular permissions', () => {
-    it('keeps insurance and refunds off for a hospital an operator has not enabled', async () => {
+    it('keeps insurance off and waits for compatible readers before self-pay refunds', async () => {
       const response = await call('/insurance/contracts/list', {}, officer.id);
       assert.equal(response.json().error, 'insurance_not_enabled');
-      assert.equal((await call('/billing/refunds', { id: `refund:${randomUUID()}`, patientId: patient('000001'), method: 'cash', currency: 'NGN', allocations: [{ chargeId: 'x', amountMinor: 1 }], reason: 'Synthetic' }, supervisor.id)).json().error, 'insurance_not_enabled');
+      assert.equal((await call('/billing/refunds', { id: `refund:${randomUUID()}`, patientId: patient('000001'), method: 'cash', currency: 'NGN', allocations: [{ chargeId: 'x', amountMinor: 1 }], reason: 'Synthetic' }, supervisor.id)).json().error, 'upgrade_required');
       const t = await token();
       assert.equal(t.statusCode, 200, t.body);
       assert.equal(t.json().insuranceWorkflowVersion, undefined, 'a capable device gets no insurance records yet');
@@ -111,7 +111,7 @@ describe('insurance foundation', () => {
       const t2 = await token();
       assert.equal(t2.json().insuranceWorkflowVersion, 1, 'setup delivers insurance configuration records');
       assert.equal(t2.json().insuranceBillingActive, false, 'but tells the device billing is not active');
-      assert.equal((await call('/billing/refunds', { id: `refund:${randomUUID()}`, patientId: patient('000001'), method: 'cash', currency: 'NGN', allocations: [{ chargeId: 'x', amountMinor: 1 }], reason: 'Synthetic' }, supervisor.id)).json().error, 'insurance_billing_inactive');
+      assert.equal((await call('/billing/refunds', { id: `refund:${randomUUID()}`, patientId: patient('000001'), method: 'cash', currency: 'NGN', allocations: [{ chargeId: 'x', amountMinor: 1 }], reason: 'Synthetic' }, supervisor.id)).json().error, 'upgrade_required');
     });
     it('lets a hospital administrator leave and re-enter setup, never activate billing', async () => {
       assert.deepEqual((await call('/insurance/setup', { state: 'off' }, f.admin.id)).json(), { state: 'off' });
@@ -186,9 +186,9 @@ describe('insurance foundation', () => {
       assert.equal(audit.metadata.acceptedRevokedDevices, lost, 'the acceptance is audited');
       await assert.rejects(db.sql`UPDATE payer_contract_versions SET terms = '{}' WHERE id = 'contract:payer:synthetic-a:v1'`, 'an active version is frozen');
     });
-    it('keeps tariffs and payer shares off every device', async () => {
+    it('keeps confidential tariffs and calculation inputs off devices while publishing patient-facing confirmed amounts', async () => {
       const config = buildSyncConfig();
-      for (const secret of ['payer_contract_versions', 'coverage_allocation_details', 'insurance_requests', 'payer_share', 'contract_adjustment', 'tariff', 'insurance_enabled']) assert.ok(!config.includes(secret), secret);
+      for (const secret of ['payer_contract_versions', 'coverage_allocation_details', 'insurance_requests', 'terms_slice', 'tariff_unit_minor', 'tariff', 'insurance_enabled']) assert.ok(!config.includes(secret), secret);
       const published = (await db.sql<{ tablename: string }[]>`SELECT tablename FROM pg_publication_tables WHERE pubname = 'powersync'`).map((r) => r.tablename);
       for (const secret of ['payer_contract_versions', 'coverage_allocation_details', 'insurance_requests']) assert.ok(!published.includes(secret), secret);
       assert.ok(published.includes('cover_schedules') && published.includes('coverage_allocations'));

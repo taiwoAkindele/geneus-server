@@ -1,3 +1,4 @@
+import type {ServiceChargeAllocation} from '#shared';
 import { catalogueEnabled, newCategoryTerms, BillingCompatibilityError } from '../billing/catalogue.ts';
 import { createHash, randomUUID } from 'node:crypto';
 import {
@@ -213,13 +214,15 @@ const settlementData = async (sql: Db, facilityId: string, claimNumbers: readonl
 export const claimViews = async (sql: Db, facilityId: string, claimRows: readonly Row[]): Promise<ClaimView[]> => {
   if (!claimRows.length) return [];
   const claimIds = claimRows.map((c) => c.id as string);
-  const lineRows = await sql<Row[]>`SELECT l.*, d.inputs, d.payer_share_minor, d.patient_share_minor AS d_patient_share, d.list_price_minor FROM insurance_claim_lines l
+  const lineRows = await sql<Row[]>`SELECT l.*, d.inputs, d.payer_share_minor, d.patient_share_minor AS d_patient_share, d.list_price_minor,d.return_adjustment_minor FROM insurance_claim_lines l
     JOIN coverage_allocation_details d ON d.allocation_id = l.allocation_id AND d.facility_id = l.facility_id
     WHERE l.facility_id = ${facilityId} AND l.claim_id = ANY(${claimIds}) ORDER BY d.inputs->>'serviceDate', l.charge_id`;
   const chargeIds = [...new Set(lineRows.map((l) => l.charge_id as string))];
   const charges = new Map((await chargesById(sql, facilityId, chargeIds)).map((c) => [c.id, c]));
   const patientIds = [...new Set(claimRows.map((c) => c.patient_id as string))];
   const payerIds = [...new Set(claimRows.map((c) => c.payer_id as string))];
+  const associations=(await sql`SELECT * FROM service_charge_allocations WHERE facility_id=${facilityId} AND patient_id=ANY(${patientIds})`).map(r=>fromRow<ServiceChargeAllocation>('service_charge_allocation',r));
+  const associationEntries=(await sql`SELECT * FROM encounter_entries WHERE facility_id=${facilityId} AND patient_id=ANY(${patientIds})`).map(r=>fromRow<EncounterEntry>('encounter_entry',r));
   const encounterIds = [...new Set([...charges.values()].map((c) => c.encounterId).filter(Boolean))] as string[];
   const appointmentIds = [...new Set([...charges.values()].map((c) => c.appointmentId).filter(Boolean))] as string[];
   const dispenseIds = [...new Set([...charges.values()].map((c) => c.dispenseEntryId).filter(Boolean))] as string[];
@@ -279,7 +282,7 @@ export const claimViews = async (sql: Db, facilityId: string, claimRows: readonl
       const serviceDate = inputs.serviceDate as string;
       const visitEncounter = visitOf(charge.id);
       const visitEntries = visitEncounter ? effectiveEncounterEntries(byEncounter.get(visitEncounter) ?? []) : [];
-      const fulfillment = serviceFulfillment(charge, {
+      const fulfillment = serviceFulfillment(charge, {associations,associatedEntries:associationEntries,
         results: charge.encounterId ? effectiveEncounterEntries(byEncounter.get(charge.encounterId) ?? []) : [],
         dispense: charge.dispenseEntryId ? dispenses.get(charge.dispenseEntryId) : undefined,
         visitEntries, completion: completions.get(charge.id),
@@ -309,7 +312,7 @@ export const claimViews = async (sql: Db, facilityId: string, claimRows: readonl
       return {
         chargeId: charge.id, allocationId: l.allocation_id as string, contractVersionId: l.contract_version_id as string, feeItemId: charge.feeItemId, description: charge.description, category: charge.category,
         serviceDate, units: inputs.units as number, unitPriceMinor: (inputs.tariffUnitMinor as number | null) ?? null, payerShareMinor: Number(l.payer_share_minor),
-        patientShareMinor: Number(l.d_patient_share), listPriceMinor: Number(l.list_price_minor), ...(tariff?.payerCode ? { payerCode: tariff.payerCode } : {}), fulfillment, ...(authorization ? { authorization } : {}),
+        patientShareMinor: Number(l.d_patient_share), listPriceMinor: Number(l.list_price_minor)-Number(l.return_adjustment_minor??0), ...(tariff?.payerCode ? { payerCode: tariff.payerCode } : {}), fulfillment, ...(authorization ? { authorization } : {}),
         ...(decision ? { decision } : {}),
       };
     });

@@ -29,13 +29,14 @@ export type SyncTokenOptions = {
   insuranceWorkflowVersion?: 1;
   careServiceVersion?: 1;
   billingCatalogueVersion?: 1;
+  integratedBillingVersion?:1;
 };
 
 const base64url = (input: Buffer | string): string => Buffer.from(input).toString('base64url');
 
 export const mintSyncToken = (signer: Signer, options: SyncTokenOptions): { token: string; expiresOn: string } => {
   const issuedAt = Math.floor((options.now ?? Date.now()) / 1000);
-  const claims = { ...(options.billingCatalogueVersion ? { billing_catalogue: 1 } : {}), ...SyncTokenClaims.parse({
+  const claims = { ...(options.integratedBillingVersion?{integrated_billing:1}:{}), ...(options.billingCatalogueVersion ? { billing_catalogue: 1 } : {}), ...SyncTokenClaims.parse({
     sub: options.deviceId,
     aud: options.audience,
     iat: issuedAt,
