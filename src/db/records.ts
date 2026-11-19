@@ -37,6 +37,8 @@ export const TABLE_FOR: Record<DocType, string> = {
   charge: 'charges',
   payment: 'payments',
   billing_adjustment: 'billing_adjustments',
+  service_charge_allocation:'service_charge_allocations',
+  coverage_financial_summary:'coverage_financial_summaries',
   incoming_transfer: 'incoming_transfers',
   billing_department: 'billing_departments',
   location: 'locations', service_definition: 'service_definitions', service_offering: 'service_offerings',

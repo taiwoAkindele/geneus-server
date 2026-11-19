@@ -1,4 +1,6 @@
 import { dispensingDetails, pharmacyIssues, pharmacyEffects, type AnyDocument, type Encounter, type Appointment, type EncounterEntry, type StockItem, type StockMovement, type FeeItem, type Charge, type BillingAdjustment, type Patient, type WardCareEvent, type PharmacyRecords } from '#shared';
+import {integratedEnabled} from '../billing/integrated.ts';
+import type {ServiceChargeAllocation} from '#shared';
 import type { Tx } from '../db/client.ts';
 import { findRecord, fromRow } from '../db/records.ts';
 
@@ -15,7 +17,8 @@ export const pharmacyRecords = async (tx: Tx, entry: EncounterEntry): Promise<Ph
     tx`SELECT * FROM ward_care_events WHERE facility_id=${entry.facilityId} AND patient_id=${entry.patientId}`,
     findRecord<Patient>(tx, 'patient', entry.patientId),
   ]);
-  return { visitType: encounter?.visitType ?? appointment?.visitType, entries: entries.map((r) => fromRow<EncounterEntry>('encounter_entry', r)), items: items.map((r) => fromRow<StockItem>('stock_item', r)), movements: movements.map((r) => fromRow<StockMovement>('stock_movement', r)), fees: fees.map((r) => fromRow<FeeItem>('fee_item', r)), charges: charges.map((r) => fromRow<Charge>('charge', r)), adjustments: adjustments.map((r) => fromRow<BillingAdjustment>('billing_adjustment', r)), wardEvents: wardEvents.map((r) => fromRow<WardCareEvent>('ward_care_event', r)), patient };
+  const serviceAllocations=(await tx`SELECT * FROM service_charge_allocations WHERE facility_id=${entry.facilityId} AND patient_id=${entry.patientId}`).map(r=>fromRow<ServiceChargeAllocation>('service_charge_allocation',r));
+  return { integratedBilling:await integratedEnabled(tx,entry.facilityId),serviceAllocations,visitType: encounter?.visitType ?? appointment?.visitType, entries: entries.map((r) => fromRow<EncounterEntry>('encounter_entry', r)), items: items.map((r) => fromRow<StockItem>('stock_item', r)), movements: movements.map((r) => fromRow<StockMovement>('stock_movement', r)), fees: fees.map((r) => fromRow<FeeItem>('fee_item', r)), charges: charges.map((r) => fromRow<Charge>('charge', r)), adjustments: adjustments.map((r) => fromRow<BillingAdjustment>('billing_adjustment', r)), wardEvents: wardEvents.map((r) => fromRow<WardCareEvent>('ward_care_event', r)), patient };
 };
 export const pharmacyUpload = async (tx: Tx, entry: EncounterEntry): Promise<{ issues: string[]; effects: AnyDocument[] }> => {
   const data = await pharmacyRecords(tx, entry), d = dispensingDetails(entry);

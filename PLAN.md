@@ -518,3 +518,18 @@ security/provider tests. Both typechecks and six real Chrome workflows with
 PostgreSQL/PowerSync pass. No existing facility database was migrated and no live
 provider was called. Releases 2–4, commits, pushes and deployment are deferred.
 See the [implementation report](../docs/billing-release-1-2026-11-17/README.md).
+
+## Integrated Billing ? local implementation, 19 November 2026
+
+Migration 0042 adds exact service allocation events, public amount-only insurance
+summaries, one general account pointer, shared bank receipt references and the
+compatible-reader gate. It does not reprice or rewrite financial history.
+Facility/charge/source locks serialize financial acceptance; offline intentions
+remain provisional and refusals retain source/actor evidence. One verified incoming
+receipt capacity covers both existing patient and insurer payment workflows.
+Verified insured returns reuse computeAllocation with original snapshotted terms
+and append a superseding allocation; claim revision/refunds remain separate.
+Statements/reporting use one projection and existing settlement functions;
+unallocated payer money stays at facility level. Existing clinical authorization,
+Paystack authenticity checks and offline cash upload remain. No fee reclassification
+or new ledger is included. See ../docs/integrated-billing-2026-11-18/README.md.

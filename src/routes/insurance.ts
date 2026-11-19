@@ -1,4 +1,5 @@
 import { catalogueEnabled, BillingCompatibilityError } from '../billing/catalogue.ts';
+import {integratedEnabled} from '../billing/integrated.ts';
 import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import {
@@ -70,8 +71,9 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
     const staff = await verifiedRequestStaff(sql, identity, request.headers);
     if (!staff) { reply.code(403).send({ error: 'staff_session_required', message: 'Confirm your PIN to continue' } satisfies ApiErrorBody); return; }
     if (await catalogueEnabled(sql,identity.facilityId) && request.headers['x-billing-catalogue-version']!=='1') throw new BillingCompatibilityError('Update this financial client before continuing');
+    if(await integratedEnabled(sql,identity.facilityId)&&request.headers['x-integrated-billing-version']!=='1')throw new BillingCompatibilityError('Update this financial client before continuing');
     if (!staffPermissions(staff).includes(permission)) { reply.code(403).send({ error: 'forbidden', message: `This action needs ${permission}` } satisfies ApiErrorBody); return; }
-    // Off for every hospital until an operator enables it after the rollout checks — refunds included.
+    // Insurance workflow activation is separate from ordinary financial refund authority.
     const state = await insuranceState(sql, identity.facilityId);
     const history = state !== 'active' && needs === 'billing' && (await billingPeriods(sql, identity.facilityId)).length > 0;
     if (state === 'off' && needs !== 'any' && !history) { reply.code(403).send({ error: 'insurance_not_enabled', message: 'Insurance is not enabled for this hospital' } satisfies ApiErrorBody); return; }
@@ -232,7 +234,8 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
   });
 
   app.post('/billing/refunds', async (request, reply) => {
-    const who = await verified(request, reply, 'payment:refund', 'billing'); if (!who) return;
+    const who = await verified(request, reply, 'payment:refund', 'any'); if (!who) return;
+    if(!await integratedEnabled(sql,who.identity.facilityId)&&await insuranceState(sql,who.identity.facilityId)!=='active'&&!(await billingPeriods(sql,who.identity.facilityId)).length)throw new BillingCompatibilityError('Self-pay refunds are waiting for compatible financial readers so every account sees the money handed back');
     const body = RefundRequest.safeParse(request.body); if (!body.success) return invalid(reply, 'Choose the charges, amounts, method and a reason for the refund');
     try {
       const { refund, replayed } = await sql.begin((tx) => recordRefund(tx, { facilityId: who.identity.facilityId, deviceId: who.identity.deviceId, staffId: who.staff.id, request: body.data }));

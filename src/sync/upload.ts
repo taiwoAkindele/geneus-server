@@ -1,3 +1,5 @@
+import {assertIntegratedUpload,integratedEnabled} from '../billing/integrated.ts';
+import {prepareServiceAllocation} from '../billing/serviceAllocations.ts';
 import { careWorkflowIssues, chargeOrderIssues, routeReferral } from '../clinical/careWorkflow.ts';
 import { assertCatalogueUpload, chargePriceIssues, stockPriceIssue } from '../billing/catalogue.ts';
 import { labReportUploadIssues } from '../clinical/labReports.ts';
@@ -92,6 +94,7 @@ import { recordClientVersion } from '../workforce/readiness.ts';
 
 /** Written by the server; a device may never insert them. */
 const SERVER_WRITTEN: readonly DocType[] = ['facility', 'device', 'sync_rejection', 'pin_setup_code', 'incoming_transfer', 'inbound_referral',
+  'coverage_financial_summary',
   // Insurance configuration, confirmed splits and refunds are decided online by verified staff (routes/insurance.ts).
   'payer', 'cover_schedule', 'coverage_allocation', 'refund'];
 /** Server-written, but a device may patch the few columns that record what it did with them. */
@@ -113,6 +116,7 @@ const APPEND_ONLY: readonly DocType[] = [
   'charge',
   'payment',
   'billing_adjustment',
+  'service_charge_allocation',
   'patient_identity_event',
   'patient_cover', 'cover_check', 'coverage_election', 'service_completion',
 ];
@@ -123,6 +127,7 @@ const ADMIN_LAST_WRITE_WINS: readonly DocType[] = ['staff', 'roster_shift', 'uni
 
 /** Columns only the server may set. */
 const SERVER_OWNED_COLUMNS: Partial<Record<DocType, readonly string[]>> = {
+  service_charge_allocation:['acceptedOn','creditMinor'],
   roster_shift: ['signature'],
   staff: ['personId'],
   fee_item: ['priceVersion', 'priceEvidenceVersion'],
@@ -137,6 +142,7 @@ const RESOLUTION_COLUMNS = new Set(['resolvedOn', 'resolvedBy', 'resolution']);
 const PATCH_METADATA = new Set(['id', 'updatedBy', 'updatedOn']);
 
 const PUT_PERMISSION: Partial<Record<DocType, Permission>> = {
+  service_charge_allocation:'charge:associate',
   patient: 'patient:create',
   patient_identity_event: 'patient_identity:review',
   visit: 'visit:create',
@@ -360,6 +366,7 @@ const allocationsByCharge = (payment: Payment): Record<string, number> =>
  * overpayment shows in the balances for a supervisor to settle (PRD §9.13.7).
  */
 const paymentRefusal = async (tx: Tx, payment: Payment): Promise<Refusal | undefined> => {
+  if(payment.method==='transfer'&&!payment.reverses&&await integratedEnabled(tx,payment.facilityId))return refuse('validation','Allocate a verified hospital bank receipt online. Offline cash collection remains available');
   const chargeIds = payment.allocations.map((allocation) => allocation.chargeId);
   const charges = await tx<{ id: string; patient_id: string; currency: string }[]>`
     SELECT id, patient_id, currency FROM charges
@@ -633,7 +640,9 @@ const evaluatePut = async ({ tx, identity, uploadedAt }: Context, mutation: Uplo
   }
 
   // Server clock on audit events the device recorded offline.
-  const toWrite = table === 'audit_event' ? { ...record, receivedOn: new Date(uploadedAt).toISOString() } : record;
+  const allocation=record.type==='service_charge_allocation'?await prepareServiceAllocation(tx,record,uploadedAt,staffPermissions(staff).includes('payment:waive')):undefined;
+  if(allocation?.issue)return refuse('conflict',allocation.issue);
+  const toWrite = allocation?.record ?? (table === 'audit_event' ? { ...record, receivedOn: new Date(uploadedAt).toISOString() } : record);
   const pharmacy = record.type === 'encounter_entry' && record.pharmacyVersion === 1 ? await pharmacyUpload(tx, record) : undefined;
   if (pharmacy?.issues.length) return refuse('conflict', pharmacy.issues.join('; '));
   // Dispensing authority covers only companions derived from this exact validated
@@ -641,6 +650,7 @@ const evaluatePut = async ({ tx, identity, uploadedAt }: Context, mutation: Uplo
   if (pharmacy && !historical && !staffPermissions(staff).includes('clinical:dispense')) return refuse('authorization', 'This pharmacy action requires dispensing authority');
   const failure = await attempt(tx, async (sp) => {
     await insertRecord(sp, table, toWrite);
+    if(allocation?.credit)await insertRecord(sp,'billing_adjustment',allocation.credit);
     for (const child of pharmacy?.effects ?? []) await insertRecord(sp, child.type, child);
   });
   if (!failure && record.type === 'referral') await routeReferral(tx, record);
@@ -916,6 +926,7 @@ const processMutation = async (
     await tx`SELECT id FROM facilities WHERE id=${identity.facilityId} FOR UPDATE`;
     await assertWorkforceCompatibility(tx, identity.facilityId, request, uploadedAt);
     await assertCatalogueUpload(tx, identity.facilityId, request);
+    await assertIntegratedUpload(tx,identity.facilityId,request);
     const ledger = { deviceId: identity.deviceId, clientId: mutation.clientId, transactionId };
     if (!(await claimMutation(tx, ledger, mutation.table, mutation.id, 'applied'))) return { outcome: 'duplicate' };
 
@@ -990,6 +1001,7 @@ export const processUpload = async (
   await sql.begin(async (tx) => {
     await tx`SELECT id FROM facilities WHERE id=${identity.facilityId} FOR UPDATE`;
     await assertWorkforceCompatibility(tx, identity.facilityId, request, now);
+    await assertIntegratedUpload(tx,identity.facilityId,request);
     // Readiness must see an in-progress upload before any accepted mutation,
     // including a legacy upload following an earlier modern-client handshake.
     await recordClientVersion(tx, identity, { ...request, pendingMutationCount: 1 }, now);

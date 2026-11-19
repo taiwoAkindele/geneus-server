@@ -94,9 +94,10 @@ describe('hospital department billing and Paystack reconciliation', () => {
     const before = calls; assert.equal((await notify('forged', false)).statusCode, 401); assert.equal(calls, before);
     const [row] = await db.sql`SELECT count(*)::int AS n FROM incoming_transfers`; assert.equal(row.n, 0);
   });
-  it('creates named department payment points and links existing virtual terminals without patient checkout', async () => {
-    const created = await post('accounts/create-terminal', { actorStaffId: facility.admin.id, departmentId: 'dental', notificationPhone: '+2348012345678' });
-    assert.equal(created.statusCode, 200, created.body); assert.equal(created.json().departmentId, 'dental');
+  it('creates a general hospital payment point and preserves explicitly linked legacy account metadata', async () => {
+    const created = await post('accounts/create-terminal', { actorStaffId: facility.admin.id, notificationPhone: '+2348012345678' });
+    assert.equal(created.statusCode, 200, created.body); assert.equal(created.json().departmentId, undefined);
+    const status=await post('connection/status',{actorStaffId:facility.admin.id});assert.equal(status.json().receivingAccountId,created.json().id);
     const existing = await post('accounts/link', { actorStaffId: facility.admin.id, providerAccountId: 'VT_GS', departmentId: 'gs' });
     assert.equal(existing.statusCode, 200, existing.body); assert.equal(existing.json().departmentId, 'gs');
   });
@@ -110,9 +111,9 @@ describe('hospital department billing and Paystack reconciliation', () => {
     assert.equal((await notify('wrong-mode')).statusCode, 409); assert.equal((await notify('unlinked')).statusCode, 200);
     const [row] = await db.sql`SELECT * FROM incoming_transfers WHERE provider_reference = 'unlinked'`; assert.equal(row.department_id, null);
   });
-  it('requires a patient bill in the receiving department, facility and currency', async () => {
+  it('allows cross-category collection through an existing account while retaining patient, facility and currency isolation', async () => {
     const [source] = await db.sql`SELECT id FROM incoming_transfers WHERE provider_reference = 'verified'`;
-    assert.equal((await match(source.id, 'charge:oncology:000001', 1000)).statusCode, 409);
+    assert.equal((await match(source.id, 'charge:oncology:000001', 1000)).statusCode, 200);
     assert.equal((await match(source.id, 'charge:pharmacy:000001', 1000, randomUUID(), patient('000002'))).statusCode, 409);
     const refused = await post(`transfers/${encodeURIComponent(source.id)}/match`, { actorStaffId: nurse.id, patientId: patient(), allocations: [{ chargeId: 'charge:pharmacy:000001', amountMinor: 1000 }], requestId: randomUUID() });
     assert.equal(refused.statusCode, 403);

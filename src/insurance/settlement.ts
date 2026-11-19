@@ -5,6 +5,8 @@ import {
 } from '#shared';
 import type { Sql, Tx } from '../db/client.ts';
 import { ClaimRefusal, claimViews } from './claims.ts';
+import { reserveSource } from '../billing/sourceCapacity.ts';
+import {integratedEnabled} from '../billing/integrated.ts';
 
 /**
  * Hospital-side settlement (Slice 4): what payers decided and paid, and what
@@ -118,10 +120,17 @@ export const recordRemittance = async (tx: Tx, facilityId: string, staffId: stri
   const [duplicate] = await tx`SELECT 1 FROM insurance_remittances r WHERE r.facility_id = ${facilityId} AND r.payer_id = ${input.payerId} AND lower(btrim(r.reference)) = lower(btrim(${input.reference}))
     AND NOT EXISTS (SELECT 1 FROM insurance_remittance_reversals v WHERE v.remittance_id = r.id)`;
   if (duplicate) throw new ClaimRefusal('duplicate_remittance', 'A payment with this reference from this payer is already recorded');
+  if(input.incomingTransferId && input.method!=='transfer')throw new ClaimRefusal('invalid_source','A verified bank receipt is used only for a transfer remittance');
+  const candidates=input.method==='transfer'?await tx`SELECT id FROM incoming_transfers WHERE facility_id=${facilityId} AND currency=${input.currency}
+    AND (id=${input.incomingTransferId??null} OR (${input.incomingTransferId??null}::text IS NULL AND lower(btrim(provider_reference))=lower(btrim(${input.reference}))))`:[];
+  if(candidates.length>1)throw new ClaimRefusal('ambiguous_source','Choose the exact verified receipt; its reference is ambiguous');
+  const incomingTransferId=input.incomingTransferId??candidates[0]?.id as string|undefined;
+  if(input.method==='transfer'&&!incomingTransferId&&await integratedEnabled(tx,facilityId))throw new ClaimRefusal('verified_receipt_required','Import or select the verified hospital bank receipt before recognizing this transfer');
+  if(incomingTransferId)await reserveSource(tx,facilityId,incomingTransferId,input.amountMinor,input.currency);
   const id = `remittance:${randomUUID()}`;
-  const [remittance] = await tx<Row[]>`INSERT INTO insurance_remittances (id, facility_id, payer_id, received_on, reference, amount_minor, currency, method, receiving_account, evidence_document_id, note, source, recorded_by)
+  const [remittance] = await tx<Row[]>`INSERT INTO insurance_remittances (id, facility_id, payer_id, received_on, reference, amount_minor, currency, method, receiving_account, evidence_document_id, note, source, recorded_by, incoming_transfer_id)
     VALUES (${id}, ${facilityId}, ${input.payerId}, ${input.receivedOn}, ${input.reference}, ${input.amountMinor}, ${input.currency}, ${input.method}, ${input.receivingAccount ?? null},
-      ${input.evidenceDocumentId ?? null}, ${input.note ?? null}, ${input.source ? tx.json(input.source as never) : null}, ${staffId}) RETURNING *`;
+      ${input.evidenceDocumentId ?? null}, ${input.note ?? null}, ${input.source ? tx.json(input.source as never) : null}, ${staffId},${incomingTransferId??null}) RETURNING *`;
   const allocated = await allocate(tx, facilityId, staffId, remittance, input.allocations);
   return { remittanceId: id, allocatedMinor: allocated, unallocatedMinor: input.amountMinor - allocated };
 };

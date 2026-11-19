@@ -46,6 +46,8 @@ export const confirmAllocations = async (tx: Tx, request: ConfirmRequest): Promi
 
   for (const charge of charges) {
     const skip = (reason: string) => outcomes.push({ chargeId: charge.id, outcome: 'skipped', reason });
+    const [returned]=await tx`SELECT id FROM service_charge_allocations WHERE facility_id=${request.facilityId} AND charge_id=${charge.id} AND credit_returned_units LIMIT 1`;
+    if(returned){skip('returned_quantity_requires_explicit_insurance_review');continue;}
     const current = currentAllocation(charge.id, records.allocations);
     if (current && request.basis !== 'exception') { skip('already_confirmed'); continue; }
     // No retrospective cover: a charge raised outside every billing period stays as billed. Corrections are ordinary billing adjustments.
