@@ -27,7 +27,7 @@ const EDITION = 3;
  */
 const LEGACY_OMISSIONS: Partial<Record<DocType, readonly string[]>> = {
   facility:['timeZone','timeZoneHistory','workforcePolicy','allowCustomInvestigations'],unit:['kind','parentId','routingEnabled','revision'],billing_department:['organizationUnitId','revision'],
-  fee_item:['priceVersion'], encounter:['workflowVersion'], staff:['personId'], charge:['orderItemId','orderEntryId'],
+  fee_item:['priceVersion','description'], encounter:['workflowVersion'], staff:['personId'], charge:['orderItemId','orderEntryId','billId'],
   appointment:['allocation'],encounter_entry:['actorContext','workflowVersion'],clinical_event:['actorContext'],sync_rejection:['dependencies','visibility','visibleToStaffIds'],
 };
 const CARE_FIELDS: Partial<Record<DocType, readonly string[]>> = { facility: ['allowCustomInvestigations'], staff: ['personId'], fee_item: ['priceVersion'], service_definition: ['investigation'], service_offering: ['feeItemId'], encounter: ['workflowVersion'], encounter_entry: ['workflowVersion'], charge: ['orderItemId','orderEntryId'] };
