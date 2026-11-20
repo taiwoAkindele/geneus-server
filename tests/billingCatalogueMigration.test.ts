@@ -17,8 +17,8 @@ it('upgrades populated Release 1 data without rewriting prices, charges, stock l
   await migrate(db.sql,migrations);
   const [after]=await db.sql`SELECT * FROM fee_items WHERE id='fee:existing'`;
   const {price_version:oldHead,...original}=before;
-  const {price_version:newHead,price_evidence_version,...unchanged}=after;
-  assert.deepEqual(unchanged,original);assert.notEqual(newHead,oldHead);assert.equal(price_evidence_version,1);
+  const {price_version:newHead,price_evidence_version,description,...unchanged}=after;
+  assert.equal(description,null);assert.deepEqual(unchanged,original);assert.notEqual(newHead,oldHead);assert.equal(price_evidence_version,1);
   for(const old of oldPrices)assert.deepEqual((await db.sql`SELECT id,facility_id,fee_item_id,amount_minor,currency,recorded_on FROM fee_price_versions WHERE id=${old.id}`)[0],old);
   for(const old of oldCharges){const now=(await db.sql`SELECT * FROM charges WHERE id=${old.id}`)[0];for(const key of Object.keys(old))assert.deepEqual(now[key],old[key]);assert.equal(now.fee_price_version,null);}
   assert.deepEqual(await db.sql`SELECT * FROM stock_items ORDER BY id`,oldStock);

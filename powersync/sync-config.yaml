@@ -1253,7 +1253,7 @@ streams:
     auto_subscribe: true
     queries:
       - |
-        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", price_evidence_version AS "priceEvidenceVersion", price_version AS "priceVersion", name, category, department_id AS "departmentId", amount_minor AS "amountMinor", currency, charge_when AS "chargeWhen", exemptions, active
+        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", price_evidence_version AS "priceEvidenceVersion", price_version AS "priceVersion", name, description, category, department_id AS "departmentId", amount_minor AS "amountMinor", currency, charge_when AS "chargeWhen", exemptions, active
         FROM fee_items
         WHERE facility_id = auth.parameter('facility_id')
           AND auth.parameter('facility_contract') = 1
@@ -1265,7 +1265,7 @@ streams:
           AND (auth.parameter('facility_contract') IS NULL OR auth.parameter('facility_contract') <> 1)
           AND auth.parameter('clinical_workflow') = 1
       - |
-        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", price_evidence_version AS "priceEvidenceVersion", name, category, department_id AS "departmentId", amount_minor AS "amountMinor", currency, charge_when AS "chargeWhen", exemptions, active
+        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", price_evidence_version AS "priceEvidenceVersion", name, description, category, department_id AS "departmentId", amount_minor AS "amountMinor", currency, charge_when AS "chargeWhen", exemptions, active
         FROM fee_items
         WHERE facility_id = auth.parameter('facility_id')
           AND auth.parameter('facility_contract') = 1
@@ -1280,7 +1280,7 @@ streams:
     auto_subscribe: true
     queries:
       - |
-        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", fee_price_version AS "feePriceVersion", quantity, unit_price_minor AS "unitPriceMinor", unit_of_measure AS "unitOfMeasure", service_point_id AS "servicePointId", dispense_entry_id AS "dispenseEntryId", order_item_id AS "orderItemId", order_entry_id AS "orderEntryId", patient_id AS "patientId", fee_item_id AS "feeItemId", description, category, department_id AS "departmentId", list_price_minor AS "listPriceMinor", amount_minor AS "amountMinor", currency, exemption_reason AS "exemptionReason", appointment_id AS "appointmentId", encounter_id AS "encounterId"
+        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", fee_price_version AS "feePriceVersion", quantity, unit_price_minor AS "unitPriceMinor", unit_of_measure AS "unitOfMeasure", service_point_id AS "servicePointId", dispense_entry_id AS "dispenseEntryId", order_item_id AS "orderItemId", order_entry_id AS "orderEntryId", bill_id AS "billId", patient_id AS "patientId", fee_item_id AS "feeItemId", description, category, department_id AS "departmentId", list_price_minor AS "listPriceMinor", amount_minor AS "amountMinor", currency, exemption_reason AS "exemptionReason", appointment_id AS "appointmentId", encounter_id AS "encounterId"
         FROM charges
         WHERE facility_id = auth.parameter('facility_id')
           AND auth.parameter('facility_contract') = 1
@@ -1292,7 +1292,7 @@ streams:
           AND (auth.parameter('facility_contract') IS NULL OR auth.parameter('facility_contract') <> 1)
           AND auth.parameter('clinical_workflow') = 1
       - |
-        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", fee_price_version AS "feePriceVersion", quantity, unit_price_minor AS "unitPriceMinor", unit_of_measure AS "unitOfMeasure", service_point_id AS "servicePointId", dispense_entry_id AS "dispenseEntryId", patient_id AS "patientId", fee_item_id AS "feeItemId", description, category, department_id AS "departmentId", list_price_minor AS "listPriceMinor", amount_minor AS "amountMinor", currency, exemption_reason AS "exemptionReason", appointment_id AS "appointmentId", encounter_id AS "encounterId"
+        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", fee_price_version AS "feePriceVersion", quantity, unit_price_minor AS "unitPriceMinor", unit_of_measure AS "unitOfMeasure", service_point_id AS "servicePointId", dispense_entry_id AS "dispenseEntryId", bill_id AS "billId", patient_id AS "patientId", fee_item_id AS "feeItemId", description, category, department_id AS "departmentId", list_price_minor AS "listPriceMinor", amount_minor AS "amountMinor", currency, exemption_reason AS "exemptionReason", appointment_id AS "appointmentId", encounter_id AS "encounterId"
         FROM charges
         WHERE facility_id = auth.parameter('facility_id')
           AND auth.parameter('facility_contract') = 1

@@ -224,13 +224,17 @@ const patchPermissions = (table: DocType, changes: Record<string, unknown>): Per
 
 type Refusal = { category: RejectionCategory; reason: string; conflicts?: ConflictingColumn[]; dependencies?: FacilityDependency[] };
 /** How an upload arrived: through a device's offline queue, or saved online by a person the server verified. */
-export type UploadOptions = { online?: { staffId: string; billingPolicy?: boolean } };
+export type UploadOptions = { online?: { staffId: string; billingPolicy?: boolean; atomic?: boolean } };
 
 /** Release 1: old fee forms cannot opt patients into automatic bills or reclassify insured services. */
 const feeCatalogueRefusal = async (tx: Tx, identity: DeviceIdentity, mutation: UploadMutation, options: UploadOptions): Promise<Refusal | undefined> => {
   if (mutation.table !== 'fee_item') return undefined;
   if (mutation.op === 'put' && mutation.data.chargeWhen !== 'when_ordered') {
     return refuse('validation', 'New catalogue items must be charged only when selected. Create the item first, then explicitly configure its automatic charging policy.');
+  }
+  if(options.online?.atomic&&mutation.op==='put'){
+    const [existing]=await tx`SELECT id FROM fee_items WHERE facility_id=${identity.facilityId} AND category=${String(mutation.data.category??'')} AND lower(btrim(name))=lower(btrim(${String(mutation.data.name??'')})) AND id<>${mutation.id} LIMIT 1`;
+    if(existing)return refuse('validation','This catalogue item already exists. Use its explicit Item ID to update its price.');
   }
   if (mutation.op !== 'patch') return undefined;
   const current = await findRecord<AnyDocument>(tx, 'fee_item', mutation.id);
@@ -920,8 +924,9 @@ const processMutation = async (
   request: UploadRequest,
   signer?: Signer,
   options: UploadOptions = {},
-): Promise<MutationResult> =>
-  sql.begin(async (tx): Promise<MutationResult> => {
+  existingTx?: Tx,
+): Promise<MutationResult> => {
+  const write = async (tx: Tx): Promise<MutationResult> => {
     // One order everywhere, including operator changes: facility, then record/calendar locks.
     await tx`SELECT id FROM facilities WHERE id=${identity.facilityId} FOR UPDATE`;
     await assertWorkforceCompatibility(tx, identity.facilityId, request, uploadedAt);
@@ -950,7 +955,7 @@ const processMutation = async (
 
     // A column conflict on a merge table applied the other columns; everything else applied nothing.
     // Online configuration is all or nothing: a change that would merge only some columns is undone entirely.
-    if (options.online && refusal.conflicts !== undefined) throw new OnlineRefusal(refusal);
+    if (options.online && (refusal.conflicts !== undefined || options.online.atomic)) throw new OnlineRefusal(refusal);
     const partial = refusal.conflicts !== undefined && mutation.op === 'patch';
     if (!partial) {
       await tx`UPDATE applied_mutations SET outcome = 'rejected' WHERE device_id = ${identity.deviceId} AND client_id = ${mutation.clientId}`;
@@ -984,7 +989,9 @@ const processMutation = async (
       metadata: { category: refusal.category, operation: mutation.op },
     });
     return { outcome: partial ? 'applied_with_conflicts' : 'rejected', refusal };
-  });
+  };
+  return existingTx ? existingTx.savepoint(write) : sql.begin(write);
+};
 
 export const processUpload = async (
   sql: Sql,
@@ -994,6 +1001,26 @@ export const processUpload = async (
   signer?: Signer,
   options: UploadOptions = {},
 ): Promise<UploadResponse> => {
+  if(options.online?.atomic){
+    let current: UploadMutation|undefined;
+    try{return await sql.begin(async tx=>{
+      await tx`SELECT id FROM facilities WHERE id=${identity.facilityId} FOR UPDATE`;
+      await assertWorkforceCompatibility(tx,identity.facilityId,request,now);await assertIntegratedUpload(tx,identity.facilityId,request);
+      await recordClientVersion(tx,identity,{...request,pendingMutationCount:1},now);
+      let applied=0,duplicates=0;
+      for(const mutation of orderWorkforceMutations(request.mutations)){
+        current=mutation;
+        const result=await processMutation(sql,identity,request.transactionId,mutation,now,request,signer,options,tx);
+        if(result.refusal)throw new OnlineRefusal(result.refusal);
+        if(result.outcome==='duplicate')duplicates++;else applied++;
+      }
+      return {applied,duplicates,rejected:[],serverTime:new Date(now).toISOString()};
+    });}catch(cause){
+      if(!(cause instanceof OnlineRefusal)||!current)throw cause;
+      await recordAuditEvent(sql,{facilityId:identity.facilityId,deviceId:identity.deviceId,actorStaffId:options.online.staffId,action:'reject',entityType:current.table,entityId:current.id,result:'rejected',metadata:{context:'billing_import_atomic',category:cause.refusal.category}});
+      return {applied:0,duplicates:0,rejected:[{clientId:current.clientId,table:current.table,id:current.id,category:cause.refusal.category,reason:cause.refusal.reason}],serverTime:new Date(now).toISOString()};
+    }
+  }
   let applied = 0;
   let duplicates = 0;
   const rejected: UploadRejection[] = [];

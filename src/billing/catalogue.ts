@@ -49,6 +49,10 @@ export const stockPriceIssue = async (tx: Tx, record: StockItem, current?: Stock
 
 /** New evidence is checked against its immutable version, never today's price. Legacy rows keep their path. */
 export const chargePriceIssues = async (tx: Tx, charge: Charge): Promise<string[]> => {
+  if(charge.billId){
+    const [other]=await tx`SELECT patient_id,currency FROM charges WHERE facility_id=${charge.facilityId} AND bill_id=${charge.billId} LIMIT 1`;
+    if(other&&(other.patient_id!==charge.patientId||other.currency!==charge.currency))return ['A bill reference belongs to one patient and currency in this hospital'];
+  }
   if (charge.servicePointId && !(await tx`SELECT 1 FROM locations WHERE facility_id=${charge.facilityId} AND id=${charge.servicePointId}`).length) return ['Choose a recorded service point in this facility'];
   if (!charge.feePriceVersion) return !isLegacyFeeCategory(charge.category) || (charge.schemaVersion>=6 && !charge.dispenseEntryId && !charge.orderItemId && await catalogueEnabled(tx,charge.facilityId)) ? ['New catalogue charges require immutable price and quantity evidence'] : [];
   const [version] = await tx`SELECT * FROM fee_price_versions WHERE facility_id=${charge.facilityId} AND fee_item_id=${charge.feeItemId} AND id=${charge.feePriceVersion}`;
