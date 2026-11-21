@@ -53,7 +53,7 @@ const monnify: PaymentProvider = {
   credentials: parse(MonnifyCredentials), accountDetails: parse(MonnifyAccountDetails),
   mode: (c) => monnifyMode({ apiKey: c.apiKey }),
   checkAccess: (c, http) => monnifyCheckAccess(c as MonnifyCredentials, http),
-  createAccount: (c, hospital, d, http) => monnifyCreateAccount(c as MonnifyCredentials, hospital, { email: d.email, bvn: d.bvn }, http),
+  createAccount: (c, hospital, d, http) => monnifyCreateAccount(c as MonnifyCredentials, hospital, { bank: d.bank, email: d.email, bvn: d.bvn }, http),
   getAccount: (c, id, http) => monnifyGetAccount(c as MonnifyCredentials, id, http),
   verifyTransfer: (c, reference, http) => monnifyVerifyTransfer(c as MonnifyCredentials, reference, http),
   webhookHeader: 'monnify-signature',

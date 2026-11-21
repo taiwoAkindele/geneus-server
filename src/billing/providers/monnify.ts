@@ -1,14 +1,21 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { z } from 'zod';
-import { ProviderRefused, ProviderUnavailable, ProviderUnexpectedReply, providerReply, toMinor, type ProviderDescriptor, type ProviderHttp, type ProviderMode, type ReceivingAccount, type VerifiedTransfer } from './types.ts';
+import { providerFailure, ProviderUnavailable, ProviderUnexpectedReply, providerReply, toMinor, type ProviderDescriptor, type ProviderHttp, type ProviderMode, type ReceivingAccount, type VerifiedTransfer } from './types.ts';
+
+/**
+ * Partner banks the hospital can choose for its one account number. Wema and Sterling open reserved
+ * accounts in the sandbox (checked 21 Nov 2026); GTBank, Fidelity and Moniepoint MFB answered 503 there.
+ * Monnify also answers 503 when asked for a bank it doesn't offer, so the list is kept to banks seen working.
+ */
+export const MONNIFY_BANKS = [{ value: '035', label: 'Wema Bank' }, { value: '232', label: 'Sterling Bank' }] as const;
 
 /**
  * Moniepoint's collections API (Monnify). The hospital's central account is a reserved account under the
- * hospital's contract code, at one partner bank (Moniepoint's own where available).
+ * hospital's contract code, at the one partner bank the hospital chooses.
  *
- * UNCONFIRMED until the sandbox check (plan step 0): key prefixes, the webhook hash (SHA-512 assumed),
- * the transaction lookup's field names and date format, and the preferred bank code. A mismatch is
- * reported as ProviderUnexpectedReply with the field named in the server log, never guessed past.
+ * UNCONFIRMED until the end-to-end sandbox run: the webhook hash (SHA-512 assumed), the transaction
+ * lookup's field names and date timezone. A mismatch is reported as ProviderUnexpectedReply with the
+ * field named in the server log, never guessed past.
  */
 export const monnifyDescriptor: ProviderDescriptor = {
   id: 'monnify', name: 'Moniepoint (Monnify)', countries: ['NG'], currencies: ['NGN'],
@@ -18,6 +25,7 @@ export const monnifyDescriptor: ProviderDescriptor = {
     { key: 'contractCode', label: 'Contract code', secret: false, pattern: '^\\d{6,20}$' },
   ],
   accountFields: [
+    { key: 'bank', label: 'Bank for the hospital\'s account', type: 'select', options: [...MONNIFY_BANKS], help: 'Patients transfer to an account number at this bank.' },
     { key: 'email', label: 'Hospital contact email', type: 'email', help: 'Monnify records the account under this email.' },
     { key: 'bvn', label: 'BVN of the hospital\'s owner or director', type: 'text', pattern: '^\\d{11}$', sensitive: true, help: 'Required by Monnify to open the account. Sent to Monnify only; Geneus doesn\'t store it.' },
   ],
@@ -26,10 +34,10 @@ export const monnifyDescriptor: ProviderDescriptor = {
 
 export const MonnifyCredentials = z.object({ apiKey: z.string().regex(/^MK_[A-Z]+_[A-Za-z0-9]+$/), secretKey: z.string().regex(/^[A-Za-z0-9]{16,}$/), contractCode: z.string().regex(/^\d{6,20}$/) });
 export type MonnifyCredentials = z.infer<typeof MonnifyCredentials>;
-export const MonnifyAccountDetails = z.object({ email: z.string().email().max(200), bvn: z.string().regex(/^\d{11}$/) });
-
-/** Moniepoint Microfinance Bank, so the hospital gets one account number. Confirm the code in the sandbox. */
-export const MONNIFY_PREFERRED_BANK = '50515';
+export const MonnifyAccountDetails = z.object({
+  bank: z.enum(MONNIFY_BANKS.map((b) => b.value) as [string, ...string[]]),
+  email: z.string().email().max(200), bvn: z.string().regex(/^\d{11}$/),
+});
 export const monnifyMode = (c: Pick<MonnifyCredentials, 'apiKey'>): ProviderMode => c.apiKey.startsWith('MK_TEST_') ? 'test' : 'live';
 const base = (c: MonnifyCredentials) => monnifyMode(c) === 'test' ? 'https://sandbox.monnify.com' : 'https://api.monnify.com';
 
@@ -39,7 +47,7 @@ const request = async (http: ProviderHttp, url: string, init: RequestInit): Prom
   try { response = await http(url, { ...init, signal: AbortSignal.timeout(15_000) }); } catch { throw new ProviderUnavailable(); }
   const payload = await response.json().catch(() => undefined) as Envelope | undefined;
   if (!payload) throw new ProviderUnexpectedReply(`HTTP ${response.status} without JSON`);
-  if (!response.ok || payload.requestSuccessful !== true) throw new ProviderRefused(typeof payload.responseMessage === 'string' ? payload.responseMessage : undefined, response.status);
+  if (!response.ok || payload.requestSuccessful !== true) throw providerFailure(typeof payload.responseMessage === 'string' ? payload.responseMessage : undefined, response.status, new URL(url).pathname);
   return payload.responseBody;
 };
 
@@ -67,9 +75,9 @@ const Reserved = z.object({
   accountReference: z.string().min(1), accountName: z.string().min(1), currencyCode: z.string(), status: z.string().optional(),
   accounts: z.array(z.object({ bankCode: z.string().optional(), bankName: z.string().min(1), accountNumber: z.string().min(1), accountName: z.string().optional() })).min(1),
 });
-const toAccount = (r: z.infer<typeof Reserved>): ReceivingAccount => {
-  // One account number per hospital: the preferred bank if Monnify returned several.
-  const chosen = r.accounts.find((a) => a.bankCode === MONNIFY_PREFERRED_BANK) ?? r.accounts[0];
+const toAccount = (r: z.infer<typeof Reserved>, bank?: string): ReceivingAccount => {
+  // One account number per hospital: the chosen bank's, if Monnify returned several.
+  const chosen = r.accounts.find((a) => a.bankCode === bank) ?? r.accounts[0];
   return { providerAccountId: r.accountReference, accountNumber: chosen.accountNumber, accountName: chosen.accountName ?? r.accountName,
     bankName: chosen.bankName, active: (r.status ?? 'ACTIVE').toUpperCase() === 'ACTIVE', currency: r.currencyCode };
 };
@@ -78,11 +86,23 @@ export const monnifyCheckAccess = async (c: MonnifyCredentials, http: ProviderHt
 
 /** The hospital's reserved account; the account reference is derived from the facility so a retry finds the same account. */
 export const monnifyAccountReference = (facilityId: string) => `geneus-${facilityId}`;
-export const monnifyCreateAccount = async (c: MonnifyCredentials, hospital: { id: string; name: string }, details: z.infer<typeof MonnifyAccountDetails>, http: ProviderHttp) =>
-  toAccount(providerReply(Reserved, await call(c, http, '/api/v2/bank-transfer/reserved-accounts', {
-    accountReference: monnifyAccountReference(hospital.id), accountName: hospital.name.slice(0, 100), currencyCode: 'NGN', contractCode: c.contractCode,
-    customerEmail: details.email, customerName: hospital.name.slice(0, 100), bvn: details.bvn, getAllAvailableBanks: false, preferredBanks: [MONNIFY_PREFERRED_BANK],
-  }), 'reserved account'));
+export const monnifyCreateAccount = async (c: MonnifyCredentials, hospital: { id: string; name: string }, details: z.infer<typeof MonnifyAccountDetails>, http: ProviderHttp) => {
+  let reply: unknown;
+  try {
+    reply = await call(c, http, '/api/v2/bank-transfer/reserved-accounts', {
+      accountReference: monnifyAccountReference(hospital.id), accountName: hospital.name.slice(0, 100), currencyCode: 'NGN', contractCode: c.contractCode,
+      customerEmail: details.email, customerName: hospital.name.slice(0, 100), bvn: details.bvn, getAllAvailableBanks: false, preferredBanks: [details.bank],
+    });
+  } catch (error) {
+    // Monnify says "unavailable" both during outages and for a bank it can't open accounts at; say both.
+    if (error instanceof ProviderUnavailable && error.providerStatus !== undefined) {
+      const specific = new ProviderUnavailable(error.providerReason, error.providerStatus, 'The provider couldn\'t open an account at that bank right now. Choose another bank, or try again later.');
+      specific.providerCall = error.providerCall; throw specific;
+    }
+    throw error;
+  }
+  return toAccount(providerReply(Reserved, reply, 'reserved account'), details.bank);
+};
 
 export const monnifyGetAccount = async (c: MonnifyCredentials, accountReference: string, http: ProviderHttp) =>
   toAccount(providerReply(Reserved, await call(c, http, `/api/v2/bank-transfer/reserved-accounts/${encodeURIComponent(accountReference)}`), 'reserved account'));

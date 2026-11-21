@@ -6,7 +6,8 @@ import type { z } from 'zod';
  */
 export type ProviderMode = 'test' | 'live';
 export type CredentialField = { key: string; label: string; secret: boolean; pattern?: string; help?: string };
-export type AccountField = { key: string; label: string; type: 'email' | 'tel' | 'text'; pattern?: string; help?: string; sensitive?: boolean };
+/** A detail the provider needs to open the hospital's account. `select` fields offer only `options`. */
+export type AccountField = { key: string; label: string; type: 'email' | 'tel' | 'text' | 'select'; pattern?: string; help?: string; sensitive?: boolean; options?: { value: string; label: string }[] };
 /**
  * A transfer the provider has confirmed. The receiving account is identified by its number, or by the
  * provider's own account reference when the provider reports that instead (Monnify reserved accounts).
@@ -44,17 +45,34 @@ export const PROVIDER_ID = /^[a-z][a-z0-9_]{1,31}$/;
 export class ProviderRefused extends Error {
   readonly statusCode = 502; readonly code = 'provider_refused';
   readonly providerReason: string | undefined; readonly providerStatus: number | undefined;
+  /** Which provider call failed (path only, never keys or personal details), for the server log. */
+  providerCall?: string;
   constructor(providerReason: string | undefined, providerStatus?: number) {
     const reason = safeProviderReason(providerReason);
     super(reason ? `The provider refused this operation: ${reason}` : 'The provider refused this operation. Check the account\'s access and settings with the provider.');
     this.providerReason = providerReason; this.providerStatus = providerStatus;
   }
 }
-/** The provider could not be reached, or did not answer in time. */
+/**
+ * The provider couldn't be reached, timed out, or said it is unavailable (5xx). A specific message can replace
+ * the default when the caller knows more (for example, a bank the provider can't open accounts at).
+ */
 export class ProviderUnavailable extends Error {
   readonly statusCode = 502; readonly code = 'provider_unavailable';
-  constructor() { super('The provider could not be reached. Try again in a moment.'); }
+  readonly providerReason: string | undefined; readonly providerStatus: number | undefined;
+  providerCall?: string;
+  constructor(providerReason?: string, providerStatus?: number, message?: string) {
+    const reason = safeProviderReason(providerReason);
+    super(message ?? (reason ? `The provider is unavailable right now: ${reason}${/try again/i.test(reason) ? '' : ' Try again later.'}` : 'The provider could not be reached. Try again in a moment.'));
+    this.providerReason = providerReason; this.providerStatus = providerStatus;
+  }
 }
+/** A refusal or an unavailable answer, chosen by the provider's HTTP status. */
+export const providerFailure = (reason: string | undefined, status: number, call: string) => {
+  const error = status >= 500 ? new ProviderUnavailable(reason, status) : new ProviderRefused(reason, status);
+  error.providerCall = call;
+  return error;
+};
 /** The provider answered, but not in the form expected; details go to the server log only. */
 export class ProviderUnexpectedReply extends Error {
   readonly statusCode = 502; readonly code = 'provider_unexpected_reply';
