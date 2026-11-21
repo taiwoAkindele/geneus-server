@@ -94,7 +94,7 @@ import { recordClientVersion } from '../workforce/readiness.ts';
  */
 
 /** Written by the server; a device may never insert them. */
-const SERVER_WRITTEN: readonly DocType[] = ['facility', 'device', 'sync_rejection', 'pin_setup_code', 'incoming_transfer', 'inbound_referral',
+const SERVER_WRITTEN: readonly DocType[] = ['facility', 'device', 'sync_rejection', 'pin_setup_code', 'incoming_transfer', 'inbound_referral', 'patient_message',
   'coverage_financial_summary',
   // Insurance configuration, confirmed splits and refunds are decided online by verified staff (routes/insurance.ts).
   'payer', 'cover_schedule', 'coverage_allocation', 'refund'];

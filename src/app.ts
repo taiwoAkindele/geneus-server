@@ -20,6 +20,7 @@ import { registerSelfServiceRoutes } from './routes/selfService.ts';
 import { registerStaffSessionRoutes } from './routes/staffSessions.ts';
 import { ensureBootstrapOperators, registerOperatorRoutes } from './routes/operator.ts';
 import { billingRawBodies, registerBillingRoutes } from './routes/billing.ts';
+import { registerPatientDocumentRoutes } from './routes/patientDocuments.ts';
 import type { PaystackFetch } from './billing/paystack.ts';
 import { PROVIDER_ERROR_CODES } from './billing/providers/types.ts';
 import { createRateLimiter } from './lib/rateLimit.ts';
@@ -255,6 +256,8 @@ export const buildApp = ({ config, sql, signer, mailer: givenMailer, paystackFet
   registerInvitationLinkRoutes(app, sql, config);
   registerSyncRoutes(app, sql, config, signer);
   registerBillingRoutes(app, sql, config, paystackFetch);
+  // Patient links open in the web app, like invitation links.
+  registerPatientDocumentRoutes(app, sql, config.corsOrigins[0], { rateLimit: options.rateLimit });
 
   return app;
 };
