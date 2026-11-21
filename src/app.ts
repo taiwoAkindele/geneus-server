@@ -101,7 +101,8 @@ export const buildApp = ({ config, sql, signer, mailer: givenMailer, paystackFet
    * before the route sees it. Treat an empty body as "no body" instead.
    */
   app.addContentTypeParser('application/json', { parseAs: 'string' }, (request, body, done) => {
-    if (request.url.startsWith('/billing/paystack/')) billingRawBodies.set(request, body as string);
+    // Every provider's webhook (/billing/<provider>/<facility>/webhook) is signed over the exact bytes received.
+    if (/^\/billing\/[a-z][a-z0-9_]{1,31}\/[^/]+\/webhook(\?|$)/.test(request.url)) billingRawBodies.set(request, body as string);
     if (body === '') return done(null, undefined);
     try {
       done(null, JSON.parse(body as string));
