@@ -21,6 +21,7 @@ import { registerStaffSessionRoutes } from './routes/staffSessions.ts';
 import { ensureBootstrapOperators, registerOperatorRoutes } from './routes/operator.ts';
 import { billingRawBodies, registerBillingRoutes } from './routes/billing.ts';
 import type { PaystackFetch } from './billing/paystack.ts';
+import { PROVIDER_ERROR_CODES } from './billing/providers/types.ts';
 import { createRateLimiter } from './lib/rateLimit.ts';
 import { createMailer, EmailNotSent, type Mailer } from './lib/email.ts';
 
@@ -163,6 +164,13 @@ export const buildApp = ({ config, sql, signer, mailer: givenMailer, paystackFet
     if (error instanceof EmailNotSent) {
       request.log.error({ err: error }, 'email not sent');
       return reply.code(502).send({ error: 'email_not_sent', message: 'The email could not be sent — try again in a minute' } satisfies ApiErrorBody);
+    }
+    // A payment provider refused, was unreachable or answered unexpectedly. The message is already safe to show
+    // (it never names the provider or carries keys); the provider's own detail goes to the log only.
+    if (error.code && PROVIDER_ERROR_CODES.includes(error.code)) {
+      const detail = error as Error & { providerStatus?: number; providerReason?: string; detail?: string };
+      request.log.warn({ code: error.code, providerStatus: detail.providerStatus, providerReason: detail.providerReason, detail: detail.detail }, 'payment provider error');
+      return reply.code(502).send({ error: error.code, message: error.message } satisfies ApiErrorBody);
     }
     const status = error.statusCode && error.statusCode >= 400 ? error.statusCode : 500;
     if (status >= 500) {

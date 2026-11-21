@@ -1,0 +1,63 @@
+import type { z } from 'zod';
+
+/**
+ * A payment provider that holds a hospital's central receiving account. Each provider is one module
+ * registered in ./index.ts; routes, the setup screen and stored records refer to it only by `id`.
+ */
+export type ProviderMode = 'test' | 'live';
+export type CredentialField = { key: string; label: string; secret: boolean; pattern?: string; help?: string };
+export type AccountField = { key: string; label: string; type: 'email' | 'tel' | 'text'; help?: string };
+/** What the setup screen needs to know. Sent to devices as data: never contains a secret. */
+export type ProviderDescriptor = {
+  id: string; name: string; countries: string[]; currencies: string[];
+  credentialFields: CredentialField[];
+  /** Details the provider needs to open the hospital's account (for example a contact email). */
+  accountFields: AccountField[];
+  can: { createAccount: boolean; listAccounts: boolean; verifyByReference: boolean };
+};
+export type ReceivingAccount = { providerAccountId: string; accountNumber: string; accountName: string; bankName: string; active: boolean; currency: string };
+export type ProviderHttp = typeof fetch;
+
+/** Display-safe provider ids, also accepted by the database and the shared contract. */
+export const PROVIDER_ID = /^[a-z][a-z0-9_]{1,31}$/;
+
+/**
+ * The provider said no. Its own reason is kept only when it reads as plain guidance;
+ * the message never names the provider, a key, an address or internal detail.
+ */
+export class ProviderRefused extends Error {
+  readonly statusCode = 502; readonly code = 'provider_refused';
+  readonly providerReason: string | undefined; readonly providerStatus: number | undefined;
+  constructor(providerReason: string | undefined, providerStatus?: number) {
+    const reason = safeProviderReason(providerReason);
+    super(reason ? `The provider refused this operation: ${reason}` : 'The provider refused this operation. Check the account\'s access and settings with the provider.');
+    this.providerReason = providerReason; this.providerStatus = providerStatus;
+  }
+}
+/** The provider could not be reached, or did not answer in time. */
+export class ProviderUnavailable extends Error {
+  readonly statusCode = 502; readonly code = 'provider_unavailable';
+  constructor() { super('The provider could not be reached. Try again in a moment.'); }
+}
+/** The provider answered, but not in the form expected; details go to the server log only. */
+export class ProviderUnexpectedReply extends Error {
+  readonly statusCode = 502; readonly code = 'provider_unexpected_reply';
+  readonly detail: string;
+  constructor(detail: string) { super('The provider\'s reply wasn\'t in the expected form. Try again, or contact support.'); this.detail = detail; }
+}
+export const PROVIDER_ERROR_CODES: readonly string[] = ['provider_refused', 'provider_unavailable', 'provider_unexpected_reply'];
+
+const UNSAFE = /(sk|pk)_(test|live)|https?:\/\/|www\.|[{}<>`\\]|\b[A-Z][A-Z0-9]*_[A-Z0-9_]+\b|\b(secret|token|password|stack|exception)\b/i;
+export const safeProviderReason = (reason: unknown): string | undefined => {
+  if (typeof reason !== 'string') return undefined;
+  const text = reason.replace(/\s+/g, ' ').trim().replace(/[.!]+$/, '');
+  if (!text || text.length > 160 || UNSAFE.test(text)) return undefined;
+  return `${text}.`;
+};
+
+/** Parse a provider reply; a mismatch becomes ProviderUnexpectedReply instead of an unexplained server error. */
+export const providerReply = <T>(schema: z.ZodType<T>, value: unknown, what: string): T => {
+  const result = schema.safeParse(value);
+  if (!result.success) throw new ProviderUnexpectedReply(`${what}: ${result.error.issues.map((i) => `${i.path.join('.')} ${i.code}`).join(', ')}`);
+  return result.data;
+};
