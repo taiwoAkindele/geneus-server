@@ -1,0 +1,125 @@
+import { createHmac, timingSafeEqual } from 'node:crypto';
+import { z } from 'zod';
+import { ProviderRefused, ProviderUnavailable, ProviderUnexpectedReply, providerReply, toMinor, type ProviderDescriptor, type ProviderHttp, type ProviderMode, type ReceivingAccount, type VerifiedTransfer } from './types.ts';
+
+/**
+ * Moniepoint's collections API (Monnify). The hospital's central account is a reserved account under the
+ * hospital's contract code, at one partner bank (Moniepoint's own where available).
+ *
+ * UNCONFIRMED until the sandbox check (plan step 0): key prefixes, the webhook hash (SHA-512 assumed),
+ * the transaction lookup's field names and date format, and the preferred bank code. A mismatch is
+ * reported as ProviderUnexpectedReply with the field named in the server log, never guessed past.
+ */
+export const monnifyDescriptor: ProviderDescriptor = {
+  id: 'monnify', name: 'Moniepoint (Monnify)', countries: ['NG'], currencies: ['NGN'],
+  credentialFields: [
+    { key: 'apiKey', label: 'API key', secret: false, pattern: '^MK_[A-Z]+_[A-Za-z0-9]+$', help: 'From Monnify: Developer → API keys. Use the sandbox keys while trying things out.' },
+    { key: 'secretKey', label: 'Secret key', secret: true, pattern: '^[A-Za-z0-9]{16,}$' },
+    { key: 'contractCode', label: 'Contract code', secret: false, pattern: '^\\d{6,20}$' },
+  ],
+  accountFields: [
+    { key: 'email', label: 'Hospital contact email', type: 'email', help: 'Monnify records the account under this email.' },
+    { key: 'bvn', label: 'BVN of the hospital\'s owner or director', type: 'text', pattern: '^\\d{11}$', sensitive: true, help: 'Required by Monnify to open the account. Sent to Monnify only; Geneus doesn\'t store it.' },
+  ],
+  can: { createAccount: true, listAccounts: false, verifyByReference: true },
+};
+
+export const MonnifyCredentials = z.object({ apiKey: z.string().regex(/^MK_[A-Z]+_[A-Za-z0-9]+$/), secretKey: z.string().regex(/^[A-Za-z0-9]{16,}$/), contractCode: z.string().regex(/^\d{6,20}$/) });
+export type MonnifyCredentials = z.infer<typeof MonnifyCredentials>;
+export const MonnifyAccountDetails = z.object({ email: z.string().email().max(200), bvn: z.string().regex(/^\d{11}$/) });
+
+/** Moniepoint Microfinance Bank, so the hospital gets one account number. Confirm the code in the sandbox. */
+export const MONNIFY_PREFERRED_BANK = '50515';
+export const monnifyMode = (c: Pick<MonnifyCredentials, 'apiKey'>): ProviderMode => c.apiKey.startsWith('MK_TEST_') ? 'test' : 'live';
+const base = (c: MonnifyCredentials) => monnifyMode(c) === 'test' ? 'https://sandbox.monnify.com' : 'https://api.monnify.com';
+
+type Envelope = { requestSuccessful?: boolean; responseMessage?: unknown; responseBody?: unknown };
+const request = async (http: ProviderHttp, url: string, init: RequestInit): Promise<unknown> => {
+  let response: Response;
+  try { response = await http(url, { ...init, signal: AbortSignal.timeout(15_000) }); } catch { throw new ProviderUnavailable(); }
+  const payload = await response.json().catch(() => undefined) as Envelope | undefined;
+  if (!payload) throw new ProviderUnexpectedReply(`HTTP ${response.status} without JSON`);
+  if (!response.ok || payload.requestSuccessful !== true) throw new ProviderRefused(typeof payload.responseMessage === 'string' ? payload.responseMessage : undefined, response.status);
+  return payload.responseBody;
+};
+
+/** Access tokens live in memory only, per API key, until shortly before they expire. */
+const tokens = new Map<string, { token: string; until: number }>();
+const Login = z.object({ accessToken: z.string().min(1), expiresIn: z.number().positive() });
+const accessToken = async (c: MonnifyCredentials, http: ProviderHttp, now = Date.now()) => {
+  const cached = tokens.get(c.apiKey);
+  if (cached && cached.until > now) return cached.token;
+  const body = providerReply(Login, await request(http, `${base(c)}/api/v1/auth/login`, {
+    method: 'POST', headers: { authorization: `Basic ${Buffer.from(`${c.apiKey}:${c.secretKey}`).toString('base64')}`, accept: 'application/json' },
+  }), 'login');
+  tokens.set(c.apiKey, { token: body.accessToken, until: now + Math.max(0, body.expiresIn - 60) * 1000 });
+  return body.accessToken;
+};
+const call = async (c: MonnifyCredentials, http: ProviderHttp, path: string, body?: unknown) => request(http, `${base(c)}${path}`, {
+  method: body === undefined ? 'GET' : 'POST',
+  headers: { authorization: `Bearer ${await accessToken(c, http)}`, accept: 'application/json', ...(body === undefined ? {} : { 'content-type': 'application/json' }) },
+  body: body === undefined ? undefined : JSON.stringify(body),
+});
+/** For tests: forget cached tokens. */
+export const resetMonnifyTokens = () => tokens.clear();
+
+const Reserved = z.object({
+  accountReference: z.string().min(1), accountName: z.string().min(1), currencyCode: z.string(), status: z.string().optional(),
+  accounts: z.array(z.object({ bankCode: z.string().optional(), bankName: z.string().min(1), accountNumber: z.string().min(1), accountName: z.string().optional() })).min(1),
+});
+const toAccount = (r: z.infer<typeof Reserved>): ReceivingAccount => {
+  // One account number per hospital: the preferred bank if Monnify returned several.
+  const chosen = r.accounts.find((a) => a.bankCode === MONNIFY_PREFERRED_BANK) ?? r.accounts[0];
+  return { providerAccountId: r.accountReference, accountNumber: chosen.accountNumber, accountName: chosen.accountName ?? r.accountName,
+    bankName: chosen.bankName, active: (r.status ?? 'ACTIVE').toUpperCase() === 'ACTIVE', currency: r.currencyCode };
+};
+
+export const monnifyCheckAccess = async (c: MonnifyCredentials, http: ProviderHttp) => { tokens.delete(c.apiKey); await accessToken(c, http); };
+
+/** The hospital's reserved account; the account reference is derived from the facility so a retry finds the same account. */
+export const monnifyAccountReference = (facilityId: string) => `geneus-${facilityId}`;
+export const monnifyCreateAccount = async (c: MonnifyCredentials, hospital: { id: string; name: string }, details: z.infer<typeof MonnifyAccountDetails>, http: ProviderHttp) =>
+  toAccount(providerReply(Reserved, await call(c, http, '/api/v2/bank-transfer/reserved-accounts', {
+    accountReference: monnifyAccountReference(hospital.id), accountName: hospital.name.slice(0, 100), currencyCode: 'NGN', contractCode: c.contractCode,
+    customerEmail: details.email, customerName: hospital.name.slice(0, 100), bvn: details.bvn, getAllAvailableBanks: false, preferredBanks: [MONNIFY_PREFERRED_BANK],
+  }), 'reserved account'));
+
+export const monnifyGetAccount = async (c: MonnifyCredentials, accountReference: string, http: ProviderHttp) =>
+  toAccount(providerReply(Reserved, await call(c, http, `/api/v2/bank-transfer/reserved-accounts/${encodeURIComponent(accountReference)}`), 'reserved account'));
+
+const Transaction = z.object({
+  transactionReference: z.string().min(1), paymentStatus: z.string(), amountPaid: z.union([z.number(), z.string()]),
+  currencyCode: z.string().optional(), currency: z.string().optional(),
+  paidOn: z.string().optional(), completedOn: z.string().optional(),
+  product: z.object({ type: z.string(), reference: z.string().optional() }).optional(),
+  customer: z.object({ name: z.string().optional() }).optional(),
+  paymentSourceInformation: z.array(z.object({ accountName: z.string().optional() })).optional(),
+  destinationAccountInformation: z.object({ accountNumber: z.string().optional() }).optional(),
+});
+/** Monnify dates may come without a "T" or with "+0000"; normalise to ISO or refuse. */
+const isoDate = (value: string | undefined) => {
+  if (!value) return undefined;
+  const normalised = value.trim().replace(' ', 'T').replace(/([+-]\d{2})(\d{2})$/, '$1:$2');
+  const at = Date.parse(normalised);
+  return Number.isNaN(at) ? undefined : new Date(at).toISOString();
+};
+
+/** Asks Monnify directly whether a payment into a reserved account succeeded. Only PAID reserved-account payments pass. */
+export const monnifyVerifyTransfer = async (c: MonnifyCredentials, reference: string, http: ProviderHttp): Promise<VerifiedTransfer | undefined> => {
+  const t = providerReply(Transaction, await call(c, http, `/api/v2/transactions/${encodeURIComponent(reference)}`), 'transaction');
+  if (t.transactionReference !== reference || t.paymentStatus.toUpperCase() !== 'PAID' || t.product?.type !== 'RESERVED_ACCOUNT') return undefined;
+  const amountMinor = toMinor(t.amountPaid), paidAt = isoDate(t.paidOn ?? t.completedOn), currency = t.currencyCode ?? t.currency ?? 'NGN';
+  if (!amountMinor || !paidAt) throw new ProviderUnexpectedReply(`transaction: ${!amountMinor ? 'amountPaid' : 'paidOn'} not understood`);
+  return { reference, mode: monnifyMode(c), amountMinor, currency, paidAt,
+    receivingAccountNumber: t.destinationAccountInformation?.accountNumber, receivingAccountRef: t.product.reference,
+    payerName: t.paymentSourceInformation?.[0]?.accountName || t.customer?.name || undefined };
+};
+
+/** The webhook only prompts a check: a valid signature yields the transaction reference to verify. */
+export const monnifyWebhookReference = (raw: string, signature: unknown, c: Pick<MonnifyCredentials, 'secretKey'>): { ok: false } | { ok: true; reference?: string } => {
+  if (typeof signature !== 'string' || !/^[a-f0-9]{128}$/i.test(signature)) return { ok: false };
+  if (!timingSafeEqual(createHmac('sha512', c.secretKey).update(raw).digest(), Buffer.from(signature, 'hex'))) return { ok: false };
+  const event = z.object({ eventType: z.string(), eventData: z.object({ transactionReference: z.string().min(1), product: z.object({ type: z.string() }).optional() }).optional() }).safeParse((() => { try { return JSON.parse(raw); } catch { return undefined; } })());
+  if (!event.success) return { ok: true };
+  return event.data.eventType === 'SUCCESSFUL_TRANSACTION' && event.data.eventData?.product?.type === 'RESERVED_ACCOUNT' ? { ok: true, reference: event.data.eventData.transactionReference } : { ok: true };
+};
