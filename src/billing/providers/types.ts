@@ -6,7 +6,23 @@ import type { z } from 'zod';
  */
 export type ProviderMode = 'test' | 'live';
 export type CredentialField = { key: string; label: string; secret: boolean; pattern?: string; help?: string };
-export type AccountField = { key: string; label: string; type: 'email' | 'tel' | 'text'; help?: string };
+export type AccountField = { key: string; label: string; type: 'email' | 'tel' | 'text'; pattern?: string; help?: string; sensitive?: boolean };
+/**
+ * A transfer the provider has confirmed. The receiving account is identified by its number, or by the
+ * provider's own account reference when the provider reports that instead (Monnify reserved accounts).
+ */
+export type VerifiedTransfer = {
+  reference: string; mode: ProviderMode; amountMinor: number; currency: string; paidAt: string;
+  receivingAccountNumber?: string; receivingAccountRef?: string; payerName?: string;
+};
+/** Naira (or any 2-decimal currency) as the provider reports it, to integer minor units, without floating-point arithmetic. */
+export const toMinor = (value: unknown): number | undefined => {
+  const text = typeof value === 'number' ? (Number.isFinite(value) ? String(value) : '') : typeof value === 'string' ? value.trim() : '';
+  const match = /^(\d+)(?:\.(\d{1,2}))?$/.exec(text);
+  if (!match) return undefined;
+  const minor = Number(match[1]) * 100 + Number((match[2] ?? '').padEnd(2, '0'));
+  return Number.isSafeInteger(minor) && minor > 0 && minor <= 2_147_483_647 ? minor : undefined;
+};
 /** What the setup screen needs to know. Sent to devices as data: never contains a secret. */
 export type ProviderDescriptor = {
   id: string; name: string; countries: string[]; currencies: string[];
