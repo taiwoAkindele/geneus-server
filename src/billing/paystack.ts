@@ -1,6 +1,6 @@
 import { createCipheriv, createDecipheriv, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { z } from 'zod';
-import { ProviderRefused, ProviderUnavailable, ProviderUnexpectedReply } from './providers/types.ts';
+import { providerFailure, ProviderUnavailable, ProviderUnexpectedReply } from './providers/types.ts';
 
 export const sealPaystackSecret = (secret: string, master: string, facilityId: string): string => {
   const iv = randomBytes(12);
@@ -36,7 +36,7 @@ export const callPaystack = async (secret: string, path: string, fetcher: Paysta
   } catch { throw new ProviderUnavailable(); }
   const payload = await response.json().catch(() => undefined) as { status?: boolean; message?: unknown; data?: unknown } | undefined;
   if (!payload) throw new ProviderUnexpectedReply(`HTTP ${response.status} without JSON`);
-  if (!response.ok || !payload.status) throw new ProviderRefused(typeof payload.message === 'string' ? payload.message : undefined, response.status);
+  if (!response.ok || !payload.status) throw providerFailure(typeof payload.message === 'string' ? payload.message : undefined, response.status, path.split('?')[0]);
   return payload.data;
 };
 

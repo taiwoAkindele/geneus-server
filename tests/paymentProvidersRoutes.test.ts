@@ -30,7 +30,7 @@ describe('payment providers: one central account, switching provider, Monnify ve
       if (pathname === '/api/v1/auth/login') return json({ requestSuccessful: true, responseBody: { accessToken: 'token', expiresIn: 3600 } });
       if (pathname.startsWith('/api/v2/bank-transfer/reserved-accounts')) return json({ requestSuccessful: true, responseBody: {
         accountReference: `geneus-${facility.facility.id}`, accountName: 'Fictional Hospital', currencyCode: 'NGN', status: 'ACTIVE',
-        accounts: [{ bankCode: '50515', bankName: 'Moniepoint Microfinance Bank', accountNumber: '6000000777', accountName: 'Fictional Hospital' }] } });
+        accounts: [{ bankCode: '035', bankName: 'Wema Bank', accountNumber: '6000000777', accountName: 'Fictional Hospital' }] } });
       if (pathname.startsWith('/api/v2/transactions/')) {
         const reference = decodeURIComponent(pathname.split('/').at(-1)!);
         return json({ requestSuccessful: true, responseBody: { transactionReference: reference, paymentStatus: monnifyStatus, amountPaid: '7500.50', currencyCode: 'NGN',
@@ -91,9 +91,9 @@ describe('payment providers: one central account, switching provider, Monnify ve
     assert.equal(paystackHook.statusCode, 409);
   });
   it('creates one Monnify reserved account; the BVN reaches Monnify only', async () => {
-    const created = await post('accounts/create', { details: { email: 'accounts@hospital.test', bvn } });
+    const created = await post('accounts/create', { details: { bank: '035', email: 'accounts@hospital.test', bvn } });
     assert.equal(created.statusCode, 200, created.body);
-    assert.equal(created.json().accountNumber, '6000000777'); assert.equal(created.json().bankName, 'Moniepoint Microfinance Bank');
+    assert.equal(created.json().accountNumber, '6000000777'); assert.equal(created.json().bankName, 'Wema Bank');
     const [account] = await db.sql`SELECT provider, provider_account_id FROM billing_receiving_accounts WHERE id = ${created.json().id}`;
     assert.equal(account.provider, 'monnify'); assert.equal(account.provider_account_id, `geneus-${facility.facility.id}`);
     const stored = JSON.stringify([...await db.sql`SELECT * FROM billing_receiving_accounts`, ...await db.sql`SELECT metadata FROM audit_events`]);

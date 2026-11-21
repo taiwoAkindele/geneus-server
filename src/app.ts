@@ -169,8 +169,8 @@ export const buildApp = ({ config, sql, signer, mailer: givenMailer, paystackFet
     // A payment provider refused, was unreachable or answered unexpectedly. The message is already safe to show
     // (it never names the provider or carries keys); the provider's own detail goes to the log only.
     if (error.code && PROVIDER_ERROR_CODES.includes(error.code)) {
-      const detail = error as Error & { providerStatus?: number; providerReason?: string; detail?: string };
-      request.log.warn({ code: error.code, providerStatus: detail.providerStatus, providerReason: detail.providerReason, detail: detail.detail }, 'payment provider error');
+      const detail = error as Error & { providerStatus?: number; providerReason?: string; providerCall?: string; detail?: string };
+      request.log.warn({ code: error.code, providerStatus: detail.providerStatus, providerReason: detail.providerReason, providerCall: detail.providerCall, route: request.routeOptions.url, detail: detail.detail }, 'payment provider error');
       return reply.code(502).send({ error: error.code, message: error.message } satisfies ApiErrorBody);
     }
     const status = error.statusCode && error.statusCode >= 400 ? error.statusCode : 500;
