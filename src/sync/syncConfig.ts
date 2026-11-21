@@ -36,11 +36,15 @@ const TEMPLATE_FIELDS: Partial<Record<DocType, readonly string[]>> = { encounter
 const RESULT_TEMPLATE_TYPES: readonly DocType[] = ['result_template', 'result_part', 'answer_list', 'standard_test', 'standard_template'];
 /** Sent only to devices that negotiated care services (CARE_SERVICE_FIELDS); strict older parsers would refuse them. */
 const careServiceFields = (type: DocType): readonly string[] => (CARE_SERVICE_FIELDS as Partial<Record<DocType, readonly string[]>>)[type] ?? [];
+/** Reserved words a contract field might be named; extend when a new one appears. */
+const SQL_KEYWORDS = new Set(['to', 'from', 'order', 'group', 'user', 'select', 'where', 'table']);
 const selectListFor = (type: DocType, legacy = false, care = true, templates?: boolean, careServices?: boolean): string[] =>
   Object.keys(SCHEMA_BY_TYPE[type].shape)
     .filter((field) => field !== 'type' && (!legacy || !LEGACY_OMISSIONS[type]?.includes(field)) && (care || !CARE_FIELDS[type]?.includes(field)) && (templates === true || !TEMPLATE_FIELDS[type]?.includes(field)) && (careServices === true || !careServiceFields(type).includes(field)))
     .map((field) => {
       const column = snakeCase(field);
+      // A column named after an SQL keyword (a message's `to`) is quoted, or the sync rules would not parse.
+      if (SQL_KEYWORDS.has(column)) return `"${column}" AS "${field}"`;
       return column === field ? column : `${column} AS "${field}"`;
     });
 

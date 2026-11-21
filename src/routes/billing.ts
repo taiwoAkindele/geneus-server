@@ -2,7 +2,9 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
-import { Payment, PaymentAllocation, ServiceChargeAllocation,SCHEMA_VERSION, staffPermissions, type IncomingTransfer, type Permission } from '#shared';
+import { DocumentLinkRequest, Payment, PaymentAllocation, ServiceChargeAllocation,SCHEMA_VERSION, billKeyParts, staffPermissions, type DocumentLinkResponse, type DocumentLinkStopResponse, type IncomingTransfer, type Permission } from '#shared';
+import { createDocumentLink, patientPagePath, stopDocumentLinks } from '../patientDocuments/links.ts';
+import { loadBill, loadReceipt } from '../patientDocuments/documentData.ts';
 import { authenticateDevice } from '../auth/deviceAuth.ts';
 import { verifiedRequestStaff } from '../auth/staffSessions.ts';
 import { recordAuditEvent } from '../audit/auditEvents.ts';
@@ -67,6 +69,32 @@ export const registerBillingRoutes = (app: FastifyInstance, sql: Sql, config: Co
       return result;
     });
   });
+  // A link the patient opens without signing in: their bill or a receipt (src/routes/patientDocuments.ts).
+  const DOCUMENT_STAFF = ['payment:receive', 'payment:waive', 'coverage:confirm', 'charge:create'] as const;
+  const documentRequest = (body: unknown) => { const { actorStaffId: _actor, ...rest } = (body ?? {}) as Record<string, unknown>; return parseBody(DocumentLinkRequest, rest); };
+  const documentSubject = async (facilityId: string, body: DocumentLinkRequest) => {
+    if (body.kind === 'bill') { const bill = await loadBill(sql, facilityId, body.billKey); return bill && { subject: bill.key, patientId: bill.patient.patientId }; }
+    const receipt = await loadReceipt(sql, facilityId, body.paymentId); return receipt && { subject: receipt.paymentId, patientId: receipt.patient.patientId };
+  };
+  app.post('/billing/documents/link', async (request, reply) => {
+    const who = await authorize(request, reply, DOCUMENT_STAFF); if (!who) return;
+    const body = documentRequest(request.body);
+    const found = await documentSubject(who.facilityId, body);
+    if (!found) throw conflict(body.kind === 'bill' ? 'This bill has no charges on the server yet. Let this device sync, then try again' : 'This receipt is not on the server yet, or it is a waiver, which has no receipt');
+    const { token, expiresOn } = await createDocumentLink(sql, { facilityId: who.facilityId, kind: body.kind, subject: found.subject, patientId: found.patientId, createdBy: who.actorStaffId });
+    await recordAuditEvent(sql, { facilityId: who.facilityId, deviceId: who.deviceId, actorStaffId: who.actorStaffId, action: 'export', entityType: body.kind === 'receipt' ? 'payment' : 'patient', entityId: body.kind === 'receipt' ? found.subject : found.patientId, metadata: { context: 'patient_document_link', kind: body.kind } });
+    // The patient opens it in the web app (its first configured origin), which reads the document from this server.
+    return { url: `${config.corsOrigins[0].replace(/\/+$/, '')}${patientPagePath(body.kind, token)}`, expiresOn } satisfies DocumentLinkResponse;
+  });
+  app.post('/billing/documents/stop', async (request, reply) => {
+    const who = await authorize(request, reply, DOCUMENT_STAFF); if (!who) return;
+    const body = documentRequest(request.body);
+    const subject = body.kind === 'bill' ? body.billKey : body.paymentId;
+    const stopped = await stopDocumentLinks(sql, who.facilityId, body.kind, subject, who.actorStaffId);
+    if (stopped) await recordAuditEvent(sql, { facilityId: who.facilityId, deviceId: who.deviceId, actorStaffId: who.actorStaffId, action: 'revoke', entityType: body.kind === 'receipt' ? 'payment' : 'patient', entityId: body.kind === 'receipt' ? subject : billKeyParts(subject)?.patientId, metadata: { context: 'patient_document_link', kind: body.kind, stopped: String(stopped) } });
+    return { stopped } satisfies DocumentLinkStopResponse;
+  });
+
   app.post('/billing/statements/patient',async(request,reply)=>{
     const who=await authorize(request,reply,['payment:receive','payment:waive','coverage:confirm','charge:create']);if(!who)return;
     if(!await integratedEnabled(sql,who.facilityId))throw conflict('Comprehensive statements are waiting for compatible financial readers');

@@ -69,12 +69,14 @@ export const registerSelfServiceRoutes = (app: FastifyInstance, sql: Sql, mailer
     const body = FacilityDetailsUpdate.safeParse(request.body);
     if (!body.success) return refuse(reply, 400, 'invalid_request', body.error.issues.map((i) => i.message).join('; '));
     const d = body.data, facilityId = who.identity.facilityId;
-    const [before] = await sql`SELECT name, level, state, lga, country, address, phone, currency FROM facilities WHERE id = ${facilityId}`;
+    const [before] = await sql`SELECT name, level, state, lga, country, address, phone, email, currency FROM facilities WHERE id = ${facilityId}`;
     if (!before) return refuse(reply, 404, 'not_found', 'Facility not found');
-    const next = { name: d.name, level: d.level, state: d.state, lga: d.lga, country: d.country, address: d.address || null, phone: d.phone || null, currency: d.currency };
+    const next = { name: d.name, level: d.level, state: d.state, lga: d.lga, country: d.country, address: d.address || null, phone: d.phone || null,
+      // Older apps don't send an email: keep the one on file.
+      email: d.email === undefined ? (before.email ?? null) : d.email || null, currency: d.currency };
     const changed = Object.keys(next).filter((key) => (before[key] ?? null) !== next[key as keyof typeof next]);
     if (changed.length) await sql.begin(async (tx) => {
-      await tx`UPDATE facilities SET name = ${next.name}, level = ${next.level}, state = ${next.state}, lga = ${next.lga}, country = ${next.country}, address = ${next.address}, phone = ${next.phone}, currency = ${next.currency},
+      await tx`UPDATE facilities SET name = ${next.name}, level = ${next.level}, state = ${next.state}, lga = ${next.lga}, country = ${next.country}, address = ${next.address}, phone = ${next.phone}, email = ${next.email}, currency = ${next.currency},
         updated_by = ${who.staff.id}, updated_on = now() WHERE id = ${facilityId}`;
       await recordAuditEvent(tx, { facilityId, deviceId: who.identity.deviceId, actorStaffId: who.staff.id, action: 'update', entityType: 'facility', entityId: facilityId, metadata: { context: 'facility_details', changed: changed.join(',') } });
     });
