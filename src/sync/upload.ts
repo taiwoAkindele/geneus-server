@@ -63,6 +63,7 @@ import { availableOnCharge } from '../billing/ledger.ts';
 import { completionUploadIssues, flagInsuredOverpayment, insuranceUploadIssues } from '../insurance/uploadChecks.ts';
 import { claimMutation, recordRejection } from './ledger.ts';
 import { stockMovementIssue } from '../inventory/validation.ts';
+import { contactUploadIssues } from '../messaging/contactChecks.ts';
 import { validateWorkforceRecord, workforceType } from '../workforce/validation.ts';
 import { refreshFacilityAuthority } from '../workforce/authority.ts';
 import { clinicalAuthorityRefusal, historicalReviewValid, completeHistoricalReview, clinicalAttestationRefusal } from '../workforce/clinical.ts';
@@ -119,6 +120,7 @@ const APPEND_ONLY: readonly DocType[] = [
   'service_charge_allocation',
   'patient_identity_event',
   'patient_cover', 'cover_check', 'coverage_election', 'service_completion',
+  'patient_contact',
 ];
 /** Never patched: a change is a new version (SCHEMA.md §11.2). */
 const IMMUTABLE_PER_VERSION: readonly DocType[] = ['register_definition'];
@@ -167,6 +169,7 @@ const PUT_PERMISSION: Partial<Record<DocType, Permission>> = {
   billing_adjustment: 'payment:waive',
   billing_department: 'fee_item:manage',
   patient_cover: 'cover:record',
+  patient_contact: 'patient:update',
   cover_check: 'cover:verify',
   // Evidence that a service was done: recorded by those who do clinical work, never by insurance or billing staff.
   service_completion: 'encounter:record',
@@ -618,6 +621,11 @@ const evaluatePut = async ({ tx, identity, uploadedAt }: Context, mutation: Uplo
 
   if (record.type === 'patient_cover' || record.type === 'cover_check' || record.type === 'coverage_election') {
     const issues = await insuranceUploadIssues(tx, record);
+    if (issues.length) return refuse('validation', issues.join('; '));
+  }
+
+  if (record.type === 'patient_contact') {
+    const issues = await contactUploadIssues(tx, record);
     if (issues.length) return refuse('validation', issues.join('; '));
   }
 
