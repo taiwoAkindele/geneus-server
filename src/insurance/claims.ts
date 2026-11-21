@@ -159,6 +159,7 @@ const catalogueFor = async (sql: Db, facilityId: string, codes: readonly string[
  * write-offs and open disputes. Read in bulk.
  */
 const settlementData = async (sql: Db, facilityId: string, claimNumbers: readonly string[]) => {
+  const zoneAt = await facilityZoneAt(sql, facilityId);
   const revisions = await sql<{ id: string; claim_number: string; state: string; superseded_by: string | null }[]>`SELECT id, claim_number, state, superseded_by FROM insurance_claims WHERE facility_id = ${facilityId} AND claim_number = ANY(${claimNumbers as string[]})`;
   const ids = revisions.map((r) => r.id);
   const [decisions, lineDecisions, paid, writtenOff, disputes, submitted, expected] = await Promise.all([
@@ -204,7 +205,7 @@ const settlementData = async (sql: Db, facilityId: string, claimNumbers: readonl
         ...(live && decision ? { decision: { decision: decision.decision, approvedMinor: decision.approvedMinor } } : {}),
         paidMinor: sum(paid, ids), writtenOffMinor: sum(writtenOff, ids),
         openDisputeMinor: disputes.filter((d) => ids.includes(d.claim_id as string) && !d.outcome).reduce((n, d) => n + Number(d.amount_minor), 0),
-        ...(paymentDueDays ? { paymentDueDays } : {}), today: new Date().toISOString().slice(0, 10),
+        ...(paymentDueDays ? { paymentDueDays } : {}), today: serviceDateOf(new Date().toISOString(), zoneAt(new Date().toISOString())) ?? new Date().toISOString().slice(0, 10),
       });
     },
   };
@@ -269,7 +270,8 @@ export const claimViews = async (sql: Db, facilityId: string, claimRows: readonl
   });
   const allCodes = [...new Set(entries.filter((e) => e.step === 'diagnosis').flatMap((e) => ((e.values as { diagnoses?: { code?: string }[] }).diagnoses ?? []).flatMap((d) => (d.code ? [normaliseDiagnosisCode(d.code)] : []))))];
   const catalogue = await catalogueFor(sql, facilityId, allCodes);
-  const today = new Date().toISOString().slice(0, 10);
+  // The hospital's date, like the service dates it is compared with: a UTC date wrongly flags care given after midnight in the hospital.
+  const today = localDay(new Date()) ?? new Date().toISOString().slice(0, 10);
 
   return claimRows.map((claim) => {
     const id = claim.id as string, payerId = claim.payer_id as string, patientId = claim.patient_id as string;
