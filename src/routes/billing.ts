@@ -12,7 +12,10 @@ import {integratedEnabled,integratedReadiness} from '../billing/integrated.ts';
 import {buildPatientStatement} from '../billing/patientStatements.ts';
 import {confirmInsuranceReturn} from '../billing/insuranceReturns.ts';
 import { catalogueEnabled, catalogueReadiness, BillingCompatibilityError } from '../billing/catalogue.ts';
-import { accountFromTerminal, callPaystack, openPaystackSecret, PaystackAccount, PaystackTerminal, sealPaystackSecret, validPaystackSignature, VerifiedPaystackTransfer, type PaystackFetch } from '../billing/paystack.ts';
+import { accountFromTerminal, callPaystack, openPaystackSecret, PaystackTerminal, sealPaystackSecret, validPaystackSignature, VerifiedPaystackTransfer, type PaystackFetch } from '../billing/paystack.ts';
+import { PaystackAccountDetails, PaystackCredentials, paystackCheckAccess, paystackCreateAccount, paystackGetAccount, paystackListAccounts, paystackMode } from '../billing/providers/paystack.ts';
+import { PROVIDERS, providerDescriptor } from '../billing/providers/index.ts';
+import { providerReply } from '../billing/providers/types.ts';
 import type { Sql } from '../db/client.ts';
 import { findRecord,fromRow, insertRecord } from '../db/records.ts';
 import type { Config } from '../lib/config.ts';
@@ -97,9 +100,9 @@ export const registerBillingRoutes = (app: FastifyInstance, sql: Sql, config: Co
     return sql.begin(async tx=>{await tx`SELECT id FROM facilities WHERE id=${who.facilityId} FOR UPDATE`;const sources=[];for(const id of [...new Set(body.ids)].sort()){const c=await sourceCapacity(tx,who.facilityId,id);sources.push({id,patientMinor:c.patientMinor,payerMinor:c.payerMinor,availableMinor:Math.max(0,c.availableMinor),overRecognizedMinor:Math.max(0,-c.availableMinor)});}return {sources};});
   });
   const connection = async (facilityId: string) => {
-    if (!config.billingEncryptionKey) throw conflict('Paystack setup requires BILLING_ENCRYPTION_KEY on the server');
+    if (!config.billingEncryptionKey) throw conflict('Payment setup isn\'t finished on the server. Ask your system administrator.');
     const [row] = await sql<ConnectionRow[]>`SELECT encrypted_secret, mode FROM billing_connections WHERE facility_id = ${facilityId}`;
-    if (!row) throw conflict('Connect this hospital\'s Paystack account first');
+    if (!row) throw conflict('Connect the hospital\'s payment provider first');
     return { secret: openPaystackSecret(row.encrypted_secret, config.billingEncryptionKey, facilityId), mode: row.mode,encryptedSecret:row.encrypted_secret };
   };
   app.post('/billing/connection/status', async (request, reply) => {
@@ -107,17 +110,29 @@ export const registerBillingRoutes = (app: FastifyInstance, sql: Sql, config: Co
     const [row] = await sql<{ mode: string; receiving_account_id: string | null }[]>`SELECT mode,receiving_account_id FROM billing_connections WHERE facility_id = ${who.facilityId}`;
     const accounts = await sql`SELECT id, account_number AS "accountNumber", account_name AS "accountName", bank_name AS "bankName", department_id AS "departmentId", mode
       FROM billing_receiving_accounts WHERE facility_id = ${who.facilityId} ORDER BY created_on`;
-    return { configured: Boolean(row), mode: row?.mode, receivingAccountId:row?.receiving_account_id ?? undefined, encryptionReady: Boolean(config.billingEncryptionKey), accounts,
+    // Only Paystack is connected so far; the provider id is reported so the setup screen is drawn from its descriptor.
+    return { configured: Boolean(row), provider: row ? 'paystack' : undefined, mode: row?.mode, receivingAccountId:row?.receiving_account_id ?? undefined, encryptionReady: Boolean(config.billingEncryptionKey), accounts,
       webhookPath: `/billing/paystack/${encodeURIComponent(who.facilityId)}/webhook` };
+  });
+  /** Providers this server supports and the fields each needs. Descriptors never contain secrets. */
+  app.post('/billing/providers', async (request, reply) => {
+    const who = await authorize(request, reply, 'fee_item:manage'); if (!who) return;
+    return { providers: PROVIDERS };
   });
   app.post('/billing/connection', async (request, reply) => {
     const who = await authorize(request, reply, 'fee_item:manage'); if (!who) return;
-    const body = parseBody(Actor.extend({ secretKey: z.string().regex(/^sk_(test|live)_[A-Za-z0-9]+$/) }), request.body);
-    if (!config.billingEncryptionKey) return reply.code(503).send({ error: 'not_configured', message: 'The server administrator must configure BILLING_ENCRYPTION_KEY first' });
+    // Current form { provider, credentials }; the earlier { secretKey } form is still accepted from older clients.
+    const body = parseBody(Actor.extend({ provider: z.string().optional(), credentials: z.record(z.string(), z.string()).optional(), secretKey: z.string().optional() }), request.body);
+    const provider = body.provider ?? 'paystack';
+    if (!providerDescriptor(provider)) return reply.code(400).send({ error: 'unknown_provider', message: 'Choose a supported payment provider' });
+    const credentials = PaystackCredentials.safeParse(body.credentials ?? { secretKey: body.secretKey });
+    if (!credentials.success) return reply.code(400).send({ error: 'invalid_credentials', message: 'Enter the secret key exactly as the provider shows it (it starts with sk_test_ or sk_live_)' });
+    const secretKey = credentials.data.secretKey;
+    if (!config.billingEncryptionKey) return reply.code(503).send({ error: 'not_configured', message: 'Payment setup isn\'t finished on the server. Ask your system administrator.' });
     // Prove access before replacing a working connection. No key is returned or logged.
-    await callPaystack(body.secretKey, '/transaction?perPage=1', fetcher);
-    const mode = body.secretKey.startsWith('sk_test_') ? 'test' : 'live';
-    const encrypted = sealPaystackSecret(body.secretKey, config.billingEncryptionKey, who.facilityId);
+    await paystackCheckAccess(secretKey, fetcher);
+    const mode = paystackMode(secretKey);
+    const encrypted = sealPaystackSecret(secretKey, config.billingEncryptionKey, who.facilityId);
     await sql`INSERT INTO billing_connections (facility_id, encrypted_secret, mode, updated_by)
       VALUES (${who.facilityId}, ${encrypted}, ${mode}, ${who.actorStaffId})
       ON CONFLICT (facility_id) DO UPDATE SET encrypted_secret = EXCLUDED.encrypted_secret,
@@ -138,8 +153,8 @@ export const registerBillingRoutes = (app: FastifyInstance, sql: Sql, config: Co
     const key=await connection(who.facilityId);
     const [candidate]=await sql`SELECT * FROM billing_receiving_accounts WHERE facility_id=${who.facilityId} AND id=${body.accountId} AND mode=${key.mode}`;
     if(!candidate)throw conflict('Select an account in this hospital and provider mode');
-    const id=String(candidate.provider_account_id),verified=id.startsWith('VT_')?accountFromTerminal(await callPaystack(key.secret,`/virtual_terminal/${id}`,fetcher)):PaystackAccount.parse(await callPaystack(key.secret,`/dedicated_account/${id}`,fetcher));
-    if(!verified.active||verified.currency!=='NGN'||String(verified.id)!==id||verified.account_number!==candidate.account_number)throw conflict('This receiving account is not verified under the current hospital connection');
+    const id=String(candidate.provider_account_id),verified=await paystackGetAccount(key.secret,id,fetcher);
+    if(!verified.active||verified.currency!=='NGN'||verified.providerAccountId!==id||verified.accountNumber!==candidate.account_number)throw conflict('This receiving account is not verified under the current hospital connection');
     await sql.begin(async tx=>{
       await tx`SELECT id FROM facilities WHERE id=${who.facilityId} FOR UPDATE`;
       const [current]=await tx`SELECT mode,encrypted_secret FROM billing_connections WHERE facility_id=${who.facilityId}`;
@@ -154,16 +169,14 @@ export const registerBillingRoutes = (app: FastifyInstance, sql: Sql, config: Co
   app.post('/billing/accounts/discover', async (request, reply) => {
     const who = await authorize(request, reply, 'fee_item:manage'); if (!who) return;
     const key = await connection(who.facilityId);
-    const accounts = z.array(PaystackAccount).parse(await callPaystack(key.secret, '/dedicated_account?perPage=100', fetcher));
-    return accounts.filter((a) => a.active && a.currency === 'NGN').map((a) => ({ providerAccountId: String(a.id), accountNumber: a.account_number, accountName: a.account_name, bankName: a.bank.name }));
+    const accounts = await paystackListAccounts(key.secret, fetcher);
+    return accounts.filter((a) => a.active && a.currency === 'NGN').map(({ providerAccountId, accountNumber, accountName, bankName }) => ({ providerAccountId, accountNumber, accountName, bankName }));
   });
   app.post('/billing/accounts/link', async (request, reply) => {
     const who = await authorize(request, reply, 'fee_item:manage'); if (!who) return;
     const body = parseBody(LinkAccount, request.body); const key = await connection(who.facilityId);
-    const account = body.providerAccountId.startsWith('VT_')
-      ? accountFromTerminal(await callPaystack(key.secret, `/virtual_terminal/${body.providerAccountId}`, fetcher))
-      : PaystackAccount.parse(await callPaystack(key.secret, `/dedicated_account/${body.providerAccountId}`, fetcher));
-    if (!account.active || account.currency !== 'NGN' || String(account.id) !== body.providerAccountId) return reply.code(400).send({ error: 'invalid_account', message: 'Select an active NGN receiving account belonging to this Paystack connection' });
+    const account = await paystackGetAccount(key.secret, body.providerAccountId, fetcher);
+    if (!account.active || account.currency !== 'NGN' || account.providerAccountId !== body.providerAccountId) return reply.code(400).send({ error: 'invalid_account', message: 'Choose an active NGN receiving account belonging to the connected provider account' });
     if (body.departmentId) {
       const [department] = await sql`SELECT id FROM billing_departments WHERE id = ${body.departmentId} AND facility_id = ${who.facilityId} AND active`;
       if (!department) return reply.code(409).send({ error: 'department_not_synced', message: 'Save the department and wait for it to sync before linking its account' });
@@ -173,12 +186,36 @@ export const registerBillingRoutes = (app: FastifyInstance, sql: Sql, config: Co
     if (existing) return reply.code(409).send({ error: 'already_linked', message: 'This receiving account is already linked. Existing ownership is retained for reconciliation history.' });
     const id = randomUUID();
     await sql`INSERT INTO billing_receiving_accounts (id, facility_id, provider_account_id, account_number, account_name, bank_name, department_id, mode, created_by)
-      VALUES (${id}, ${who.facilityId}, ${body.providerAccountId}, ${account.account_number}, ${account.account_name}, ${account.bank.name}, ${body.departmentId ?? null}, ${key.mode}, ${who.actorStaffId})`;
+      VALUES (${id}, ${who.facilityId}, ${body.providerAccountId}, ${account.accountNumber}, ${account.accountName}, ${account.bankName}, ${body.departmentId ?? null}, ${key.mode}, ${who.actorStaffId})`;
     if(!body.departmentId)await sql`UPDATE billing_connections SET receiving_account_id=${id},updated_by=${who.actorStaffId},updated_on=now() WHERE facility_id=${who.facilityId} AND mode=${key.mode} AND receiving_account_id IS NULL`;
     await recordAuditEvent(sql, { facilityId: who.facilityId, deviceId: who.deviceId, actorStaffId: who.actorStaffId, action: 'create', metadata: { context: 'billing_account_linked', accountId: id, mode: key.mode } });
-    return { id, accountNumber: account.account_number, accountName: account.account_name, bankName: account.bank.name, departmentId: body.departmentId, mode: key.mode };
+    return { id, accountNumber: account.accountNumber, accountName: account.accountName, bankName: account.bankName, departmentId: body.departmentId, mode: key.mode };
   });
 
+  /**
+   * Creates the hospital's central receiving account with the connected provider (for Paystack, a dedicated
+   * virtual account for the hospital as customer) and makes it the account patients pay into.
+   */
+  app.post('/billing/accounts/create', async (request, reply) => {
+    const who = await authorize(request, reply, 'fee_item:manage'); if (!who) return;
+    const body = parseBody(Actor.extend({ details: z.record(z.string(), z.string()) }), request.body);
+    const details = PaystackAccountDetails.safeParse(body.details);
+    if (!details.success) return reply.code(400).send({ error: 'invalid_account_details', message: 'Enter the hospital\'s contact email and a phone number with its country code, like +2348031234567' });
+    const key = await connection(who.facilityId);
+    const [hospital] = await sql<{ name: string }[]>`SELECT name FROM facilities WHERE id = ${who.facilityId}`;
+    const [existing] = await sql`SELECT id FROM billing_receiving_accounts WHERE facility_id = ${who.facilityId} AND mode = ${key.mode} AND department_id IS NULL`;
+    if (existing) throw conflict('The hospital already has a receiving account. Choose it under Advanced instead of creating another.');
+    const account = await paystackCreateAccount(key.secret, { name: hospital.name }, details.data, fetcher);
+    if (!account.active || account.currency !== 'NGN') throw conflict('The new account isn\'t active for NGN yet. Try again shortly, or link it under Advanced once it is.');
+    const id = randomUUID();
+    await sql`INSERT INTO billing_receiving_accounts (id, facility_id, provider_account_id, account_number, account_name, bank_name, department_id, mode, created_by)
+      VALUES (${id}, ${who.facilityId}, ${account.providerAccountId}, ${account.accountNumber}, ${account.accountName}, ${account.bankName}, NULL, ${key.mode}, ${who.actorStaffId})`;
+    await sql`UPDATE billing_connections SET receiving_account_id=${id},updated_by=${who.actorStaffId},updated_on=now() WHERE facility_id=${who.facilityId} AND mode=${key.mode} AND receiving_account_id IS NULL`;
+    await recordAuditEvent(sql, { facilityId: who.facilityId, deviceId: who.deviceId, actorStaffId: who.actorStaffId, action: 'create', metadata: { context: 'billing_central_account_created', accountId: id, mode: key.mode } });
+    return { id, accountNumber: account.accountNumber, accountName: account.accountName, bankName: account.bankName, mode: key.mode };
+  });
+
+  /** Kept for clients released before central dedicated accounts; the setup screen no longer creates Virtual Terminals. */
   app.post('/billing/accounts/create-terminal', async (request, reply) => {
     const who = await authorize(request, reply, 'fee_item:manage'); if (!who) return;
     const body = parseBody(Actor.extend({ notificationPhone: z.string().regex(/^\+[1-9]\d{7,14}$/) }), request.body);
@@ -198,7 +235,7 @@ export const registerBillingRoutes = (app: FastifyInstance, sql: Sql, config: Co
   });
 
   const ingest = async (facilityId: string, reference: string, key: Awaited<ReturnType<typeof connection>>) => {
-    const verified = VerifiedPaystackTransfer.parse(await callPaystack(key.secret, `/transaction/verify/${encodeURIComponent(reference)}`, fetcher));
+    const verified = providerReply(VerifiedPaystackTransfer, await callPaystack(key.secret, `/transaction/verify/${encodeURIComponent(reference)}`, fetcher), 'transfer verification');
     if (verified.reference !== reference || verified.domain !== key.mode) throw conflict('Paystack transaction does not match this connection');
     const [account] = await sql<AccountRow[]>`SELECT id, department_id, account_number FROM billing_receiving_accounts
       WHERE facility_id = ${facilityId} AND mode = ${key.mode} AND account_number = ${verified.authorization.receiver_bank_account_number}`;

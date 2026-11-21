@@ -1,5 +1,6 @@
 import { createCipheriv, createDecipheriv, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { z } from 'zod';
+import { ProviderRefused, ProviderUnavailable, ProviderUnexpectedReply } from './providers/types.ts';
 
 export const sealPaystackSecret = (secret: string, master: string, facilityId: string): string => {
   const iv = randomBytes(12);
@@ -20,14 +21,22 @@ export const validPaystackSignature = (raw: string, signature: unknown, secret: 
 };
 
 export type PaystackFetch = typeof fetch;
+/**
+ * One Paystack API call. A refusal keeps Paystack's own reason (filtered, never naming the provider)
+ * so staff can act on it; an unreachable or garbled reply is reported as such, not as a server fault.
+ */
 export const callPaystack = async (secret: string, path: string, fetcher: PaystackFetch = fetch, body?: unknown): Promise<unknown> => {
-  const response = await fetcher(`https://api.paystack.co${path}`, {
-    method: body === undefined ? 'GET' : 'POST',
-    headers: { authorization: `Bearer ${secret}`, accept: 'application/json', ...(body === undefined ? {} : { 'content-type': 'application/json' }) },
-    body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(15_000),
-  });
-  const payload = await response.json() as { status?: boolean; data?: unknown };
-  if (!response.ok || !payload.status) throw Object.assign(new Error('Paystack could not complete the request. Check the connection and account access.'), { statusCode: 502 });
+  let response: Response;
+  try {
+    response = await fetcher(`https://api.paystack.co${path}`, {
+      method: body === undefined ? 'GET' : 'POST',
+      headers: { authorization: `Bearer ${secret}`, accept: 'application/json', ...(body === undefined ? {} : { 'content-type': 'application/json' }) },
+      body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(15_000),
+    });
+  } catch { throw new ProviderUnavailable(); }
+  const payload = await response.json().catch(() => undefined) as { status?: boolean; message?: unknown; data?: unknown } | undefined;
+  if (!payload) throw new ProviderUnexpectedReply(`HTTP ${response.status} without JSON`);
+  if (!response.ok || !payload.status) throw new ProviderRefused(typeof payload.message === 'string' ? payload.message : undefined, response.status);
   return payload.data;
 };
 
