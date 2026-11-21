@@ -1,6 +1,6 @@
 import { z } from 'zod';
-import { accountFromTerminal, callPaystack, PaystackAccount, type PaystackFetch } from '../paystack.ts';
-import { providerReply, type ProviderDescriptor, type ProviderMode, type ReceivingAccount } from './types.ts';
+import { accountFromTerminal, callPaystack, PaystackAccount, validPaystackSignature, VerifiedPaystackTransfer, type PaystackFetch } from '../paystack.ts';
+import { providerReply, type ProviderDescriptor, type ProviderMode, type ReceivingAccount, type VerifiedTransfer } from './types.ts';
 
 /**
  * Paystack as a provider. The hospital's central account is a Paystack dedicated virtual account
@@ -49,4 +49,20 @@ export const paystackCreateAccount = async (secretKey: string, hospital: { name:
     customer: customer.customer_code, ...(paystackMode(secretKey) === 'test' ? { preferred_bank: 'test-bank' } : {}),
   });
   return toAccount(providerReply(PaystackAccount, created, 'dedicated account'));
+};
+
+/** Asks Paystack directly about a transfer. Only successful NGN bank transfers into a dedicated account or terminal pass. */
+export const paystackVerifyTransfer = async (secretKey: string, reference: string, http: PaystackFetch): Promise<VerifiedTransfer | undefined> => {
+  const verified = providerReply(VerifiedPaystackTransfer, await callPaystack(secretKey, `/transaction/verify/${encodeURIComponent(reference)}`, http), 'transfer verification');
+  if (verified.reference !== reference) return undefined;
+  return { reference, mode: verified.domain, amountMinor: verified.amount, currency: verified.currency, paidAt: verified.paid_at,
+    receivingAccountNumber: verified.authorization.receiver_bank_account_number, payerName: verified.authorization.sender_name || undefined };
+};
+
+/** The webhook only prompts a check: a valid signature yields the reference of a successful charge. */
+export const paystackWebhookReference = (raw: string, signature: unknown, secretKey: string): { ok: false } | { ok: true; reference?: string } => {
+  if (!validPaystackSignature(raw, signature, secretKey)) return { ok: false };
+  const event = z.object({ event: z.string(), data: z.object({ reference: z.string().min(1) }).partial().optional() }).safeParse((() => { try { return JSON.parse(raw); } catch { return undefined; } })());
+  if (!event.success || event.data.event !== 'charge.success') return { ok: true };
+  return { ok: true, reference: event.data.data?.reference };
 };
