@@ -39,6 +39,7 @@ export const mintSyncToken = (
   options: SyncTokenOptions,
 ): { token: string; expiresOn: string } => {
   const issuedAt = Math.floor((options.now ?? Date.now()) / 1000);
+
   const claims = {
     ...(options.integratedBillingVersion ? { integrated_billing: 1 } : {}),
     ...(options.billingCatalogueVersion ? { billing_catalogue: 1 } : {}),
@@ -62,9 +63,11 @@ export const mintSyncToken = (
     ...(options.resultTemplateWorkflowVersion ? { result_template_workflow: 1 } : {}),
     ...(options.insuranceWorkflowVersion ? { insurance_workflow: 1 } : {}),
   };
+
   const header = { alg: 'EdDSA', typ: 'JWT', kid: signer.publicKeyFingerprint };
   const signingInput = `${base64url(JSON.stringify(header))}.${base64url(JSON.stringify(claims))}`;
   const signature = base64url(signer.signBytes(Buffer.from(signingInput)));
+
   return {
     token: `${signingInput}.${signature}`,
     expiresOn: new Date(claims.exp * 1000).toISOString(),
@@ -89,13 +92,16 @@ export const verifySyncToken = (
   now = Date.now(),
 ): TokenVerification => {
   const parts = token.split('.');
+
   if (parts.length !== 3) {
     return { failure: 'malformed' };
   }
+
   const [encodedHeader, encodedClaims, encodedSignature] = parts;
 
   let header: { alg?: string; kid?: string };
   let claims: SyncTokenClaims;
+
   try {
     header = JSON.parse(Buffer.from(encodedHeader, 'base64url').toString());
     claims = SyncTokenClaims.parse(JSON.parse(Buffer.from(encodedClaims, 'base64url').toString()));
@@ -104,6 +110,7 @@ export const verifySyncToken = (
   }
 
   const key = keys.find((candidate) => candidate.kid === header.kid);
+
   if (!key || header.alg !== 'EdDSA') {
     return { failure: 'unknown_key' };
   }
@@ -112,12 +119,14 @@ export const verifySyncToken = (
     key: { kty: key.kty, crv: key.crv, x: key.x },
     format: 'jwk',
   });
+
   const valid = verify(
     null,
     Buffer.from(`${encodedHeader}.${encodedClaims}`),
     publicKey,
     Buffer.from(encodedSignature, 'base64url'),
   );
+
   if (!valid) {
     return { failure: 'bad_signature' };
   }
@@ -125,8 +134,10 @@ export const verifySyncToken = (
   if (claims.aud !== audience) {
     return { failure: 'wrong_audience' };
   }
+
   if (claims.exp * 1000 <= now) {
     return { failure: 'expired' };
   }
+
   return { claims };
 };

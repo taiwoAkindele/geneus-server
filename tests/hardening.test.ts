@@ -21,6 +21,7 @@ describe('server hardening', () => {
       { config: { ...config, powerSyncInternalUrl: 'http://127.0.0.1:9' }, sql: db.sql, signer },
       { logger: false },
     );
+
     app.get('/test-failure', async () => {
       throw new Error('relation "secret_table" does not exist');
     });
@@ -57,6 +58,7 @@ describe('server hardening', () => {
 
   it('stops an address guessing invite codes after ten tries a minute', async () => {
     const statuses: number[] = [];
+
     for (let attempt = 0; attempt < 11; attempt += 1) {
       statuses.push(
         (await app.inject({ method: 'GET', url: `/invites/GUESS${attempt}` })).statusCode,

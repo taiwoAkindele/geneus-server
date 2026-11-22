@@ -17,10 +17,13 @@ test('hospital billing migration creates immutable ledgers and private connectio
     await admin.unsafe(`DROP DATABASE ${name} WITH (FORCE)`);
     await admin.end();
   });
+
   await migrate(sql);
+
   const tables = await sql<
     { tablename: string }[]
   >`SELECT tablename FROM pg_publication_tables WHERE pubname = 'powersync'`;
+
   assert(tables.some((row) => row.tablename === 'incoming_transfers'));
   assert(tables.some((row) => row.tablename === 'billing_departments'));
   assert(!tables.some((row) => row.tablename === 'billing_connections'));

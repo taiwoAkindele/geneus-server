@@ -30,29 +30,37 @@ export const registerSyncRoutes = (
   /** Transport receipts reveal outcomes only for this device, never refused evidence. */
   app.post('/sync/receipts', async (request, reply) => {
     const identity = await authenticateDevice(sql, request, reply);
+
     if (!identity) {
       return;
     }
+
     const parsed = z
       .strictObject({ clientIds: z.array(z.number().int().nonnegative()).min(1).max(1000) })
       .safeParse(request.body);
+
     if (!parsed.success) {
       return reply.code(400).send({
         error: 'invalid_request',
         message: 'Provide between one and one thousand mutation identities',
       } satisfies ApiErrorBody);
     }
+
     const rows =
       await sql`SELECT client_id,outcome FROM applied_mutations WHERE device_id=${identity.deviceId} AND client_id IN ${sql(parsed.data.clientIds)}`;
+
     reply.header('cache-control', 'no-store');
+
     return {
       applied: rows.filter((r) => r.outcome === 'applied').map((r) => Number(r.client_id)),
       rejected: rows.filter((r) => r.outcome === 'rejected').map((r) => Number(r.client_id)),
     };
   });
+
   /** PowerSync fetches this to verify sync tokens (configured as `jwks_uri`). */
   app.get('/.well-known/jwks.json', async () => {
     const rows = await sql`SELECT public_jwk FROM workforce_signing_keys WHERE trusted`;
+
     return {
       keys: [
         ...new Map(
@@ -67,6 +75,7 @@ export const registerSyncRoutes = (
 
   app.post('/sync/token', async (request, reply) => {
     const identity = await authenticateDevice(sql, request, reply);
+
     if (!identity) {
       return;
     }
@@ -89,12 +98,14 @@ export const registerSyncRoutes = (
         pendingMutationCount: z.number().int().nonnegative().optional(),
       })
       .safeParse(request.body ?? {});
+
     if (!version.success) {
       return reply.code(400).send({
         error: 'invalid_request',
         message: 'Invalid client compatibility metadata',
       } satisfies ApiErrorBody);
     }
+
     if (
       version.data.billingCatalogueVersion === 1 &&
       ((version.data.schemaVersion ?? 0) < 6 || version.data.facilityContractVersion !== 1)
@@ -104,6 +115,7 @@ export const registerSyncRoutes = (
         message: 'The central Billing catalogue requires schema 6 and facility contract 1',
       } satisfies ApiErrorBody);
     }
+
     if (
       version.data.pharmacyWorkflowVersion === 1 &&
       (version.data.clinicalWorkflowVersion !== 1 ||
@@ -116,6 +128,7 @@ export const registerSyncRoutes = (
         message: 'Pharmacy requires the current clinical contract',
       });
     }
+
     if (
       version.data.wardCareVersion === 1 &&
       (version.data.inpatientWorkflowVersion !== 1 ||
@@ -129,6 +142,7 @@ export const registerSyncRoutes = (
         message: 'Ward care requires the current inpatient and clinical contracts',
       });
     }
+
     if (
       version.data.documentWorkflowVersion === 1 &&
       (version.data.facilityContractVersion !== 1 ||
@@ -140,6 +154,7 @@ export const registerSyncRoutes = (
         message: 'Documents require facility contract 1, schema 5 and policy 11',
       } satisfies ApiErrorBody);
     }
+
     if (
       version.data.inpatientWorkflowVersion === 1 &&
       (version.data.facilityContractVersion !== 1 ||
@@ -151,6 +166,7 @@ export const registerSyncRoutes = (
         message: 'Admissions require facility contract 1, schema 5 and policy 11',
       } satisfies ApiErrorBody);
     }
+
     if (
       version.data.resultTemplateWorkflowVersion === 1 &&
       (version.data.clinicalWorkflowVersion !== 1 ||
@@ -164,6 +180,7 @@ export const registerSyncRoutes = (
           'Result templates require the current clinical workflow, facility contract 1, schema 5 and policy 13',
       } satisfies ApiErrorBody);
     }
+
     if (
       version.data.clinicalWorkflowVersion === 1 &&
       (version.data.facilityContractVersion !== 1 ||
@@ -176,6 +193,7 @@ export const registerSyncRoutes = (
           'The current clinical workflow requires facility contract 1, schema 4 and policy 10',
       } satisfies ApiErrorBody);
     }
+
     if (
       version.data.insuranceWorkflowVersion === 1 &&
       (version.data.facilityContractVersion !== 1 ||
@@ -187,6 +205,7 @@ export const registerSyncRoutes = (
         message: 'Insurance requires facility contract 1, schema 5 and policy 14',
       } satisfies ApiErrorBody);
     }
+
     if (
       version.data.careServiceVersion === 1 &&
       (version.data.facilityContractVersion !== 1 || (version.data.schemaVersion ?? 0) < 4)
@@ -196,6 +215,7 @@ export const registerSyncRoutes = (
         message: 'Care services require facility contract 1 and schema 4',
       } satisfies ApiErrorBody);
     }
+
     if (
       version.data.facilityContractVersion !== undefined &&
       version.data.facilityContractVersion !== 1
@@ -205,6 +225,7 @@ export const registerSyncRoutes = (
         message: 'This server supports facility contract version one',
       } satisfies ApiErrorBody);
     }
+
     if (
       version.data.integratedBillingVersion === 1 &&
       ((version.data.schemaVersion ?? 0) < 7 ||
@@ -216,7 +237,9 @@ export const registerSyncRoutes = (
         message: 'Integrated billing requires schema 7, policy 17 and catalogue 1',
       });
     }
+
     const tokenIssuedAt = Date.now();
+
     const negotiated = await sql.begin(async (tx) => {
       await tx`SELECT id FROM facilities WHERE id=${identity.facilityId} FOR UPDATE`;
       await assertWorkforceCompatibility(
@@ -230,7 +253,9 @@ export const registerSyncRoutes = (
         },
         Date.now(),
       );
+
       await recordClientVersion(tx, identity, version.data, Date.now());
+
       const catalogue = await negotiateCatalogue(
         tx,
         identity,
@@ -238,6 +263,7 @@ export const registerSyncRoutes = (
         config.syncTokenTtlSeconds,
         tokenIssuedAt,
       );
+
       const integrated = await negotiateIntegrated(
         tx,
         identity,
@@ -245,6 +271,7 @@ export const registerSyncRoutes = (
         config.syncTokenTtlSeconds,
         tokenIssuedAt,
       );
+
       return { catalogue, integrated };
     });
 
@@ -258,13 +285,16 @@ export const registerSyncRoutes = (
       version.data.insuranceWorkflowVersion === 1
         ? await insuranceState(sql, identity.facilityId)
         : 'off';
+
     // A hospital that ever billed insurance keeps its insurance records after turning billing off: those obligations stand.
     const periods =
       version.data.insuranceWorkflowVersion === 1
         ? await billingPeriods(sql, identity.facilityId)
         : [];
+
     const insurance =
       state === 'setup' || state === 'active' || periods.length ? (1 as const) : undefined;
+
     const minted = mintSyncToken(signer, {
       deviceId: identity.deviceId,
       facilityId: identity.facilityId,
@@ -284,6 +314,7 @@ export const registerSyncRoutes = (
       integratedBillingVersion: version.data.integratedBillingVersion,
       billingCatalogueVersion: version.data.billingCatalogueVersion,
     });
+
     await touchDevice(sql, identity.deviceId);
 
     const response: SyncTokenResponse = {
@@ -310,6 +341,7 @@ export const registerSyncRoutes = (
           }
         : {}),
     };
+
     return response;
   });
 
@@ -322,16 +354,19 @@ export const registerSyncRoutes = (
    */
   app.post('/sync/upload', async (request, reply) => {
     const identity = await authenticateDevice(sql, request, reply);
+
     if (!identity) {
       return;
     }
 
     const parsed = UploadRequest.safeParse(request.body);
+
     if (!parsed.success) {
       request.log.error(
         { deviceId: identity.deviceId, issues: parsed.error.issues },
         'malformed upload — client bug',
       );
+
       return reply.code(400).send({
         error: 'invalid_upload',
         message: 'The upload is malformed',
@@ -356,6 +391,7 @@ export const registerSyncRoutes = (
         'upload mutations rejected',
       );
     }
+
     request.log.info(
       {
         deviceId: identity.deviceId,
@@ -365,6 +401,7 @@ export const registerSyncRoutes = (
       },
       'upload processed',
     );
+
     return response;
   });
 };

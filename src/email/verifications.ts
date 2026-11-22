@@ -1,6 +1,13 @@
 import { createHash, randomInt, randomUUID, timingSafeEqual } from 'node:crypto';
 import type { Sql, Tx } from '../db/client.ts';
 
+/** What to do with the code, by why it was sent; a recovery-email change is the remaining purpose. */
+const PURPOSE_INSTRUCTIONS: Record<string, string> = {
+  registration: 'Enter it on the facility registration screen to confirm this is your email.',
+  staff_email: 'Enter it in Geneus to confirm this as your email address.',
+  operator_login: 'Enter it on the Geneus operator sign-in screen.',
+};
+
 /**
  * A 6-digit code emailed to prove someone can read an address. Creating a code
  * and sending it are separate steps, so a caller (or a test) can hold the code
@@ -12,6 +19,7 @@ import type { Sql, Tx } from '../db/client.ts';
  */
 export type VerificationPurpose =
   'registration' | 'staff_email' | 'staff_email_current' | 'workforce_access' | 'operator_login';
+
 export type VerificationKey = { purpose: VerificationPurpose; subject: string; email: string };
 
 const CODE_TTL_MS = 15 * 60 * 1000;
@@ -23,6 +31,7 @@ const hashOf = (id: string, code: string): string =>
 /** What a registration code is tied to: the invite, as it is stored. */
 export const registrationSubject = (inviteToken: string): string =>
   inviteToken.trim().toUpperCase();
+
 /** What a staff email code is tied to: that admin, at that facility. */
 export const staffEmailSubject = (facilityId: string, staffId: string): string =>
   `${facilityId}:${staffId}`;
@@ -38,10 +47,12 @@ export const createVerificationCode = async (
     await tx`
       UPDATE email_verifications SET consumed_on = now()
       WHERE purpose = ${key.purpose} AND subject = ${key.subject} AND consumed_on IS NULL`;
+
     await tx`
       INSERT INTO email_verifications (id, purpose, subject, email, code_hash, expires_on)
       VALUES (${id}, ${key.purpose}, ${key.subject}, ${key.email}, ${hashOf(id, code)}, ${expiresOn})`;
   });
+
   return { code, expiresOn };
 };
 
@@ -64,17 +75,20 @@ export const checkVerificationCode = async (
       AND consumed_on IS NULL AND expires_on > now() AND attempts < ${MAX_ATTEMPTS}
     ORDER BY created_on DESC
     LIMIT 1`;
+
   if (!open) {
     return undefined;
   }
 
   const expected = Buffer.from(open.code_hash, 'hex');
   const given = Buffer.from(hashOf(open.id, key.code.trim()), 'hex');
+
   if (open.email === key.email && timingSafeEqual(expected, given)) {
     return open.id;
   }
 
   await sql`UPDATE email_verifications SET attempts = attempts + 1 WHERE id = ${open.id}`;
+
   return undefined;
 };
 
@@ -113,13 +127,8 @@ export const verificationEmail = (code: string, purpose: VerificationPurpose) =>
   text: [
     `Your Geneus verification code is ${code}.`,
     '',
-    purpose === 'registration'
-      ? 'Enter it on the facility registration screen to confirm this is your email.'
-      : purpose === 'staff_email'
-        ? 'Enter it in Geneus to confirm this as your email address.'
-        : purpose === 'operator_login'
-          ? 'Enter it on the Geneus operator sign-in screen.'
-          : 'Someone asked to replace this recovery email on your Geneus admin account. Enter this code in Geneus only if that was you.',
+    PURPOSE_INSTRUCTIONS[purpose] ??
+      'Someone asked to replace this recovery email on your Geneus admin account. Enter this code in Geneus only if that was you.',
     'It works once, for 15 minutes. If you did not ask for it, you can ignore this email.',
     '',
     'If you ever forget your PIN, Geneus can email a PIN code to this address.',

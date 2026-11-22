@@ -24,6 +24,7 @@ import { chargePositions, type ChargePosition } from '../insurance/coverage.ts';
  * Only this patient's records are read.
  */
 type Row = Record<string, unknown>;
+
 export type { BillView, ReceiptView };
 
 const CATEGORY: Record<FeeCategory, string> = {
@@ -38,6 +39,7 @@ const CATEGORY: Record<FeeCategory, string> = {
   admission: 'Admission',
   imaging: 'Imaging',
 };
+
 const METHOD: Record<Payment['method'], string> = {
   cash: 'Cash',
   transfer: 'Bank transfer',
@@ -60,6 +62,7 @@ const receivedBy = (payment: Payment, staff: Staff | undefined): string => {
 
 const header = async (sql: Sql | Tx, facilityId: string): Promise<DocumentHospital | undefined> => {
   const facility = await findRecord<Facility>(sql, 'facility', facilityId);
+
   return facility
     ? {
         name: facility.name,
@@ -70,16 +73,19 @@ const header = async (sql: Sql | Tx, facilityId: string): Promise<DocumentHospit
       }
     : undefined;
 };
+
 const patientOf = async (
   sql: Sql | Tx,
   facilityId: string,
   patientId: string,
 ): Promise<DocumentPatient | undefined> => {
   const patient = await findRecord<Patient>(sql, 'patient', patientId);
+
   return patient && patient.facilityId === facilityId
     ? { name: patient.fullName, patientId: patient.patientId, phone: patient.phone }
     : undefined;
 };
+
 const chargesOf = async (
   sql: Sql | Tx,
   facilityId: string,
@@ -103,6 +109,7 @@ const totalsOf = (positions: readonly ChargePosition[]) => {
   const paidMinor = sum((p) => p.money.receivedMinor - p.money.refundedMinor);
   const dueMinor = sum((p) => Math.max(0, p.balanceMinor));
   const creditMinor = sum((p) => Math.max(0, -p.balanceMinor));
+
   return {
     subtotalMinor,
     exemptMinor,
@@ -115,14 +122,18 @@ const totalsOf = (positions: readonly ChargePosition[]) => {
     creditMinor,
   };
 };
-const statusOf = (t: BillView['totals']): BillStatus =>
-  t.undecidedMinor
-    ? 'Awaiting insurance'
-    : t.dueMinor
-      ? t.paidMinor > 0
-        ? 'Part paid'
-        : 'Unpaid'
-      : 'Paid';
+
+const statusOf = (t: BillView['totals']): BillStatus => {
+  if (t.undecidedMinor) {
+    return 'Awaiting insurance';
+  }
+
+  if (t.dueMinor) {
+    return t.paidMinor > 0 ? 'Part paid' : 'Unpaid';
+  }
+
+  return 'Paid';
+};
 
 /** The bill a key names, or undefined when it has no charges (or isn't this hospital's). */
 export const loadBill = async (
@@ -131,21 +142,27 @@ export const loadBill = async (
   key: string,
 ): Promise<BillView | undefined> => {
   const parts = billKeyParts(key);
+
   if (!parts) {
     return undefined;
   }
+
   const charges = (await chargesOf(sql, facilityId, parts.patientId, parts.currency))
     .filter((c) => billKey(c) === key)
     .sort((a, b) => a.createdOn.localeCompare(b.createdOn) || a.id.localeCompare(b.id));
+
   const [hospital, patient] = await Promise.all([
     header(sql, facilityId),
     patientOf(sql, facilityId, parts.patientId),
   ]);
+
   if (!charges.length || !hospital || !patient) {
     return undefined;
   }
+
   const positions = await chargePositions(sql, facilityId, charges);
   const totals = totalsOf(charges.map((c) => positions.get(c.id)!));
+
   return {
     key,
     reference: billReference(key),
@@ -159,6 +176,7 @@ export const loadBill = async (
     payable: false,
     lines: charges.map((c) => {
       const quantity = c.quantity ?? 1;
+
       return {
         description: c.description,
         category: CATEGORY[c.category] ?? 'Other',
@@ -178,35 +196,45 @@ export const loadReceipt = async (
   paymentId: string,
 ): Promise<ReceiptView | undefined> => {
   const payment = await findRecord<Payment>(sql, 'payment', paymentId);
+
   if (!payment || payment.facilityId !== facilityId || payment.method === 'waiver') {
     return undefined;
   }
+
   const [hospital, patient] = await Promise.all([
     header(sql, facilityId),
     patientOf(sql, facilityId, payment.patientId),
   ]);
+
   if (!hospital || !patient) {
     return undefined;
   }
+
   const all = await chargesOf(sql, facilityId, payment.patientId, payment.currency);
   const byId = new Map(all.map((c) => [c.id, c]));
+
   const touched = payment.allocations
     .map((a) => byId.get(a.chargeId))
     .filter((c): c is Charge => Boolean(c));
+
   const keys = [...new Set(touched.map(billKey))];
   const billCharges = all.filter((c) => keys.includes(billKey(c)));
   const positions = await chargePositions(sql, facilityId, billCharges);
+
   const staff =
     payment.createdBy === 'system'
       ? undefined
       : await findRecord<Staff>(sql, 'staff', payment.createdBy);
+
   // A sandbox payment is always marked, so it can never pass for real money.
   const [source] = payment.incomingTransferId
     ? await sql<
         { mode: string }[]
       >`SELECT mode FROM incoming_transfers WHERE facility_id = ${facilityId} AND id = ${payment.incomingTransferId}`
     : [];
+
   const test = source?.mode === 'test';
+
   return {
     paymentId: payment.id,
     number: payment.receiptNumber,
@@ -221,6 +249,7 @@ export const loadReceipt = async (
     amountMinor: payment.amountMinor,
     applied: payment.allocations.flatMap((a) => {
       const c = byId.get(a.chargeId);
+
       return c
         ? [{ bill: billReference(billKey(c)), item: c.description, amountMinor: a.amountMinor }]
         : [];
@@ -239,6 +268,7 @@ export const loadReceipt = async (
 /** "NGN 20,500.00": amounts are minor units with two decimals; currencies are never converted. */
 export const money = (minor: number, currency: string) =>
   `${currency} ${(minor / 100).toLocaleString('en-NG', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
 export const when = (iso: string, timeZone: string, withTime = false) =>
   new Date(iso).toLocaleString('en-GB', {
     timeZone,

@@ -56,11 +56,14 @@ export const createInvite = async (
     { length: TOKEN_LENGTH },
     () => ALPHABET[randomInt(ALPHABET.length)],
   ).join('');
+
   const expiresOn = new Date(Date.now() + validForDays * DAY_MS)?.toISOString();
+
   const [row] = await sql<InviteRow[]>`
     INSERT INTO facility_invites (token, label, expires_on)
     VALUES (${token}, ${label}, ${expiresOn})
     RETURNING *`;
+
   return fromRow(row);
 };
 
@@ -68,6 +71,7 @@ export const findInvite = async (sql: Sql | Tx, token: string): Promise<Invite |
   const [row] = await sql<
     InviteRow[]
   >`SELECT * FROM facility_invites WHERE token = ${normalise(token)}`;
+
   return row ? fromRow(row) : undefined;
 };
 
@@ -75,12 +79,15 @@ export const rejectionFor = (invite: Invite | undefined): InviteRejection | unde
   if (!invite) {
     return 'unknown';
   }
+
   if (invite.claimedOn) {
     return 'already_used';
   }
+
   if (new Date(invite.expiresOn).getTime() < Date.now()) {
     return 'expired';
   }
+
   return undefined;
 };
 
@@ -102,5 +109,6 @@ export const claimInvite = async (
     WHERE token = ${normalise(token)}
       AND claimed_on IS NULL
       AND expires_on >= now()`;
+
   return claimed.count === 1;
 };

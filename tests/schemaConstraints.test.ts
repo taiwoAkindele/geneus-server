@@ -160,6 +160,7 @@ describe('schema constraints', () => {
         deviceId: a.device.deviceId,
         action: 'sync',
       });
+
       const [row] = await db.sql<
         { received_on: string }[]
       >`SELECT received_on FROM audit_events WHERE id = ${event.id}`;
@@ -209,15 +210,19 @@ describe('schema constraints', () => {
         setting: 'facility',
         visitType,
       });
+
       await insertRecord(db.sql, 'encounter', visit('encounter:anc', 'antenatal'));
       assert.equal(
         (await findRecord<Encounter>(db.sql, 'encounter', 'encounter:anc'))?.visitType,
         'antenatal',
       );
+
       await assert.rejects(insertRecord(db.sql, 'encounter', visit('encounter:odd', 'surgery')));
+
       const error = await refusal(
         db.sql`INSERT INTO encounters (id, facility_id, schema_version, created_by, created_on, device_id, patient_id, opened_on, visit_type) VALUES ('encounter:raw', ${a.facility.id}, 1, ${a.admin.id}, now(), ${a.device.deviceId}, ${`${a.facility.id}-000001-K2`}, now(), 'surgery')`,
       );
+
       assert.equal(error.code, CHECK_VIOLATION);
     });
 
@@ -254,6 +259,7 @@ describe('schema constraints', () => {
       const error = await refusal(
         db.sql`UPDATE staff SET role = 'janitor' WHERE id = 'staff:nurse'`,
       );
+
       assert.equal(error.code, CHECK_VIOLATION);
     });
 

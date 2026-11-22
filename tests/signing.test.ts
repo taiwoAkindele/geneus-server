@@ -77,6 +77,7 @@ describe('signing', () => {
       signer.publicKeyFingerprint,
       createSigner(privateKeyBase64()).publicKeyFingerprint,
     );
+
     assert.match(signer.publicKeyFingerprint, /^[0-9a-f]{16}$/);
   });
 

@@ -45,7 +45,9 @@ const laboratoryPlacement = async (
     recordsInFacility(tx, facilityId, 'unit'),
     recordsInFacility(tx, facilityId, 'location'),
   ]);
+
   let unit = units.find((u) => isLaboratory(u.name) && unitIsRoutable(u));
+
   if (!unit) {
     const id = `unit:${randomUUID()}`;
     unit = Unit.parse({
@@ -58,9 +60,12 @@ const laboratoryPlacement = async (
       kind: 'unit',
       revision: 1,
     });
+
     await insertRecord(tx, 'unit', unit);
   }
+
   let location = locations.find((l) => isLaboratory(l.name) && l.active);
+
   if (!location) {
     location = Location.parse({
       ...envelope,
@@ -72,8 +77,10 @@ const laboratoryPlacement = async (
       revision: 1,
       unitId: unit.id,
     });
+
     await insertRecord(tx, 'location', location);
   }
+
   return { unitId: unit.id, locationId: location.id };
 };
 
@@ -92,14 +99,17 @@ export const addLabTests = async (
 ) => {
   const [facility] =
     await tx`SELECT time_zone FROM facilities WHERE id = ${identity.facilityId} FOR UPDATE`;
+
   if (!facility) {
     throw new CatalogueRefusal('This facility was not found');
   }
+
   const definitions = await recordsInFacility(tx, identity.facilityId, 'service_definition');
   const taken = takenTestKeys(definitions);
   const now = new Date().toISOString();
   const added: string[] = [];
   const skipped: string[] = [];
+
   // This legacy operational shape must remain readable before catalogue cutover.
   const envelope = {
     facilityId: identity.facilityId,
@@ -108,9 +118,12 @@ export const addLabTests = async (
     createdOn: now,
     schemaVersion: 5,
   };
+
   let placement: Awaited<ReturnType<typeof laboratoryPlacement>> | undefined;
+
   for (const draft of drafts) {
     const name = draft.name.trim().replace(/\s+/g, ' ');
+
     const aliases = [
       ...new Set(
         draft.aliases
@@ -118,14 +131,18 @@ export const addLabTests = async (
           .filter((alias) => alias && testKey(alias) !== testKey(name)),
       ),
     ];
+
     const keys = [name, ...aliases].map(testKey);
+
     if (!name || keys.some((key) => taken.has(key))) {
       skipped.push(draft.name.trim());
       continue;
     }
+
     keys.forEach((key) => taken.add(key));
     placement ??= await laboratoryPlacement(tx, envelope, identity.facilityId);
     const definitionId = `service_definition:${randomUUID()}`;
+
     const definition = ServiceDefinition.parse({
       ...envelope,
       id: definitionId,
@@ -142,6 +159,7 @@ export const addLabTests = async (
         aliases,
       },
     });
+
     const offering = ServiceOffering.parse({
       ...envelope,
       id: `service_offering:${randomUUID()}`,
@@ -158,10 +176,12 @@ export const addLabTests = async (
       resourceReadiness: 'available',
       revision: 1,
     });
+
     await insertRecord(tx, 'service_definition', definition);
     await insertRecord(tx, 'service_offering', offering);
     added.push(name);
   }
+
   if (added.length) {
     await recordAuditEvent(tx, {
       facilityId: identity.facilityId,
@@ -172,5 +192,6 @@ export const addLabTests = async (
       metadata: { workflow: 'lab_catalogue', source, added: added.length, skipped: skipped.length },
     });
   }
+
   return { added, skipped };
 };

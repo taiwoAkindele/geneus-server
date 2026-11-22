@@ -24,15 +24,19 @@ export class TemplateRefusal extends Error {
     this.status = status;
   }
 }
+
 export type TemplateActor = { identity: DeviceIdentity; staffId: string };
+
 type Saved = { id: string; revision: number };
 
 const lockFacility = async (tx: Tx, facilityId: string) => {
   const [facility] = await tx`SELECT id FROM facilities WHERE id = ${facilityId} FOR UPDATE`;
+
   if (!facility) {
     throw new TemplateRefusal('This facility was not found', 404);
   }
 };
+
 const envelope = (who: TemplateActor, now: string) => ({
   facilityId: who.identity.facilityId,
   deviceId: who.identity.deviceId,
@@ -40,16 +44,20 @@ const envelope = (who: TemplateActor, now: string) => ({
   createdOn: now,
   schemaVersion: 5,
 });
+
 /** A record that fails its contract is the editor's mistake, reported in its own words. */
 const parsed = <T>(schema: z.ZodType<T>, value: unknown): T => {
   const result = schema.safeParse(value);
+
   if (!result.success) {
     throw new TemplateRefusal(
       result.error.issues[0]?.message ?? 'Check the template and try again',
     );
   }
+
   return result.data;
 };
+
 const current = async <T extends ResultTemplate | ResultPartDefinition | AnswerList>(
   tx: Tx,
   who: TemplateActor,
@@ -59,20 +67,25 @@ const current = async <T extends ResultTemplate | ResultPartDefinition | AnswerL
   what: string,
 ): Promise<T> => {
   const record = await findRecord<T>(tx, type, id);
+
   if (!record || record.facilityId !== who.identity.facilityId) {
     throw new TemplateRefusal(`This ${what} was not found`, 404);
   }
+
   if (record.revision !== expectedRevision) {
     throw new TemplateRefusal(
       `This ${what} changed since you opened it. Reload it before saving again`,
       409,
     );
   }
+
   return record;
 };
+
 const update = async (tx: Tx, record: ResultTemplate | ResultPartDefinition | AnswerList) => {
   await tx`UPDATE ${tx(TABLE_FOR[record.type])} SET ${tx(toRow(tx, record.type, record))} WHERE id = ${record.id} AND facility_id = ${record.facilityId}`;
 };
+
 const audit = (
   tx: Tx,
   who: TemplateActor,
@@ -92,6 +105,7 @@ const audit = (
   });
 
 type Library = { parts: Map<string, ResultPartDefinition>; lists: Map<string, AnswerList> };
+
 const loadLibrary = async (tx: Tx, facilityId: string): Promise<Library> => ({
   parts: new Map(
     (await recordsInFacility(tx, facilityId, 'result_part')).map((part) => [part.id, part]),
@@ -109,11 +123,14 @@ const loadLibrary = async (tx: Tx, facilityId: string): Promise<Library> => ({
 const resolveParts = (parts: readonly ResultPart[], library: Library): ResultPart[] =>
   parts.map((part) => {
     let resolved = part;
+
     if (part.libraryPartId) {
       const shared = library.parts.get(part.libraryPartId);
+
       if (!shared?.active) {
         throw new TemplateRefusal(`${part.label}: this shared part is no longer available`);
       }
+
       resolved = {
         ...shared.part,
         key: part.key,
@@ -121,13 +138,17 @@ const resolveParts = (parts: readonly ResultPart[], library: Library): ResultPar
         libraryPartId: shared.id,
       };
     }
+
     if (resolved.kind === 'choice' && resolved.answerListId) {
       const list = library.lists.get(resolved.answerListId);
+
       if (!list?.active) {
         throw new TemplateRefusal(`${resolved.label}: this answer list is no longer available`);
       }
+
       resolved = { ...resolved, answers: list.answers };
     }
+
     return resolved;
   });
 
@@ -141,19 +162,24 @@ const checkTests = async (
   if (!ids.length) {
     return;
   }
+
   const tests = new Map(
     (await recordsInFacility(tx, facilityId, 'service_definition'))
       .filter((d) => d.active && d.investigation)
       .map((d) => [d.id, d]),
   );
+
   if (ids.some((id) => !tests.has(id))) {
     throw new TemplateRefusal('One or more chosen tests are not in this facility’s catalogue');
   }
+
   for (const other of await recordsInFacility(tx, facilityId, 'result_template')) {
     if (other.id === templateId || other.status !== 'active') {
       continue;
     }
+
     const taken = ids.filter((id) => other.serviceDefinitionIds.includes(id));
+
     if (taken.length) {
       throw new TemplateRefusal(
         `${taken.map((id) => tests.get(id)!.name).join(', ')} already ${taken.length === 1 ? 'uses' : 'use'} the template “${other.name}”. Remove ${taken.length === 1 ? 'it' : 'them'} there first`,
@@ -179,8 +205,10 @@ const insertTemplate = async (
     ...origin,
     revision: 1,
   });
+
   await insertRecord(tx, 'result_template', template);
   await audit(tx, who, 'create', 'result_template', template.id, { source: origin.source });
+
   return template;
 };
 
@@ -191,6 +219,7 @@ export const createTemplate = async (
 ): Promise<Saved> => {
   await lockFacility(tx, who.identity.facilityId);
   await checkTests(tx, who.identity.facilityId, undefined, draft.serviceDefinitionIds);
+
   const template = await insertTemplate(
     tx,
     who,
@@ -198,6 +227,7 @@ export const createTemplate = async (
     await loadLibrary(tx, who.identity.facilityId),
     { source: 'own' },
   );
+
   return { id: template.id, revision: template.revision };
 };
 
@@ -210,6 +240,7 @@ export const updateTemplate = async (
   draft: ResultTemplateDraft,
 ): Promise<Saved> => {
   await lockFacility(tx, who.identity.facilityId);
+
   const saved = await current<ResultTemplate>(
     tx,
     who,
@@ -218,7 +249,9 @@ export const updateTemplate = async (
     expectedRevision,
     'template',
   );
+
   await checkTests(tx, who.identity.facilityId, id, draft.serviceDefinitionIds);
+
   const next = parsed(ResultTemplate, {
     ...saved,
     ...draft,
@@ -227,8 +260,10 @@ export const updateTemplate = async (
     updatedBy: who.staffId,
     updatedOn: new Date().toISOString(),
   });
+
   await update(tx, next);
   await audit(tx, who, 'update', 'result_template', id, { revision: next.revision });
+
   return { id, revision: next.revision };
 };
 
@@ -236,10 +271,12 @@ export const updateTemplate = async (
 const cascade = async (tx: Tx, who: TemplateActor, uses: (part: ResultPart) => boolean) => {
   const library = await loadLibrary(tx, who.identity.facilityId);
   const now = new Date().toISOString();
+
   for (const template of await recordsInFacility(tx, who.identity.facilityId, 'result_template')) {
     if (!template.parts.some(uses)) {
       continue;
     }
+
     const next = parsed(ResultTemplate, {
       ...template,
       parts: resolveParts(template.parts, library),
@@ -247,6 +284,7 @@ const cascade = async (tx: Tx, who: TemplateActor, uses: (part: ResultPart) => b
       updatedBy: who.staffId,
       updatedOn: now,
     });
+
     await update(tx, next);
     await audit(tx, who, 'update', 'result_template', template.id, {
       revision: next.revision,
@@ -261,6 +299,7 @@ export const createPart = async (
   draft: ResultPartDraft,
 ): Promise<Saved> => {
   await lockFacility(tx, who.identity.facilityId);
+
   const part = parsed(ResultPartDefinition, {
     ...envelope(who, new Date().toISOString()),
     id: `result_part:${randomUUID()}`,
@@ -268,8 +307,10 @@ export const createPart = async (
     ...draft,
     revision: 1,
   });
+
   await insertRecord(tx, 'result_part', part);
   await audit(tx, who, 'create', 'result_part', part.id);
+
   return { id: part.id, revision: 1 };
 };
 
@@ -281,6 +322,7 @@ export const updatePart = async (
   draft: ResultPartDraft,
 ): Promise<Saved> => {
   await lockFacility(tx, who.identity.facilityId);
+
   const saved = await current<ResultPartDefinition>(
     tx,
     who,
@@ -289,6 +331,7 @@ export const updatePart = async (
     expectedRevision,
     'shared part',
   );
+
   const next = parsed(ResultPartDefinition, {
     ...saved,
     ...draft,
@@ -296,9 +339,11 @@ export const updatePart = async (
     updatedBy: who.staffId,
     updatedOn: new Date().toISOString(),
   });
+
   await update(tx, next);
   await audit(tx, who, 'update', 'result_part', id, { revision: next.revision });
   await cascade(tx, who, (part) => part.libraryPartId === id);
+
   return { id, revision: next.revision };
 };
 
@@ -308,6 +353,7 @@ export const createAnswerList = async (
   draft: AnswerListDraft,
 ): Promise<Saved> => {
   await lockFacility(tx, who.identity.facilityId);
+
   const list = parsed(AnswerList, {
     ...envelope(who, new Date().toISOString()),
     id: `answer_list:${randomUUID()}`,
@@ -315,8 +361,10 @@ export const createAnswerList = async (
     ...draft,
     revision: 1,
   });
+
   await insertRecord(tx, 'answer_list', list);
   await audit(tx, who, 'create', 'answer_list', list.id);
+
   return { id: list.id, revision: 1 };
 };
 
@@ -328,6 +376,7 @@ export const updateAnswerList = async (
   draft: AnswerListDraft,
 ): Promise<Saved> => {
   await lockFacility(tx, who.identity.facilityId);
+
   const saved = await current<AnswerList>(
     tx,
     who,
@@ -336,6 +385,7 @@ export const updateAnswerList = async (
     expectedRevision,
     'answer list',
   );
+
   const next = parsed(AnswerList, {
     ...saved,
     ...draft,
@@ -343,13 +393,16 @@ export const updateAnswerList = async (
     updatedBy: who.staffId,
     updatedOn: new Date().toISOString(),
   });
+
   await update(tx, next);
   await audit(tx, who, 'update', 'answer_list', id, { revision: next.revision });
   // Shared parts copy a list's answers too: refresh them, then every template using the list either way.
   const usesList = (part: ResultPart) => part.kind === 'choice' && part.answerListId === id;
+
   const shared = (await recordsInFacility(tx, who.identity.facilityId, 'result_part')).filter((p) =>
     usesList(p.part),
   );
+
   for (const part of shared) {
     const refreshed = parsed(ResultPartDefinition, {
       ...part,
@@ -358,17 +411,20 @@ export const updateAnswerList = async (
       updatedBy: who.staffId,
       updatedOn: new Date().toISOString(),
     });
+
     await update(tx, refreshed);
     await audit(tx, who, 'update', 'result_part', part.id, {
       revision: refreshed.revision,
       cause: 'answer_list',
     });
   }
+
   await cascade(
     tx,
     who,
     (part) => usesList(part) || shared.some((p) => p.id === part.libraryPartId),
   );
+
   return { id, revision: next.revision };
 };
 
@@ -378,6 +434,7 @@ export const updateAnswerList = async (
 
 const sameConcept = (a: { system: string; code: string }, b: { system: string; code: string }) =>
   a.system === b.system && a.code === b.code;
+
 const standardTestNames = (template: StandardTemplate) =>
   template.tests.map((key) => STANDARD_TESTS.find((test) => test.key === key)!.name);
 
@@ -387,6 +444,7 @@ export const listStandardTemplates = async (sql: Sql | Tx, facilityId: string) =
       t.standardKey ? [t.standardKey] : [],
     ),
   );
+
   return STANDARD_TEMPLATES.map((template) => ({
     key: template.key,
     name: template.name,
@@ -409,29 +467,36 @@ export const adoptStandardTemplates = async (
   await lockFacility(tx, who.identity.facilityId);
   const templates = await recordsInFacility(tx, who.identity.facilityId, 'result_template');
   const adopted = new Set(templates.flatMap((t) => (t.standardKey ? [t.standardKey] : [])));
+
   const claimed = new Set(
     templates.filter((t) => t.status === 'active').flatMap((t) => t.serviceDefinitionIds),
   );
+
   const tests = (await recordsInFacility(tx, who.identity.facilityId, 'service_definition')).filter(
     (d) => d.active && d.investigation,
   );
+
   const library = await loadLibrary(tx, who.identity.facilityId);
   const added: string[] = [];
   const skipped: string[] = [];
+
   for (const standard of STANDARD_TEMPLATES.filter((t) => keys.includes(t.key))) {
     if (adopted.has(standard.key)) {
       skipped.push(standard.name);
       continue;
     }
+
     const concepts = standard.tests.map((key) =>
       standardConcept(STANDARD_TESTS.find((test) => test.key === key)!),
     );
+
     const linked = tests
       .filter(
         (test) =>
           !claimed.has(test.id) && concepts.some((concept) => sameConcept(concept, test.concept)),
       )
       .map((test) => test.id);
+
     linked.forEach((id) => claimed.add(id));
     await insertTemplate(
       tx,
@@ -445,7 +510,9 @@ export const adoptStandardTemplates = async (
       library,
       { source: 'standard', standardKey: standard.key },
     );
+
     added.push(standard.name);
   }
+
   return { added, skipped };
 };

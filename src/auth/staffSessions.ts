@@ -14,6 +14,7 @@ import { completePrivateAccess } from '../workforce/privateAccess.ts';
  * 12 hours, and ends at once when anyone else signs in on that device.
  */
 export const SESSION_IDLE_MS = 30 * 60_000;
+
 const SESSION_MAX_MS = 12 * 60 * 60_000;
 const PIN_ITERATIONS = 210_000;
 const FREE_ATTEMPTS = 5;
@@ -21,11 +22,14 @@ const FIRST_LOCKOUT_MS = 60_000;
 const MAX_LOCKOUT_MS = 30 * 60_000;
 
 const sha = (value: string) => createHash('sha256').update(value).digest('hex');
+
 const pinHash = (pin: string, salt: string, iterations: number) =>
   pbkdf2Sync(pin, Buffer.from(salt, 'base64'), iterations, 32, 'sha256').toString('base64');
+
 const same = (a: string, b: string) => {
   const x = Buffer.from(a);
   const y = Buffer.from(b);
+
   return x.length === y.length && timingSafeEqual(x, y);
 };
 
@@ -42,6 +46,7 @@ export class StaffSessionRefusal extends Error {
 
 const activeStaff = async (sql: Sql | Tx, facilityId: string, staffId: string) => {
   const staff = await findRecord<Staff>(sql, 'staff', staffId);
+
   return staff?.active && staff.facilityId === facilityId ? staff : undefined;
 };
 
@@ -58,6 +63,7 @@ const openSession = async (
   const token = randomBytes(32).toString('base64url');
   const expiresOn = new Date(Date.now() + SESSION_MAX_MS).toISOString();
   await tx`INSERT INTO staff_sessions (token_hash, facility_id, staff_id, device_id, expires_on) VALUES (${sha(token)}, ${identity.facilityId}, ${staffId}, ${identity.deviceId}, ${expiresOn})`;
+
   return { token, staffId, expiresOn, idleMinutes: SESSION_IDLE_MS / 60_000 };
 };
 
@@ -76,8 +82,10 @@ export const enrolPin = async (
   if (!(await activeStaff(sql, identity.facilityId, input.staffId))) {
     throw new StaffSessionRefusal('unknown_staff', 'No such member of staff here');
   }
+
   let proof: 'setup_code' | 'email' | 'invitation';
   let invitationId: string | undefined;
+
   if (input.setupCode) {
     const codes = await sql<
       {
@@ -92,13 +100,16 @@ export const enrolPin = async (
       SELECT id, code_hash, code_salt, code_iterations, used_on, used_on_device FROM pin_setup_codes
       WHERE facility_id = ${identity.facilityId} AND staff_id = ${input.staffId} AND revoked_on IS NULL AND expires_on > now()
         AND (used_on IS NULL OR (used_on_device = ${identity.deviceId} AND used_on > now() - interval '1 day'))`;
+
     const match = codes.find((c) =>
       same(hashPinSetupCode(input.setupCode!, c.code_salt, c.code_iterations), c.code_hash),
     );
+
     if (match) {
       if (!match.used_on) {
         await sql`UPDATE pin_setup_codes SET used_on = now(), used_on_device = ${identity.deviceId}, updated_by = ${input.staffId}, updated_on = now() WHERE id = ${match.id} AND used_on IS NULL`;
       }
+
       proof = 'setup_code';
     } else {
       invitationId = await matchInvitationCode(
@@ -107,12 +118,14 @@ export const enrolPin = async (
         input.staffId,
         input.setupCode,
       );
+
       if (!invitationId) {
         throw new StaffSessionRefusal(
           'invalid_setup_code',
           'This PIN code is not right, has expired or was already used. Ask your administrator for a new one',
         );
       }
+
       proof = 'invitation';
     }
   } else {
@@ -122,15 +135,19 @@ export const enrolPin = async (
       input.staffId,
       input.emailCode ?? '',
     );
+
     if (!session) {
       throw new StaffSessionRefusal(
         'invalid_email_code',
         'The email code is not right, or has expired',
       );
     }
+
     proof = 'email';
   }
+
   const salt = randomBytes(16).toString('base64');
+
   return sql.begin(async (tx) => {
     // Accepted with the PIN or not at all: a revocation or expiry that won the race stops both.
     if (invitationId && !(await acceptInvitation(tx, identity, input.staffId, invitationId))) {
@@ -139,9 +156,11 @@ export const enrolPin = async (
         'This invitation code has expired or was withdrawn. Ask your administrator to send a new one',
       );
     }
+
     await tx`INSERT INTO staff_device_pins (facility_id, staff_id, device_id, salt, hash, iterations, enrolled_by)
       VALUES (${identity.facilityId}, ${input.staffId}, ${identity.deviceId}, ${salt}, ${pinHash(input.pin, salt, PIN_ITERATIONS)}, ${PIN_ITERATIONS}, ${proof})
       ON CONFLICT (facility_id, staff_id, device_id) DO UPDATE SET salt = EXCLUDED.salt, hash = EXCLUDED.hash, iterations = EXCLUDED.iterations, failures = 0, locked_until = NULL, enrolled_by = EXCLUDED.enrolled_by, enrolled_on = now()`;
+
     return openSession(tx, identity, input.staffId);
   });
 };
@@ -157,6 +176,7 @@ export const signInSession = async (
     if (!(await activeStaff(tx, identity.facilityId, input.staffId))) {
       return new StaffSessionRefusal('unknown_staff', 'No such member of staff here');
     }
+
     const [row] = await tx<
       {
         salt: string;
@@ -167,12 +187,14 @@ export const signInSession = async (
       }[]
     >`
       SELECT salt, hash, iterations, failures, locked_until FROM staff_device_pins WHERE facility_id = ${identity.facilityId} AND staff_id = ${input.staffId} AND device_id = ${identity.deviceId} FOR UPDATE`;
+
     if (!row) {
       return new StaffSessionRefusal(
         'pin_not_enrolled',
         'Your PIN is not yet registered with the server on this device',
       );
     }
+
     const lockedUntil = row.locked_until
       ? Date.parse(
           String(
@@ -180,29 +202,38 @@ export const signInSession = async (
           ),
         )
       : 0;
+
     if (lockedUntil > Date.now()) {
       return new StaffSessionRefusal('locked', 'Too many wrong PINs. Try again later', {
         retryAt: new Date(lockedUntil).toISOString(),
       });
     }
+
     if (!same(pinHash(input.pin, row.salt, row.iterations), row.hash)) {
       const failures = row.failures + 1;
+
       const lockout =
         failures < FREE_ATTEMPTS
           ? undefined
           : Math.min(FIRST_LOCKOUT_MS * 2 ** (failures - FREE_ATTEMPTS), MAX_LOCKOUT_MS);
+
       await tx`UPDATE staff_device_pins SET failures = ${failures}, locked_until = ${lockout ? new Date(Date.now() + lockout) : null} WHERE facility_id = ${identity.facilityId} AND staff_id = ${input.staffId} AND device_id = ${identity.deviceId}`;
+
       return new StaffSessionRefusal(
         lockout ? 'locked' : 'wrong_pin',
         lockout ? 'Too many wrong PINs. Try again later' : 'That PIN is not right',
       );
     }
+
     await tx`UPDATE staff_device_pins SET failures = 0, locked_until = NULL WHERE facility_id = ${identity.facilityId} AND staff_id = ${input.staffId} AND device_id = ${identity.deviceId}`;
+
     return openSession(tx, identity, input.staffId);
   });
+
   if (outcome instanceof StaffSessionRefusal) {
     throw outcome;
   }
+
   return outcome;
 };
 
@@ -219,12 +250,15 @@ export const sessionStaff = async (
   if (!token || token.length > 200) {
     return undefined;
   }
+
   const [row] = await sql<{ staff_id: string }[]>`UPDATE staff_sessions SET last_used_on = now()
     WHERE token_hash = ${sha(token)} AND facility_id = ${identity.facilityId} AND device_id = ${identity.deviceId} AND ended_on IS NULL
       AND expires_on > now() AND last_used_on > now() - ${`${SESSION_IDLE_MS / 1000} seconds`}::interval RETURNING staff_id`;
+
   if (!row) {
     return undefined;
   }
+
   return activeStaff(sql, identity.facilityId, row.staff_id);
 };
 
@@ -232,6 +266,7 @@ export const endSession = (sql: Sql, identity: DeviceIdentity, token: string) =>
   sql`UPDATE staff_sessions SET ended_on = now() WHERE token_hash = ${sha(token)} AND device_id = ${identity.deviceId} AND ended_on IS NULL`;
 
 type RequestHeaders = Record<string, string | string[] | undefined>;
+
 const pick = (value: string | string[] | undefined) =>
   typeof value === 'string' ? value : undefined;
 
@@ -248,10 +283,13 @@ export const verifiedRequestStaff = async (
   headers: RequestHeaders,
 ): Promise<Staff | undefined> => {
   const viaSession = await sessionStaff(sql, identity, pick(headers['x-staff-session']));
+
   if (viaSession) {
     return viaSession;
   }
+
   const { privateStaff } = await import('../workforce/privateAccess.ts');
+
   return privateStaff(sql, identity, pick(headers['x-workforce-access']));
 };
 
@@ -269,9 +307,12 @@ export const requestStaff = async (
   headers: RequestHeaders,
 ): Promise<Staff | undefined> => {
   const verified = await verifiedRequestStaff(sql, identity, headers);
+
   if (verified) {
     return verified;
   }
+
   const actor = pick(headers['x-actor-staff-id']);
+
   return actor && actor.length <= 200 ? activeStaff(sql, identity.facilityId, actor) : undefined;
 };

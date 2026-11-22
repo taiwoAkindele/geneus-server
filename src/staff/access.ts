@@ -11,11 +11,13 @@ export const keepsAdministrator = async (tx: Tx, before: Staff, after: Staff): P
   if (!isWorkingAdmin(before) || isWorkingAdmin(after)) {
     return true;
   }
+
   const [other] = await tx`
     SELECT id FROM staff
     WHERE facility_id = ${before.facilityId} AND id <> ${before.id}
       AND active AND permission = 'read_write'
       AND (role = 'facility_admin' OR additional_roles @> '["facility_admin"]'::jsonb)
     LIMIT 1`;
+
   return Boolean(other);
 };

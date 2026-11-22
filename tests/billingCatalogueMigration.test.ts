@@ -7,6 +7,7 @@ import { envelopeFor, registerScratchFacility, scratchDatabase } from './postgre
 it('upgrades populated Release 1 data without rewriting prices, charges, stock links or historical price versions', async () => {
   const migrations = await loadMigrations();
   const db = await scratchDatabase(migrations.filter((m) => m.version < 41));
+
   try {
     const f = await registerScratchFacility(db.sql);
     const base = envelopeFor(f);
@@ -21,6 +22,7 @@ it('upgrades populated Release 1 data without rewriting prices, charges, stock l
       sex: 'female',
       ageYears: 30,
     });
+
     await insertRecord(db.sql, 'fee_item', {
       ...base,
       id: 'fee:existing',
@@ -33,6 +35,7 @@ it('upgrades populated Release 1 data without rewriting prices, charges, stock l
       exemptions: [],
       active: true,
     });
+
     await insertRecord(db.sql, 'stock_item', {
       ...base,
       id: 'stock:legacy',
@@ -43,6 +46,7 @@ it('upgrades populated Release 1 data without rewriting prices, charges, stock l
       quantityOnHand: 5,
       feeItemId: 'fee:existing',
     });
+
     await insertRecord(db.sql, 'charge', {
       ...base,
       id: 'charge:history',
@@ -55,6 +59,7 @@ it('upgrades populated Release 1 data without rewriting prices, charges, stock l
       amountMinor: 400000,
       currency: 'NGN',
     });
+
     const [before] = await db.sql`SELECT * FROM fee_items WHERE id='fee:existing'`;
     const oldPrices = await db.sql`SELECT * FROM fee_price_versions ORDER BY id`;
     const oldCharges = await db.sql`SELECT * FROM charges ORDER BY id`;
@@ -67,6 +72,7 @@ it('upgrades populated Release 1 data without rewriting prices, charges, stock l
     assert.deepEqual(unchanged, original);
     assert.notEqual(newHead, oldHead);
     assert.equal(price_evidence_version, 1);
+
     for (const old of oldPrices) {
       assert.deepEqual(
         (
@@ -75,13 +81,17 @@ it('upgrades populated Release 1 data without rewriting prices, charges, stock l
         old,
       );
     }
+
     for (const old of oldCharges) {
       const now = (await db.sql`SELECT * FROM charges WHERE id=${old.id}`)[0];
+
       for (const key of Object.keys(old)) {
         assert.deepEqual(now[key], old[key]);
       }
+
       assert.equal(now.fee_price_version, null);
     }
+
     assert.deepEqual(await db.sql`SELECT * FROM stock_items ORDER BY id`, oldStock);
     assert.equal(
       (await db.sql`SELECT to_regclass('charge_service_link') AS relation`)[0].relation,

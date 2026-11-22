@@ -28,13 +28,17 @@ import type { WorkforceRefusal } from './validation.ts';
 import { workforcePayloadHash } from './digests.ts';
 import { recordAuditEvent } from '../audit/auditEvents.ts';
 import { randomUUID } from 'node:crypto';
+
 const verifiedAuthority = async (tx: Tx, id: string): Promise<AuthoritySnapshot | undefined> => {
   const proof = await findRecord<AuthoritySnapshot>(tx, 'authority_snapshot', id);
+
   if (!proof) {
     return undefined;
   }
+
   const [key] =
     await tx`SELECT public_jwk FROM workforce_signing_keys WHERE id=${proof.keyId} AND trusted`;
+
   return key &&
     verify(
       null,
@@ -45,6 +49,7 @@ const verifiedAuthority = async (tx: Tx, id: string): Promise<AuthoritySnapshot 
     ? proof
     : undefined;
 };
+
 const actionsFor = async (tx: Tx, record: ClinicalRecord) =>
   clinicalRecordActions(
     record,
@@ -52,6 +57,7 @@ const actionsFor = async (tx: Tx, record: ClinicalRecord) =>
       ? await findRecord<EncounterEntry>(tx, 'encounter_entry', record.amends)
       : undefined,
   );
+
 const reviewCovers = async (
   tx: Tx,
   reviewer: Staff,
@@ -68,7 +74,9 @@ const reviewCovers = async (
   ) {
     return false;
   }
+
   const proof = await deriveAuthority(tx, reviewer, deviceId, now);
+
   return (await actionsFor(tx, record)).every((action) =>
     proof.snapshot.reviewScopes.some(
       (g) =>
@@ -76,6 +84,7 @@ const reviewCovers = async (
     ),
   );
 };
+
 export const historicalReviewValid = async (
   tx: Tx,
   record: ClinicalRecord,
@@ -84,14 +93,18 @@ export const historicalReviewValid = async (
 ): Promise<boolean> => {
   const reviews =
     await tx`SELECT * FROM workforce_historical_reviews WHERE facility_id=${record.facilityId} AND payload_hash=${workforcePayloadHash(record)} AND expires_on>${new Date(now).toISOString()}`;
+
   for (const review of reviews) {
     const reviewer = await findRecord<Staff>(tx, 'staff', review.reviewed_by as string);
+
     if (reviewer && (await reviewCovers(tx, reviewer, record, deviceId, now))) {
       return true;
     }
   }
+
   return false;
 };
+
 export const approveHistoricalReview = async (
   tx: Tx,
   identity: DeviceIdentity,
@@ -108,6 +121,7 @@ export const approveHistoricalReview = async (
   ) {
     throw new Error('Select an original refused clinical entry in this facility');
   }
+
   return approveHistoricalSource(
     tx,
     identity,
@@ -118,6 +132,7 @@ export const approveHistoricalReview = async (
     rejection.id,
   );
 };
+
 export const approveHistoricalSource = async (
   tx: Tx,
   identity: DeviceIdentity,
@@ -128,19 +143,25 @@ export const approveHistoricalSource = async (
   rejectionId?: string,
 ): Promise<string> => {
   const parsed = parseDocument(input);
+
   if (
     !parsed.success ||
     !['encounter_entry', 'clinical_event', 'ward_care_event'].includes(parsed.data.type)
   ) {
     throw new Error('Original reported care is not a valid source record');
   }
+
   const record = parsed.data as ClinicalRecord;
+
   if (!(await reviewCovers(tx, reviewer, record, identity.deviceId, now))) {
     throw new Error('Independent accepted reviewer scope is required for every reported action');
   }
+
   const originalProof =
     record.actorContext && (await verifiedAuthority(tx, record.actorContext.authoritySnapshotId));
+
   const at = Date.parse(clinicalPerformedOn(record));
+
   if (
     !originalProof ||
     originalProof.staffId !== record.createdBy ||
@@ -158,15 +179,19 @@ export const approveHistoricalSource = async (
       'Historical review cannot invent a missing accepted clinical grant or backdate proof',
     );
   }
+
   const reportedStaff = await findRecord<Staff>(tx, 'staff', record.createdBy);
+
   if (!reportedStaff || reportedStaff.facilityId !== identity.facilityId) {
     throw new Error('Original worker must remain identifiable in this facility');
   }
+
   const temporal = projectClinicalAuthority(
     { ...reportedStaff, active: true, permission: 'read_write' },
     await authoritySources(tx, identity.facilityId),
     at,
   );
+
   if (
     !(await actionsFor(tx, record)).every((action) =>
       temporal.grants.some(
@@ -179,9 +204,11 @@ export const approveHistoricalSource = async (
       'Accepted source history does not support clinical scope at the reported performance time',
     );
   }
+
   const id = `historical_review:${randomUUID()}`;
   await tx`INSERT INTO workforce_historical_reviews(id,facility_id,rejection_id,payload_hash,reviewed_by,reason,reviewed_on,expires_on)
     VALUES(${id},${identity.facilityId},${rejectionId ?? null},${workforcePayloadHash(record)},${reviewer.staffId},${reason},${new Date(now).toISOString()},${new Date(now + 86400000).toISOString()})`;
+
   await recordAuditEvent(tx, {
     facilityId: identity.facilityId,
     deviceId: identity.deviceId,
@@ -191,8 +218,10 @@ export const approveHistoricalSource = async (
     entityId: rejectionId || record.id,
     metadata: { historicalReviewId: id, disposition: 'authorized_exact_resubmission' },
   });
+
   return id;
 };
+
 export const completeHistoricalReview = async (
   tx: Tx,
   record: ClinicalRecord,
@@ -202,12 +231,15 @@ export const completeHistoricalReview = async (
   const [review] =
     await tx`SELECT * FROM workforce_historical_reviews WHERE facility_id=${record.facilityId} AND payload_hash=${workforcePayloadHash(record)}
     AND expires_on>${new Date(now).toISOString()} ORDER BY reviewed_on DESC LIMIT 1`;
+
   if (!review) {
     return;
   }
+
   await tx`UPDATE workforce_historical_reviews SET expires_on=${new Date(now).toISOString()} WHERE id=${review.id}`;
   await tx`UPDATE sync_rejections SET resolved_on=${new Date(now).toISOString()},resolved_by=${review.reviewed_by},resolution=${`Accepted exact source content following independent review ${String(review.id)}`}
     WHERE id=${review.rejection_id} AND facility_id=${record.facilityId}`;
+
   await recordAuditEvent(tx, {
     facilityId: record.facilityId,
     deviceId,
@@ -218,6 +250,7 @@ export const completeHistoricalReview = async (
     metadata: { historicalReviewId: review.id as string, reportedAuthor: record.createdBy },
   });
 };
+
 /** Existing append-only audit events carry bounded, payload-bound co-signatures through the same offline queue. */
 export const clinicalAttestationRefusal = async (
   tx: Tx,
@@ -228,8 +261,10 @@ export const clinicalAttestationRefusal = async (
   if (audit.metadata?.kind !== 'workforce_attestation') {
     return undefined;
   }
+
   const meta = audit.metadata;
   const action = ClinicalAction.safeParse(meta.action);
+
   if (
     !action.success ||
     audit.actorStaffId !== audit.createdBy ||
@@ -244,18 +279,23 @@ export const clinicalAttestationRefusal = async (
       reason: 'Co-signature must identify its author, activity, service and exact source digest',
     };
   }
+
   const worker = await findRecord<Staff>(tx, 'staff', audit.createdBy);
+
   if (!worker || worker.facilityId !== identity.facilityId) {
     return { category: 'authorization', reason: 'Witness must be a facility member' };
   }
+
   const requiredAction =
     meta.attestationKind === 'checker' && ['record_result', 'perform_test'].includes(action.data)
       ? 'verify_result'
       : action.data;
+
   const accepted =
     typeof meta.authoritySnapshotId === 'string'
       ? await verifiedAuthority(tx, meta.authoritySnapshotId)
       : undefined;
+
   if (
     !accepted ||
     accepted.staffId !== worker.staffId ||
@@ -273,6 +313,7 @@ export const clinicalAttestationRefusal = async (
       reason: 'Witness needs accepted personal scope effective at the co-signature time',
     };
   }
+
   const issues = clinicalActivityIssues(
     worker,
     serverContext(worker, identity.deviceId, now),
@@ -280,6 +321,7 @@ export const clinicalAttestationRefusal = async (
     { action: requiredAction, offeringId: meta.offeringId },
     now,
   );
+
   issues.push(
     ...clinicalActivityIssues(
       worker,
@@ -289,19 +331,23 @@ export const clinicalAttestationRefusal = async (
       Date.parse(audit.occurredOn),
     ),
   );
+
   if (issues.length) {
     return {
       category: 'authorization',
       reason: 'Witness lacks the required independent clinical scope',
     };
   }
+
   const performed = Date.parse(audit.occurredOn);
+
   return !Number.isFinite(performed) ||
     performed > now + 300000 ||
     now - performed > OFFLINE_AUTHORIZATION_POLICY.generalMs
     ? { category: 'authorization', reason: 'Witness time is outside trusted offline bounds' }
     : undefined;
 };
+
 /** Historical proofs are loaded from our immutable rows; no proof/verified flag from the upload is trusted. */
 export const clinicalAuthorityRefusal = async (
   tx: Tx,
@@ -310,10 +356,13 @@ export const clinicalAuthorityRefusal = async (
   now: number,
 ): Promise<WorkforceRefusal | undefined> => {
   const facility = await findRecord<Facility>(tx, 'facility', identity.facilityId);
+
   if (!workforceEnforcementActive(facility?.workforcePolicy, now)) {
     return undefined;
   }
+
   const actorContext = record.actorContext;
+
   if (!actorContext) {
     return {
       category: 'authorization',
@@ -321,8 +370,10 @@ export const clinicalAuthorityRefusal = async (
         'This facility requires the accepted clinical authority and service context; upgrade and review this entry',
     };
   }
+
   const staff = await findRecord<Staff>(tx, 'staff', record.createdBy);
   const accepted = await verifiedAuthority(tx, actorContext.authoritySnapshotId);
+
   if (
     !staff ||
     staff.facilityId !== identity.facilityId ||
@@ -335,8 +386,10 @@ export const clinicalAuthorityRefusal = async (
       reason: 'Clinical authority must belong to the attributed worker and facility',
     };
   }
+
   const performed = Date.parse(clinicalPerformedOn(record));
   const reviewed = await historicalReviewValid(tx, record, identity.deviceId, now);
+
   const time = assessDelayedClinicalTime({
     performedOn: clinicalPerformedOn(record),
     receivedOn: new Date(now).toISOString(),
@@ -345,6 +398,7 @@ export const clinicalAuthorityRefusal = async (
     maximumOfflineMs: OFFLINE_AUTHORIZATION_POLICY.generalMs,
     authorityExpiresOn: accepted.expiresOn,
   });
+
   if (time === 'invalid_time' || (time !== 'current' && !reviewed)) {
     return {
       category: 'authorization',
@@ -354,20 +408,27 @@ export const clinicalAuthorityRefusal = async (
           : 'Delayed clinical authority requires independent historical review; reported care is retained in reconciliation',
     };
   }
+
   const original =
     record.type === 'encounter_entry' && record.amends
       ? await findRecord<EncounterEntry>(tx, 'encounter_entry', record.amends)
       : undefined;
+
   const actions = clinicalRecordActions(record, original);
+
   const witnesses = await tx`SELECT * FROM audit_events WHERE facility_id=${identity.facilityId}
     AND metadata->>'kind'='workforce_attestation' AND metadata->>'recordId'=${record.id} AND metadata->>'payloadHash'=${workforcePayloadHash(record)}`;
+
   const source = serverContext(staff, identity.deviceId, performed);
   const current = await deriveAuthority(tx, staff, identity.deviceId, now);
   const effectiveThen = await deriveAuthority(tx, staff, identity.deviceId, performed);
+
   for (const action of actions) {
     const qualified: string[] = [];
+
     for (const witness of witnesses) {
       const actorId = witness.actor_staff_id as string;
+
       if (
         actorId === record.createdBy ||
         witness.created_by !== actorId ||
@@ -376,12 +437,15 @@ export const clinicalAuthorityRefusal = async (
       ) {
         continue;
       }
+
       const worker = await findRecord<Staff>(tx, 'staff', actorId);
+
       const requiredAction =
         witness.metadata.attestationKind === 'checker' &&
         ['record_result', 'perform_test'].includes(action)
           ? 'verify_result'
           : action;
+
       if (
         worker &&
         clinicalActivityIssues(
@@ -395,6 +459,7 @@ export const clinicalAuthorityRefusal = async (
         qualified.push(actorId);
       }
     }
+
     // Receipt-time re-derivation catches revocation after the offline signature was issued.
     const nowIssues = clinicalActivityIssues(
       staff,
@@ -403,6 +468,7 @@ export const clinicalAuthorityRefusal = async (
       { action, offeringId: actorContext.offeringId, availableQualifiedActorIds: qualified },
       now,
     );
+
     const thenIssues = clinicalActivityIssues(
       staff,
       source,
@@ -410,6 +476,7 @@ export const clinicalAuthorityRefusal = async (
       { action, offeringId: actorContext.offeringId, availableQualifiedActorIds: qualified },
       performed,
     );
+
     thenIssues.push(
       ...clinicalActivityIssues(
         staff,
@@ -419,6 +486,7 @@ export const clinicalAuthorityRefusal = async (
         performed,
       ),
     );
+
     if (reviewed) {
       if (
         !accepted.grants.some(
@@ -440,8 +508,10 @@ export const clinicalAuthorityRefusal = async (
       };
     }
   }
+
   if (actorContext.assignmentRevisionId) {
     const assignment = await findRecord(tx, 'staff_assignment', actorContext.assignmentRevisionId);
+
     if (
       !assignment ||
       assignment.type !== 'staff_assignment' ||
@@ -455,5 +525,6 @@ export const clinicalAuthorityRefusal = async (
       };
     }
   }
+
   return undefined;
 };

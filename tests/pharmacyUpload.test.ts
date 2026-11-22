@@ -41,10 +41,12 @@ describe('atomic pharmacy supply uploads', () => {
     pharmacist = await addStaff(db.sql, facility, { role: 'pharmacy_staff' });
     cashier = await addStaff(db.sql, facility, { role: 'cashier' });
   });
+
   after(async () => {
     await app.close();
     await db.drop();
   });
+
   const send = (...mutations: UploadMutation[]) =>
     upload(app, facility.device.credential, {
       pharmacyWorkflowVersion: 1,
@@ -55,6 +57,7 @@ describe('atomic pharmacy supply uploads', () => {
       transactionId: 1,
       mutations,
     });
+
   const setup = async () => {
     const n = ++sequence;
     const base = { ...envelopeFor(facility), schemaVersion: 5, createdBy: doctor.id };
@@ -74,6 +77,7 @@ describe('atomic pharmacy supply uploads', () => {
       sex: 'female',
       ageYears: 30,
     });
+
     await insertRecord(db.sql, 'encounter', {
       ...base,
       id: encounterId,
@@ -81,6 +85,7 @@ describe('atomic pharmacy supply uploads', () => {
       patientId,
       openedOn: base.createdOn,
     });
+
     const source = EncounterEntry.parse({
       ...base,
       id: sourceId,
@@ -103,6 +108,7 @@ describe('atomic pharmacy supply uploads', () => {
         ],
       },
     });
+
     await insertRecord(db.sql, 'encounter_entry', source);
     await insertRecord(db.sql, 'fee_item', {
       ...base,
@@ -116,6 +122,7 @@ describe('atomic pharmacy supply uploads', () => {
       active: true,
       exemptions: [],
     });
+
     await insertRecord(db.sql, 'stock_item', {
       ...base,
       id: stockId,
@@ -126,6 +133,7 @@ describe('atomic pharmacy supply uploads', () => {
       quantityOnHand: 100,
       feeItemId: feeId,
     });
+
     const d = (change: Partial<DispensingDetails> = {}): DispensingDetails => ({
       prescriptionEntryId: sourceId,
       lineId,
@@ -142,8 +150,10 @@ describe('atomic pharmacy supply uploads', () => {
       chargedMinor: 500,
       ...change,
     });
+
     const entry = async (id: string, details = d(), actor = pharmacist) => {
       const data = await pharmacyRecords(db.sql as never, source);
+
       const record = EncounterEntry.parse({
         ...base,
         id,
@@ -161,7 +171,9 @@ describe('atomic pharmacy supply uploads', () => {
           lines: [{ drug: 'Synthetic medicine', dispensed: false, reason: 'Pending' }],
         },
       });
+
       record.values.lines = dispensingSummary(source, data.entries, record);
+
       return {
         record,
         mutation: {
@@ -174,19 +186,23 @@ describe('atomic pharmacy supply uploads', () => {
         data,
       };
     };
+
     return { base, patientId, encounterId, source, stockId, feeId, d, entry };
   };
+
   it('accepts clinical supply, stock and billing together and deduplicates response-loss retries', async () => {
     const c = await setup();
     const first = await c.entry('pharmacy:first');
     const sent = await send(first.mutation);
     assert.deepEqual(sent.rejected, []);
+
     const legacy = {
       ...first.record,
       id: 'pharmacy:legacy-bypass',
       pharmacyVersion: undefined,
       values: { lines: [{ drug: 'Synthetic medicine', dispensed: true }] },
     };
+
     assert.equal(
       (
         await send({
@@ -199,8 +215,10 @@ describe('atomic pharmacy supply uploads', () => {
       ).rejected.length,
       1,
     );
+
     const [movement] =
       await db.sql`SELECT change,dispense_entry_id FROM stock_movements WHERE dispense_entry_id=${first.record.id}`;
+
     const charge = await findRecord(db.sql, 'charge', pharmacyChargeId(first.record.id));
     assert.equal(Number(movement.change), -5);
     assert.equal(charge?.type === 'charge' && charge.amountMinor, 500);
@@ -210,6 +228,7 @@ describe('atomic pharmacy supply uploads', () => {
         .length,
       1,
     );
+
     const children = pharmacyEffects(first.record, first.data).map(
       (record) =>
         ({
@@ -220,8 +239,10 @@ describe('atomic pharmacy supply uploads', () => {
           data: record,
         }) as UploadMutation,
     );
+
     assert.deepEqual((await send(...children)).rejected, []);
   });
+
   it('refuses stale competing updates without applying companion stock or bills', async () => {
     const c = await setup();
     const a = await c.entry('pharmacy:race:a');
@@ -231,15 +252,18 @@ describe('atomic pharmacy supply uploads', () => {
       outcomes.reduce((n, r) => n + r.rejected.length, 0),
       1,
     );
+
     assert.equal(
       (await db.sql`SELECT id FROM charges WHERE encounter_id=${c.encounterId}`).length,
       1,
     );
+
     assert.equal(
       (await db.sql`SELECT id FROM stock_movements WHERE item_id=${c.stockId}`).length,
       1,
     );
   });
+
   it('rolls back the clinical parent if a companion cannot be inserted', async () => {
     const c = await setup();
     const first = await c.entry('pharmacy:collision');
@@ -255,6 +279,7 @@ describe('atomic pharmacy supply uploads', () => {
       amountMinor: 1,
       currency: 'NGN',
     });
+
     assert.equal((await send(first.mutation)).rejected.length, 1);
     assert.equal(await findRecord(db.sql, 'encounter_entry', first.record.id), undefined);
     assert.equal(
@@ -262,8 +287,10 @@ describe('atomic pharmacy supply uploads', () => {
       0,
     );
   });
+
   it('supports price follow-up and returns against the original billed supply', async () => {
     const c = await setup();
+
     const first = await c.entry(
       'pharmacy:unpriced',
       c.d({
@@ -275,7 +302,9 @@ describe('atomic pharmacy supply uploads', () => {
         reason: 'Price needs checking',
       }),
     );
+
     assert.deepEqual((await send(first.mutation)).rejected, []);
+
     const priced = await c.entry('pharmacy:priced', {
       prescriptionEntryId: c.source.id,
       lineId: c.d().lineId,
@@ -291,7 +320,9 @@ describe('atomic pharmacy supply uploads', () => {
       currency: 'NGN',
       chargedMinor: 500,
     });
+
     assert.deepEqual((await send(priced.mutation)).rejected, []);
+
     const returned = await c.entry('pharmacy:return', {
       prescriptionEntryId: c.source.id,
       lineId: c.d().lineId,
@@ -305,9 +336,12 @@ describe('atomic pharmacy supply uploads', () => {
       creditMinor: 200,
       reason: 'Recorded medicine return',
     });
+
     assert.deepEqual((await send(returned.mutation)).rejected, []);
+
     const [credit] =
       await db.sql`SELECT amount_minor,charge_id FROM billing_adjustments WHERE dispense_entry_id=${returned.record.id}`;
+
     assert.equal(Number(credit.amount_minor), 200);
     assert.equal(credit.charge_id, pharmacyChargeId(priced.record.id));
     assert.equal(
@@ -315,9 +349,11 @@ describe('atomic pharmacy supply uploads', () => {
       2,
     );
   });
+
   it('rejects foreign stock, forged child records and non-clinical actors', async () => {
     const c = await setup();
     const invalid = await c.entry('pharmacy:bad-stock', c.d({ stockItemId: 'stock:foreign' }));
+
     const oldClient = await app.inject({
       method: 'POST',
       url: '/sync/upload',
@@ -331,6 +367,7 @@ describe('atomic pharmacy supply uploads', () => {
         policyVersion: POLICY_VERSION,
       },
     });
+
     assert.equal(oldClient.statusCode, 400);
     assert.equal((await send(invalid.mutation)).rejected.length, 1);
     const unauthorized = await c.entry('pharmacy:cashier', c.d(), cashier);

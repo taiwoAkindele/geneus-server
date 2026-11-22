@@ -26,6 +26,7 @@ import {
 
 const SESSION_MS = 30 * 60_000;
 const hash = (token: string) => createHash('sha256').update(token).digest('hex');
+
 const refuse = (
   reply: FastifyReply,
   status: number,
@@ -40,6 +41,7 @@ const refuse = (
   } satisfies ApiErrorBody & {
     details?: unknown;
   });
+
 type Operator = { id: string; email: string; name: string };
 
 /** The deployment's first operators. Only ever adds; the console adds and removes the rest. */
@@ -71,26 +73,34 @@ export const registerOperatorRoutes = (app: FastifyInstance, sql: Sql, mailer: M
     reply: FastifyReply,
   ): Promise<Operator | undefined> => {
     const token = request.headers['x-operator-session'];
+
     if (typeof token !== 'string' || token.length > 200) {
       refuse(reply, 401, 'operator_session_required', 'Sign in to the operator console');
+
       return;
     }
+
     const [row] = await sql<
       Operator[]
     >`SELECT o.id, o.email, o.name FROM operator_sessions s JOIN platform_operators o ON o.id = s.operator_id WHERE s.token_hash = ${hash(token)} AND s.expires_on > now() AND o.active`;
+
     if (!row) {
       refuse(reply, 401, 'operator_session_required', 'Your operator session ended. Sign in again');
+
       return;
     }
+
     return row;
   };
 
   /** Always answers the same way, so the console never reveals who is an operator. */
   app.post('/operator/login/code', async (request, reply) => {
     const body = OperatorCodeRequest.safeParse(request.body);
+
     if (!body.success) {
       return refuse(reply, 400, 'invalid_request', 'Enter your email address');
     }
+
     if (!mailer.configured) {
       return refuse(
         reply,
@@ -99,55 +109,71 @@ export const registerOperatorRoutes = (app: FastifyInstance, sql: Sql, mailer: M
         'Email delivery is not configured for this deployment',
       );
     }
+
     const email = body.data.email.toLowerCase();
     const [found] = await sql`SELECT 1 FROM platform_operators WHERE email = ${email} AND active`;
+
     if (found) {
       const fresh = await createVerificationCode(sql, {
         purpose: 'operator_login',
         subject: `operator:${email}`,
         email,
       });
+
       await mailer.send({ to: email, ...verificationEmail(fresh.code, 'operator_login') });
     }
+
     return reply.code(202).send({ sentTo: maskEmail(email) });
   });
 
   app.post('/operator/login', async (request, reply) => {
     const body = OperatorLogin.safeParse(request.body);
+
     if (!body.success) {
       return refuse(reply, 400, 'invalid_request', 'Enter your email and the 6-digit code');
     }
+
     const email = body.data.email.toLowerCase();
+
     const proof = await checkVerificationCode(sql, {
       purpose: 'operator_login',
       subject: `operator:${email}`,
       email,
       code: body.data.code,
     });
+
     if (!proof) {
       return refuse(reply, 403, 'invalid_code', 'The code is not right, or has expired');
     }
+
     const token = randomBytes(32).toString('base64url');
+
     const session = await sql.begin(async (tx) => {
       const [op] = await tx<
         Operator[]
       >`SELECT id, email, name FROM platform_operators WHERE email = ${email} AND active`;
+
       if (!op || !(await consumeVerification(tx, proof))) {
         return undefined;
       }
+
       const expiresOn = new Date(Date.now() + SESSION_MS).toISOString();
       await tx`INSERT INTO operator_sessions (token_hash, operator_id, expires_on) VALUES (${hash(token)}, ${op.id}, ${expiresOn})`;
       await event(tx, op, 'login', null, null);
+
       return { token, expiresOn, operator: op } satisfies OperatorSession;
     });
+
     return session ?? refuse(reply, 403, 'invalid_code', 'The code is not right, or has expired');
   });
 
   app.post('/operator/logout', async (request, reply) => {
     const token = request.headers['x-operator-session'];
+
     if (typeof token === 'string') {
       await sql`DELETE FROM operator_sessions WHERE token_hash = ${hash(token)}`;
     }
+
     return reply.code(204).send();
   });
 
@@ -156,6 +182,7 @@ export const registerOperatorRoutes = (app: FastifyInstance, sql: Sql, mailer: M
     if (!(await operator(request, reply))) {
       return;
     }
+
     const rows = await sql<
       {
         id: string;
@@ -169,6 +196,7 @@ export const registerOperatorRoutes = (app: FastifyInstance, sql: Sql, mailer: M
     >`
       SELECT f.id, f.name, f.code, f.insurance_state, f.time_zone, r.id AS request_id, r.requested_on FROM facilities f
       LEFT JOIN insurance_activation_requests r ON r.facility_id = f.id AND r.status = 'requested' ORDER BY (r.id IS NULL), f.name LIMIT 500`;
+
     const facilities: OperatorFacility[] = rows.map((r) => ({
       id: r.id,
       name: r.name,
@@ -181,6 +209,7 @@ export const registerOperatorRoutes = (app: FastifyInstance, sql: Sql, mailer: M
           }
         : {}),
     }));
+
     return { facilities };
   });
 
@@ -191,14 +220,18 @@ export const registerOperatorRoutes = (app: FastifyInstance, sql: Sql, mailer: M
       if (!(await operator(request, reply))) {
         return;
       }
+
       const [facility] = await sql`SELECT id FROM facilities WHERE id = ${request.params.id}`;
+
       if (!facility) {
         return refuse(reply, 404, 'not_found', 'No such facility');
       }
+
       const requests = await sql<
         Record<string, unknown>[]
       >`SELECT r.*, s.full_name AS requested_by_name FROM insurance_activation_requests r LEFT JOIN staff s ON s.facility_id = r.facility_id AND s.id = r.requested_by
       WHERE r.facility_id = ${request.params.id} ORDER BY r.requested_on DESC LIMIT 20`;
+
       return {
         status: await insuranceSetupStatus(sql, request.params.id),
         requests: requests.map(activationRequestRow),
@@ -211,15 +244,18 @@ export const registerOperatorRoutes = (app: FastifyInstance, sql: Sql, mailer: M
     '/operator/insurance/requests/:id/decide',
     async (request, reply) => {
       const op = await operator(request, reply);
+
       if (!op) {
         return;
       }
+
       const body = z
         .strictObject({
           decision: z.enum(['approve', 'reject']),
           note: z.string().trim().min(3).max(1000),
         })
         .safeParse(request.body);
+
       if (!body.success) {
         return refuse(
           reply,
@@ -228,6 +264,7 @@ export const registerOperatorRoutes = (app: FastifyInstance, sql: Sql, mailer: M
           'Approve or reject, with a note recording the reason or approval reference',
         );
       }
+
       try {
         const facilityId = await sql.begin(async (tx) => {
           const id = await decideActivation(tx, {
@@ -236,6 +273,7 @@ export const registerOperatorRoutes = (app: FastifyInstance, sql: Sql, mailer: M
             decision: body.data.decision,
             note: body.data.note,
           });
+
           await event(
             tx,
             op,
@@ -246,13 +284,16 @@ export const registerOperatorRoutes = (app: FastifyInstance, sql: Sql, mailer: M
             request.params.id,
             { note: body.data.note },
           );
+
           return id;
         });
+
         return { status: await insuranceSetupStatus(sql, facilityId) };
       } catch (cause) {
         if (cause instanceof SetupRefusal) {
           return refuse(reply, 409, cause.code, cause.message, cause.details);
         }
+
         throw cause;
       }
     },
@@ -263,18 +304,22 @@ export const registerOperatorRoutes = (app: FastifyInstance, sql: Sql, mailer: M
     '/operator/facilities/:id/insurance-state',
     async (request, reply) => {
       const op = await operator(request, reply);
+
       if (!op) {
         return;
       }
+
       const body = z
         .strictObject({
           state: z.enum(['off', 'setup']),
           reason: z.string().trim().min(5).max(1000),
         })
         .safeParse(request.body);
+
       if (!body.success) {
         return refuse(reply, 400, 'invalid_request', 'Choose off or setup and give the reason');
       }
+
       try {
         await sql.begin(async (tx) => {
           await applyInsuranceState(tx, {
@@ -283,15 +328,18 @@ export const registerOperatorRoutes = (app: FastifyInstance, sql: Sql, mailer: M
             operator: `${op.name} <${op.email}>`,
             governanceReference: body.data.reason,
           });
+
           await event(tx, op, 'insurance_state_changed', request.params.id, body.data.state, {
             reason: body.data.reason,
           });
         });
+
         return { status: await insuranceSetupStatus(sql, request.params.id) };
       } catch (cause) {
         if (cause instanceof SetupRefusal) {
           return refuse(reply, 409, cause.code, cause.message, cause.details);
         }
+
         throw cause;
       }
     },
@@ -303,54 +351,72 @@ export const registerOperatorRoutes = (app: FastifyInstance, sql: Sql, mailer: M
     if (!(await operator(request, reply))) {
       return;
     }
+
     return {
       operators:
         await sql`SELECT id, email, name, active, added_by AS "addedBy", added_on AS "addedOn" FROM platform_operators ORDER BY active DESC, name`,
     };
   });
+
   app.post('/operator/operators/add', async (request, reply) => {
     const op = await operator(request, reply);
+
     if (!op) {
       return;
     }
+
     const body = z
       .strictObject({ email: z.email().max(254), name: z.string().trim().min(2).max(120) })
       .safeParse(request.body);
+
     if (!body.success) {
       return refuse(reply, 400, 'invalid_request', "Give the operator's name and email");
     }
+
     const email = body.data.email.toLowerCase();
+
     const added = await sql.begin(async (tx) => {
       const rows =
         await tx`INSERT INTO platform_operators (id, email, name, added_by) VALUES (${`operator:${randomUUID()}`}, ${email}, ${body.data.name}, ${op.id})
         ON CONFLICT (email) DO UPDATE SET active = true, name = EXCLUDED.name WHERE platform_operators.active = false RETURNING id`;
+
       if (rows.length) {
         await event(tx, op, 'operator_added', null, email);
       }
+
       return rows.length > 0;
     });
+
     return added
       ? { ok: true }
       : refuse(reply, 409, 'already_operator', 'This person is already an operator');
   });
+
   app.post<{ Params: { id: string } }>('/operator/operators/:id/remove', async (request, reply) => {
     const op = await operator(request, reply);
+
     if (!op) {
       return;
     }
+
     if (request.params.id === op.id) {
       return refuse(reply, 409, 'self', 'Another operator removes you');
     }
+
     const done = await sql.begin(async (tx) => {
       const rows =
         await tx`UPDATE platform_operators SET active = false WHERE id = ${request.params.id} AND active RETURNING email`;
+
       if (!rows.length) {
         return false;
       }
+
       await tx`DELETE FROM operator_sessions WHERE operator_id = ${request.params.id}`;
       await event(tx, op, 'operator_removed', null, rows[0].email as string);
+
       return true;
     });
+
     return done ? { ok: true } : refuse(reply, 404, 'not_found', 'No such active operator');
   });
 
@@ -358,6 +424,7 @@ export const registerOperatorRoutes = (app: FastifyInstance, sql: Sql, mailer: M
     if (!(await operator(request, reply))) {
       return;
     }
+
     return {
       events:
         await sql`SELECT e.action, e.facility_id AS "facilityId", e.subject, e.metadata, e.at, o.email FROM operator_events e JOIN platform_operators o ON o.id = e.operator_id ORDER BY e.at DESC LIMIT 100`,

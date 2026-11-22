@@ -18,6 +18,7 @@ export type StandardTest = {
 };
 
 export const LOINC_SYSTEM = 'http://loinc.org';
+
 /** Marks catalogue entries adopted from this list that have no exact LOINC code. */
 export const STANDARD_TEST_SYSTEM = 'urn:geneus:standard-test';
 

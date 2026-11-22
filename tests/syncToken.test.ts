@@ -74,6 +74,7 @@ describe('sync tokens', () => {
 
   it('is refused once expired', () => {
     const now = Date.parse('2026-09-12T12:00:00Z');
+
     const minted = mintSyncToken(signer, {
       deviceId: 'd',
       facilityId: 'F',
@@ -95,24 +96,30 @@ describe('sync tokens', () => {
       audience: 'powersync',
       ttlSeconds: 60,
     });
+
     const [header, claims, signature] = minted.token.split('.');
+
     const forgedClaims = Buffer.from(
       JSON.stringify({
         ...JSON.parse(Buffer.from(claims, 'base64url').toString()),
         facility_id: 'OTHER',
       }),
     ).toString('base64url');
+
     const otherKeys = [createSigner(undefined).publicJwk()];
 
     assert.deepEqual(verifySyncToken(`${header}.${forgedClaims}.${signature}`, keys, 'powersync'), {
       failure: 'bad_signature',
     });
+
     assert.deepEqual(verifySyncToken(minted.token, otherKeys, 'powersync'), {
       failure: 'unknown_key',
     });
+
     assert.deepEqual(verifySyncToken(minted.token, keys, 'someone-else'), {
       failure: 'wrong_audience',
     });
+
     assert.deepEqual(verifySyncToken('not.a.jwt.at.all', keys, 'powersync'), {
       failure: 'malformed',
     });
@@ -144,6 +151,7 @@ describe('sync tokens', () => {
     const [row] = await db.sql<
       { last_seen_on: string | null }[]
     >`SELECT last_seen_on FROM devices WHERE id = ${facility.device.deviceId}`;
+
     assert.ok(row.last_seen_on);
   });
 });

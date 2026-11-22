@@ -34,12 +34,15 @@ describe('contact binding and PIN authority need a server-verified person', () =
   let clerk: Staff;
   const device = () => asDevice(f.device.credential);
   const asserting = (staffId: string) => ({ ...device(), 'x-actor-staff-id': staffId });
+
   const post = (url: string, payload: unknown, headers: Record<string, string>) =>
     app.inject({ method: 'POST', url, payload: payload as object, headers });
+
   const withSession = async (staffId: string) => ({
     ...device(),
     'x-staff-session': (await staffSessionFor(app, f.device.credential, staffId))!,
   });
+
   const emailOf = async (staffId: string) =>
     (
       await db.sql<
@@ -54,10 +57,12 @@ describe('contact binding and PIN authority need a server-verified person', () =
     nurse = await addStaff(db.sql, f, { role: 'nurse', name: 'Nkem Nurse' });
     clerk = await addStaff(db.sql, f, { role: 'records_officer', name: 'Remi Records' });
   });
+
   after(async () => {
     if (app) {
       await app.close();
     }
+
     if (db) {
       await db.drop();
     }
@@ -75,6 +80,7 @@ describe('contact binding and PIN authority need a server-verified person', () =
         ).statusCode,
         202,
       );
+
       const spoofed = await post(
         '/staff/me/email',
         {
@@ -84,6 +90,7 @@ describe('contact binding and PIN authority need a server-verified person', () =
         },
         asserting(nurse.id),
       );
+
       assert.equal(spoofed.statusCode, 403, spoofed.body);
       assert.equal(spoofed.json().error, 'staff_session_required');
       assert.equal(await emailOf(nurse.id), undefined, 'nothing was bound');
@@ -95,6 +102,7 @@ describe('contact binding and PIN authority need a server-verified person', () =
         { staffId: nurse.id, email: 'nurse@example.org' },
         device(),
       );
+
       const own = await post(
         '/staff/me/email',
         {
@@ -104,6 +112,7 @@ describe('contact binding and PIN authority need a server-verified person', () =
         },
         await withSession(nurse.id),
       );
+
       assert.equal(own.statusCode, 200, own.body);
       assert.deepEqual(own.json(), { status: 'verified' });
       assert.equal(await emailOf(nurse.id), 'nurse@example.org');
@@ -115,6 +124,7 @@ describe('contact binding and PIN authority need a server-verified person', () =
           .email,
         'nurse@example.org',
       );
+
       assert.equal(
         (
           await post('/staff/me/email/status', { staffId: nurse.id }, await withSession(nurse.id))
@@ -127,18 +137,22 @@ describe('contact binding and PIN authority need a server-verified person', () =
   describe("a facility admin's recovery email", () => {
     it('cannot be added or replaced from the device alone', async () => {
       await db.sql`DELETE FROM staff_contacts WHERE staff_id = ${f.admin.id}`;
+
       const request = await post(
         `/staff/${f.admin.id}/email/code`,
         { email: 'intruder@example.org', requestedBy: f.admin.id },
         asserting(f.admin.id),
       );
+
       assert.equal(request.statusCode, 403, request.body);
       assert.equal(request.json().error, 'staff_session_required');
+
       const confirm = await post(
         `/staff/${f.admin.id}/email`,
         { email: 'intruder@example.org', code: '123456', requestedBy: f.admin.id },
         asserting(f.admin.id),
       );
+
       assert.equal(confirm.statusCode, 403);
       assert.equal(await emailOf(f.admin.id), undefined);
     });
@@ -155,6 +169,7 @@ describe('contact binding and PIN authority need a server-verified person', () =
         ).statusCode,
         202,
       );
+
       const saved = await post(
         `/staff/${f.admin.id}/email`,
         {
@@ -164,6 +179,7 @@ describe('contact binding and PIN authority need a server-verified person', () =
         },
         session,
       );
+
       assert.equal(saved.statusCode, 204, saved.body);
       assert.equal(await emailOf(f.admin.id), 'admin.again@example.org');
     });
@@ -174,6 +190,7 @@ describe('contact binding and PIN authority need a server-verified person', () =
         { email: 'x@example.org', requestedBy: f.admin.id },
         await withSession(nurse.id),
       );
+
       assert.equal(response.statusCode, 403);
     });
   });
@@ -185,6 +202,7 @@ describe('contact binding and PIN authority need a server-verified person', () =
         { issuedBy: f.admin.id },
         asserting(f.admin.id),
       );
+
       assert.equal(response.statusCode, 403, response.body);
       assert.equal(response.json().error, 'staff_session_required');
       assert.equal(
@@ -199,6 +217,7 @@ describe('contact binding and PIN authority need a server-verified person', () =
         { issuedBy: f.admin.id },
         await withSession(nurse.id),
       );
+
       assert.equal(response.statusCode, 403);
     });
 
@@ -208,6 +227,7 @@ describe('contact binding and PIN authority need a server-verified person', () =
         { issuedBy: f.admin.id },
         await withSession(f.admin.id),
       );
+
       assert.equal(response.statusCode, 201, response.body);
       assert.match(response.json().code, /^[A-Z2-9]{8}$/);
     });
@@ -216,18 +236,22 @@ describe('contact binding and PIN authority need a server-verified person', () =
   describe('first activation', () => {
     it('needs no existing PIN or session: a single-use setup code is the proof', async () => {
       const newcomer = await addStaff(db.sql, f, { role: 'nurse', name: 'New Nurse' });
+
       const issued = await issuePinSetupCode(db.sql, {
         facilityId: f.facility.id,
         staffId: newcomer.id,
         issuedBy: f.admin.id,
         issuedFrom: f.device.deviceId,
       });
+
       assert.ok(issued.ok);
+
       const enrolled = await post(
         '/staff/session/enrol',
         { staffId: newcomer.id, pin: '482916', setupCode: issued.code },
         device(),
       );
+
       assert.equal(enrolled.statusCode, 200, enrolled.body);
       assert.ok(enrolled.json().token, 'activation opens a verified session');
       assert.equal(
@@ -240,12 +264,14 @@ describe('contact binding and PIN authority need a server-verified person', () =
 
     it("refuses a wrong or someone else's setup code", async () => {
       const other = await addStaff(db.sql, f, { role: 'nurse' });
+
       const issued = await issuePinSetupCode(db.sql, {
         facilityId: f.facility.id,
         staffId: other.id,
         issuedBy: f.admin.id,
         issuedFrom: f.device.deviceId,
       });
+
       assert.ok(issued.ok);
       assert.equal(
         (
@@ -257,6 +283,7 @@ describe('contact binding and PIN authority need a server-verified person', () =
         ).json().error,
         'invalid_setup_code',
       );
+
       assert.equal(
         (
           await post(
@@ -276,6 +303,7 @@ describe('contact binding and PIN authority need a server-verified person', () =
         (await post('/staff/email-requests/list', {}, asserting(f.admin.id))).statusCode,
         403,
       );
+
       assert.equal(
         (await post('/staff/email-requests/list', {}, await withSession(f.admin.id))).statusCode,
         200,

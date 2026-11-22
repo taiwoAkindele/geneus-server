@@ -16,6 +16,7 @@ test('a hospital credential cannot be decrypted after copying it to another hosp
   assert.throws(() => openPaystackSecret(encrypted, 'ef'.repeat(32), 'HOSPITAL-A'));
   assert(!encrypted.includes(secret));
 });
+
 test('Paystack signatures authenticate the exact body, including whitespace', () => {
   const body = '{"event":"charge.success","data":{"reference":"test"}}';
   const secret = 'fictional';

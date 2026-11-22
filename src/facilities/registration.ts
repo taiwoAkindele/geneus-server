@@ -49,13 +49,17 @@ export const facilityRegistrationConflict = (
   if (!isPostgresError(cause, UNIQUE_VIOLATION)) {
     return undefined;
   }
+
   const constraint = (cause as UniqueViolation).constraint_name;
+
   if (constraint === 'facilities_pkey') {
     return 'facility_code_taken';
   }
+
   if (constraint === 'devices_pkey') {
     return 'device_already_enrolled';
   }
+
   return undefined;
 };
 
@@ -65,15 +69,18 @@ export const registerFacility = async (
   syncEndpoint: string,
 ): Promise<RegistrationOutcome> => {
   const inviteRejection = rejectionFor(await findInvite(sql, registration.inviteToken));
+
   if (inviteRejection) {
     return { ok: false, error: 'invalid_invite', rejection: inviteRejection };
   }
+
   const verificationId = await checkVerificationCode(sql, {
     purpose: 'registration',
     subject: registrationSubject(registration.inviteToken),
     email: registration.adminEmail,
     code: registration.emailCode,
   });
+
   if (!verificationId) {
     return { ok: false, error: 'invalid_email_code' };
   }
@@ -82,12 +89,15 @@ export const registerFacility = async (
     return await sql.begin(async (tx): Promise<RegistrationOutcome> => {
       const invite = await findInvite(tx, registration.inviteToken);
       const rejection = rejectionFor(invite);
+
       if (rejection) {
         return { ok: false, error: 'invalid_invite', rejection };
       }
+
       if (!(await consumeVerification(tx, verificationId))) {
         return { ok: false, error: 'invalid_email_code' };
       }
+
       if (!(await claimInvite(tx, registration.inviteToken, registration.code))) {
         return { ok: false, error: 'invalid_invite', rejection: 'already_used' };
       }
@@ -96,9 +106,11 @@ export const registerFacility = async (
     });
   } catch (cause) {
     const taken = facilityRegistrationConflict(cause);
+
     if (taken) {
       return { ok: false, error: taken };
     }
+
     throw cause;
   }
 };
@@ -116,6 +128,7 @@ export const createFacilityRecords = async (
   deviceSecret?: string,
 ): Promise<FacilityRegistrationResult> => {
   const now = new Date().toISOString();
+
   const envelope = {
     facilityId: registration.code,
     schemaVersion: SCHEMA_VERSION,
@@ -136,6 +149,7 @@ export const createFacilityRecords = async (
   });
 
   const staffId = `staff:${randomUUID()}`;
+
   const admin = Staff.parse({
     ...envelope,
     id: staffId,
@@ -175,6 +189,7 @@ export const createFacilityRecords = async (
     entityType: 'facility',
     entityId: facility.id,
   });
+
   await recordAuditEvent(tx, {
     facilityId: facility.id,
     deviceId: device.id,

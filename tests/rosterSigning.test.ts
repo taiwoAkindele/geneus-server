@@ -39,6 +39,7 @@ describe('roster signing', () => {
     format: 'der',
     type: 'spki',
   });
+
   const isValid = (shift: RosterShift) =>
     Boolean(shift.signature) &&
     verify(
@@ -57,7 +58,9 @@ describe('roster signing', () => {
       startsAt: '2026-09-12T08:00:00Z',
       endsAt: '2026-09-12T16:00:00Z',
     });
+
     await insertRecord(db.sql, 'roster_shift', shift);
+
     return shift;
   };
 
@@ -96,6 +99,7 @@ describe('roster signing', () => {
 
   it('clears the signature when an upload extends the shift, and signs the new values', async () => {
     const extendedUntil = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+
     const response = await upload(app, a.device.credential, {
       transactionId: null,
       mutations: [
@@ -108,6 +112,7 @@ describe('roster signing', () => {
         },
       ],
     });
+
     assert.equal(response.applied, 1, JSON.stringify(response.rejected));
 
     const cleared = await findRecord<RosterShift>(db.sql, 'roster_shift', 'roster_shift:one');

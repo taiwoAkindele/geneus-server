@@ -18,6 +18,7 @@ export const RefundRequest = z.strictObject({
   reason: z.string().trim().min(1).max(1000),
   reference: z.string().trim().min(1).max(200).optional(),
 });
+
 export type RefundRequest = z.infer<typeof RefundRequest>;
 
 export class RefundRefusal extends Error {
@@ -54,26 +55,35 @@ export const recordRefund = async (
   const { request } = input;
   await tx`SELECT id FROM facilities WHERE id=${input.facilityId} FOR UPDATE`;
   await tx`SELECT pg_advisory_xact_lock(hashtext(${`${input.facilityId}:${request.id}`}))`;
+
   const [prior] =
     await tx`SELECT * FROM refunds WHERE facility_id = ${input.facilityId} AND id = ${request.id}`;
+
   if (prior) {
     const refund = fromRow<Refund>('refund', prior);
+
     if (!sameRequest(refund, request, input.staffId)) {
       throw new RefundRefusal(
         'request_reused',
         'This refund request was already used for a different refund',
       );
     }
+
     return { refund, replayed: true };
   }
+
   const ids = request.allocations.map((a) => a.chargeId);
+
   if (new Set(ids).size !== ids.length) {
     throw new RefundRefusal('invalid_request', 'Refund each charge once');
   }
+
   const charges = await chargesById(tx, input.facilityId, ids, true);
   const positions = await chargePositions(tx, input.facilityId, charges);
+
   for (const allocation of request.allocations) {
     const position = positions.get(allocation.chargeId);
+
     if (
       !position ||
       position.charge.patientId !== request.patientId ||
@@ -84,6 +94,7 @@ export const recordRefund = async (
         "Choose this patient's charges in the refund currency",
       );
     }
+
     if (!position.final) {
       throw new RefundRefusal(
         'responsibility_not_final',
@@ -91,8 +102,10 @@ export const recordRefund = async (
         { chargeId: allocation.chargeId },
       );
     }
+
     const credit = -position.balanceMinor;
     const cashHeld = position.money.receivedMinor - position.money.refundedMinor;
+
     if (allocation.amountMinor > credit || allocation.amountMinor > cashHeld) {
       throw new RefundRefusal(
         'exceeds_credit',
@@ -105,13 +118,17 @@ export const recordRefund = async (
       );
     }
   }
+
   await tx`SELECT id FROM facilities WHERE id = ${input.facilityId} FOR UPDATE`;
+
   const [{ n }] = await tx<
     { n: number }[]
   >`SELECT COUNT(*)::int + 1 AS n FROM refunds WHERE facility_id = ${input.facilityId}`;
+
   if (n > 999_999) {
     throw new RefundRefusal('sequence_exhausted', 'Refund sequence exhausted');
   }
+
   const refund = Refund.parse({
     id: request.id,
     type: 'refund',
@@ -129,6 +146,8 @@ export const recordRefund = async (
     reason: request.reason,
     ...(request.reference ? { reference: request.reference } : {}),
   });
+
   await insertRecord(tx, 'refund', refund);
+
   return { refund, replayed: false };
 };

@@ -58,14 +58,17 @@ export const paystackDescriptor: ProviderDescriptor = {
 export const PaystackCredentials = z.object({
   secretKey: z.string().regex(/^sk_(test|live)_[A-Za-z0-9]+$/),
 });
+
 export const PaystackAccountDetails = z.object({
   email: z.string().email().max(200),
   phone: z.string().regex(/^\+[1-9]\d{7,14}$/),
 });
+
 const Customer = z.object({ customer_code: z.string().min(1) });
 
 export const paystackMode = (secretKey: string): ProviderMode =>
   secretKey.startsWith('sk_test_') ? 'test' : 'live';
+
 const toAccount = (a: z.infer<typeof PaystackAccount>): ReceivingAccount => ({
   providerAccountId: String(a.id),
   accountNumber: a.account_number,
@@ -128,10 +131,12 @@ export const paystackCreateAccount = async (
     }),
     'customer',
   );
+
   const created = await callPaystack(secretKey, '/dedicated_account', http, {
     customer: customer.customer_code,
     ...(paystackMode(secretKey) === 'test' ? { preferred_bank: 'test-bank' } : {}),
   });
+
   return toAccount(providerReply(PaystackAccount, created, 'dedicated account'));
 };
 
@@ -146,9 +151,11 @@ export const paystackVerifyTransfer = async (
     await callPaystack(secretKey, `/transaction/verify/${encodeURIComponent(reference)}`, http),
     'transfer verification',
   );
+
   if (verified.reference !== reference) {
     return undefined;
   }
+
   return {
     reference,
     mode: verified.domain,
@@ -169,6 +176,7 @@ export const paystackWebhookReference = (
   if (!validPaystackSignature(raw, signature, secretKey)) {
     return { ok: false };
   }
+
   const event = z
     .object({
       event: z.string(),
@@ -186,10 +194,13 @@ export const paystackWebhookReference = (
         }
       })(),
     );
+
   if (!event.success || event.data.event !== 'charge.success') {
     return { ok: true };
   }
+
   const reference = event.data.data?.reference;
+
   // A bill checkout uses Geneus's own reference; anything else is a transfer into the hospital's account.
   return reference?.startsWith('geneus-co-')
     ? { ok: true, checkoutReference: reference }
@@ -198,6 +209,7 @@ export const paystackWebhookReference = (
 
 /* ---- Online checkout for a bill (Paystack Standard: /transaction/initialize, /transaction/verify) ---- */
 const Initialized = z.object({ authorization_url: z.string().url(), reference: z.string().min(1) });
+
 export const paystackStartCheckout = async (
   secretKey: string,
   input: CheckoutRequest,
@@ -219,11 +231,14 @@ export const paystackStartCheckout = async (
     }),
     'checkout',
   );
+
   if (data.reference !== input.reference) {
     throw new ProviderUnexpectedReply('checkout: reference changed');
   }
+
   return { checkoutUrl: data.authorization_url };
 };
+
 const CheckoutTransaction = z.object({
   reference: z.string().min(1),
   status: z.string(),
@@ -238,12 +253,14 @@ const CheckoutTransaction = z.object({
     })
     .optional(),
 });
+
 export const paystackVerifyCheckout = async (
   secretKey: string,
   reference: string,
   http: PaystackFetch,
 ): Promise<CheckoutOutcome> => {
   let raw: unknown;
+
   try {
     raw = await callPaystack(
       secretKey,
@@ -255,15 +272,20 @@ export const paystackVerifyCheckout = async (
     if (cause instanceof ProviderRefused && cause.providerStatus === 400) {
       return { status: 'pending' };
     }
+
     throw cause;
   }
+
   const t = providerReply(CheckoutTransaction, raw, 'checkout verification');
+
   if (t.reference !== reference) {
     return { status: 'pending' };
   }
+
   if (t.status === 'success' && t.paid_at) {
     const payerName =
       [t.customer?.first_name, t.customer?.last_name].filter(Boolean).join(' ') || undefined;
+
     return {
       status: 'paid',
       reference,
@@ -274,6 +296,7 @@ export const paystackVerifyCheckout = async (
       ...(payerName ? { payerName } : {}),
     };
   }
+
   // "abandoned" means the patient left the checkout page; they may still come back and pay.
   return ['failed', 'reversed'].includes(t.status) ? { status: 'failed' } : { status: 'pending' };
 };

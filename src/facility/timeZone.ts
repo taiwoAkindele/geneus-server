@@ -26,28 +26,44 @@ export const recordFacilityTimeZone = async (
   input: { facilityId: string; timeZone: string; by: string; deviceId?: string; reason?: string },
 ) => {
   const zone = FacilityTimeZone.parse(input.timeZone);
+
   const [row] = await tx<
     { time_zone: string | null; time_zone_history: History | null }[]
   >`SELECT time_zone, time_zone_history FROM facilities WHERE id = ${input.facilityId} FOR UPDATE`;
+
   if (!row) {
     throw new TimeZoneRefusal('not_found', 'Facility not found');
   }
+
   if (row.time_zone === zone) {
     return { changed: false, timeZone: zone };
   }
+
   if (row.time_zone && !input.reason?.trim()) {
     throw new TimeZoneRefusal('reason_required', 'Say why the time zone is being corrected');
   }
+
   const now = new Date().toISOString();
-  const history: History = row.time_zone_history?.length
-    ? [...row.time_zone_history]
-    : row.time_zone
-      ? [{ timeZone: row.time_zone, from: '1970-01-01T00:00:00.000Z' }]
-      : [];
+
+  // A facility saved before the history existed has one zone that applied from the start.
+  const historyFor = (): History => {
+    if (row.time_zone_history?.length) {
+      return [...row.time_zone_history];
+    }
+
+    if (row.time_zone) {
+      return [{ timeZone: row.time_zone, from: '1970-01-01T00:00:00.000Z' }];
+    }
+
+    return [];
+  };
+
+  const history = historyFor();
   history.push({ timeZone: zone, from: history.length ? now : '1970-01-01T00:00:00.000Z' });
   await tx`UPDATE facilities SET time_zone = ${zone}, time_zone_history = ${tx.json(history)}, updated_by = ${input.by}, updated_on = now() WHERE id = ${input.facilityId}`;
   await tx`INSERT INTO facility_time_zone_changes (id, facility_id, from_zone, to_zone, reason, changed_by, device_id)
     VALUES (${`time_zone_change:${randomUUID()}`}, ${input.facilityId}, ${row.time_zone}, ${zone}, ${input.reason?.trim() || null}, ${input.by}, ${input.deviceId ?? 'none'})`;
+
   return { changed: true, timeZone: zone, from: row.time_zone ?? undefined };
 };
 
@@ -76,5 +92,6 @@ export const timeZoneChanges = async (sql: Sql | Tx, facilityId: string) =>
 /** The zone in force when each moment happened, for dating records raised before a correction. */
 export const facilityZones = async (sql: Sql | Tx, facilityId: string) => {
   const facility = await findRecord<Facility>(sql, 'facility', facilityId);
+
   return { current: facility?.timeZone, at: (moment: string) => timeZoneAt(facility, moment) };
 };

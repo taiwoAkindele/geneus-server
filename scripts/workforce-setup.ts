@@ -9,8 +9,10 @@ import {
   setWorkforcePolicy,
 } from '../src/workforce/operations.ts';
 import { workforceReadiness } from '../src/workforce/readiness.ts';
+
 // Explicit file input makes the operation reviewable; no credentials or evidence are printed.
 const [operation, filename] = process.argv.slice(2);
+
 if (
   !filename?.toLowerCase().endsWith('.json') ||
   !['record', 'policy', 'contact', 'readiness'].includes(operation)
@@ -19,10 +21,12 @@ if (
     'Usage: node scripts/workforce-setup.ts record|policy|contact|readiness approved-input.json',
   );
 }
+
 const config = loadConfig();
 const sql = createSql(config.postgresUrl);
 const signer = createSigner(config.signingPrivateKey);
 const input: unknown = JSON.parse(await readFile(filename, 'utf8'));
+
 try {
   if (operation === 'record') {
     const command = z
@@ -32,6 +36,7 @@ try {
         expectedRevision: z.number().int().positive().optional(),
       })
       .parse(input);
+
     console.log(
       await applyGovernanceRecord(
         sql,
@@ -51,6 +56,7 @@ try {
         timeZone: z.string().optional(),
       })
       .parse(input);
+
     await setWorkforcePolicy(sql, signer, command);
     console.log('Reviewed workforce policy recorded');
   } else if (operation === 'contact') {
@@ -64,6 +70,7 @@ try {
         governanceReference: z.string().trim().min(1),
       })
       .parse(input);
+
     await provisionWorkforceContact(sql, command);
     console.log('Verified workforce contact provisioned');
   } else {

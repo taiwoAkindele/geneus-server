@@ -36,6 +36,7 @@ export const signPendingShifts = async (sql: Sql, signer: Signer): Promise<numbe
     LIMIT ${BATCH_SIZE}`;
 
   let signed = 0;
+
   for (const shift of shifts) {
     const payload = rosterSignaturePayload({
       staffId: shift.staff_id,
@@ -44,7 +45,9 @@ export const signPendingShifts = async (sql: Sql, signer: Signer): Promise<numbe
       endsAt: shift.ends_at,
       extendedUntil: shift.extended_until ?? undefined,
     });
+
     const signature = signer.signBytes(Buffer.from(payload, 'utf8')).toString('base64');
+
     // Written only if the shift still holds the values just signed: an upload
     // that changed it in the meantime leaves it unsigned for the next pass.
     const updated = await sql`
@@ -55,8 +58,10 @@ export const signPendingShifts = async (sql: Sql, signer: Signer): Promise<numbe
         AND starts_at = ${shift.starts_at}
         AND ends_at = ${shift.ends_at}
         AND extended_until IS NOT DISTINCT FROM ${shift.extended_until}`;
+
     signed += updated.count;
   }
+
   return signed;
 };
 
@@ -77,16 +82,20 @@ export const startRosterSigning = (
   intervalMs = 60_000,
 ): RosterSigning => {
   let running: Promise<void> | undefined;
+
   const pass = () => {
     if (running) {
       return;
     }
+
     running = signPendingShifts(sql, signer)
       .then(async (signed) => {
         const authority = await refreshDueAuthority(sql, signer);
+
         if (authority > 0) {
           log.info({ refreshed: authority }, 'clinical authority refreshed');
         }
+
         return signed;
       })
       .then(
@@ -101,8 +110,10 @@ export const startRosterSigning = (
         running = undefined;
       });
   };
+
   const timer = setInterval(pass, intervalMs);
   pass();
+
   return {
     stop: async () => {
       clearInterval(timer);

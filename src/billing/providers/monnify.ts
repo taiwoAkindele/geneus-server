@@ -82,29 +82,38 @@ export const MonnifyCredentials = z.object({
   secretKey: z.string().regex(/^[A-Za-z0-9]{16,}$/),
   contractCode: z.string().regex(/^\d{6,20}$/),
 });
+
 export type MonnifyCredentials = z.infer<typeof MonnifyCredentials>;
+
 export const MonnifyAccountDetails = z.object({
   bank: z.enum(MONNIFY_BANKS.map((b) => b.value) as [string, ...string[]]),
   email: z.string().email().max(200),
   bvn: z.string().regex(/^\d{11}$/),
 });
+
 export const monnifyMode = (c: Pick<MonnifyCredentials, 'apiKey'>): ProviderMode =>
   c.apiKey.startsWith('MK_TEST_') ? 'test' : 'live';
+
 const base = (c: MonnifyCredentials) =>
   monnifyMode(c) === 'test' ? 'https://sandbox.monnify.com' : 'https://api.monnify.com';
 
 type Envelope = { requestSuccessful?: boolean; responseMessage?: unknown; responseBody?: unknown };
+
 const request = async (http: ProviderHttp, url: string, init: RequestInit): Promise<unknown> => {
   let response: Response;
+
   try {
     response = await http(url, { ...init, signal: AbortSignal.timeout(15_000) });
   } catch {
     throw new ProviderUnavailable();
   }
+
   const payload = (await readJsonBody(response)) as Envelope | undefined;
+
   if (!payload) {
     throw new ProviderUnexpectedReply(`HTTP ${response.status} without JSON`);
   }
+
   if (!response.ok || payload.requestSuccessful !== true) {
     throw providerFailure(
       typeof payload.responseMessage === 'string' ? payload.responseMessage : undefined,
@@ -112,17 +121,21 @@ const request = async (http: ProviderHttp, url: string, init: RequestInit): Prom
       new URL(url).pathname,
     );
   }
+
   return payload.responseBody;
 };
 
 /** Access tokens live in memory only, per API key, until shortly before they expire. */
 const tokens = new Map<string, { token: string; until: number }>();
 const Login = z.object({ accessToken: z.string().min(1), expiresIn: z.number().positive() });
+
 const accessToken = async (c: MonnifyCredentials, http: ProviderHttp, now = Date.now()) => {
   const cached = tokens.get(c.apiKey);
+
   if (cached && cached.until > now) {
     return cached.token;
   }
+
   const body = providerReply(
     Login,
     await request(http, `${base(c)}/api/v1/auth/login`, {
@@ -134,12 +147,15 @@ const accessToken = async (c: MonnifyCredentials, http: ProviderHttp, now = Date
     }),
     'login',
   );
+
   tokens.set(c.apiKey, {
     token: body.accessToken,
     until: now + Math.max(0, body.expiresIn - 60) * 1000,
   });
+
   return body.accessToken;
 };
+
 const call = async (c: MonnifyCredentials, http: ProviderHttp, path: string, body?: unknown) =>
   request(http, `${base(c)}${path}`, {
     method: body === undefined ? 'GET' : 'POST',
@@ -150,6 +166,7 @@ const call = async (c: MonnifyCredentials, http: ProviderHttp, path: string, bod
     },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
+
 /** For tests: forget cached tokens. */
 export const resetMonnifyTokens = () => tokens.clear();
 
@@ -169,9 +186,11 @@ const Reserved = z.object({
     )
     .min(1),
 });
+
 const toAccount = (r: z.infer<typeof Reserved>, bank?: string): ReceivingAccount => {
   // One account number per hospital: the chosen bank's, if Monnify returned several.
   const chosen = r.accounts.find((a) => a.bankCode === bank) ?? r.accounts[0];
+
   return {
     providerAccountId: r.accountReference,
     accountNumber: chosen.accountNumber,
@@ -189,6 +208,7 @@ export const monnifyCheckAccess = async (c: MonnifyCredentials, http: ProviderHt
 
 /** The hospital's reserved account; the account reference is derived from the facility so a retry finds the same account. */
 export const monnifyAccountReference = (facilityId: string) => `geneus-${facilityId}`;
+
 export const monnifyCreateAccount = async (
   c: MonnifyCredentials,
   hospital: { id: string; name: string },
@@ -196,6 +216,7 @@ export const monnifyCreateAccount = async (
   http: ProviderHttp,
 ) => {
   let reply: unknown;
+
   try {
     reply = await call(c, http, '/api/v2/bank-transfer/reserved-accounts', {
       accountReference: monnifyAccountReference(hospital.id),
@@ -216,11 +237,14 @@ export const monnifyCreateAccount = async (
         error.providerStatus,
         "The provider couldn't open an account at that bank right now. Choose another bank, or try again later.",
       );
+
       specific.providerCall = error.providerCall;
       throw specific;
     }
+
     throw error;
   }
+
   return toAccount(providerReply(Reserved, reply, 'reserved account'), details.bank);
 };
 
@@ -254,16 +278,20 @@ const Transaction = z.object({
   paymentSourceInformation: z.array(z.object({ accountName: z.string().optional() })).optional(),
   destinationAccountInformation: z.object({ accountNumber: z.string().optional() }).optional(),
 });
+
 /** Monnify dates may come without a "T" or with "+0000"; normalise to ISO or refuse. */
 const isoDate = (value: string | undefined) => {
   if (!value) {
     return undefined;
   }
+
   const normalised = value
     .trim()
     .replace(' ', 'T')
     .replace(/([+-]\d{2})(\d{2})$/, '$1:$2');
+
   const at = Date.parse(normalised);
+
   return Number.isNaN(at) ? undefined : new Date(at).toISOString();
 };
 
@@ -278,6 +306,7 @@ export const monnifyVerifyTransfer = async (
     await call(c, http, `/api/v2/transactions/${encodeURIComponent(reference)}`),
     'transaction',
   );
+
   if (
     t.transactionReference !== reference ||
     t.paymentStatus.toUpperCase() !== 'PAID' ||
@@ -285,14 +314,17 @@ export const monnifyVerifyTransfer = async (
   ) {
     return undefined;
   }
+
   const amountMinor = toMinor(t.amountPaid);
   const paidAt = isoDate(t.paidOn ?? t.completedOn);
   const currency = t.currencyCode ?? t.currency ?? 'NGN';
+
   if (!amountMinor || !paidAt) {
     throw new ProviderUnexpectedReply(
       `transaction: ${!amountMinor ? 'amountPaid' : 'paidOn'} not understood`,
     );
   }
+
   return {
     reference,
     mode: monnifyMode(c),
@@ -314,6 +346,7 @@ export const monnifyWebhookReference = (
   if (typeof signature !== 'string' || !/^[a-f0-9]{128}$/i.test(signature)) {
     return { ok: false };
   }
+
   if (
     !timingSafeEqual(
       createHmac('sha512', c.secretKey).update(raw).digest(),
@@ -322,6 +355,7 @@ export const monnifyWebhookReference = (
   ) {
     return { ok: false };
   }
+
   const event = z
     .object({
       eventType: z.string(),
@@ -342,12 +376,15 @@ export const monnifyWebhookReference = (
         }
       })(),
     );
+
   if (!event.success) {
     return { ok: true };
   }
+
   if (event.data.eventType !== 'SUCCESSFUL_TRANSACTION' || !event.data.eventData) {
     return { ok: true };
   }
+
   const product = event.data.eventData.product;
   // A bill checkout reports our payment reference as the product reference; a reserved account reports a transfer.
   const checkoutReference = event.data.eventData.paymentReference ?? product?.reference;
@@ -355,6 +392,7 @@ export const monnifyWebhookReference = (
   if (product?.type !== 'RESERVED_ACCOUNT' && checkoutReference?.startsWith('geneus-co-')) {
     return { ok: true, checkoutReference };
   }
+
   return product?.type === 'RESERVED_ACCOUNT'
     ? { ok: true, reference: event.data.eventData.transactionReference }
     : { ok: true };
@@ -362,6 +400,7 @@ export const monnifyWebhookReference = (
 
 /* ---- Online checkout for a bill (Monnify: init-transaction, then the transaction query by payment reference) ---- */
 const Started = z.object({ checkoutUrl: z.string().url(), paymentReference: z.string().min(1) });
+
 export const monnifyStartCheckout = async (
   c: MonnifyCredentials,
   input: CheckoutRequest,

@@ -2,24 +2,30 @@ import type { UploadRequest } from '#shared';
 import type { Sql, Tx } from '../db/client.ts';
 import { BillingCompatibilityError, catalogueEnabled } from './catalogue.ts';
 import { recordAuditEvent } from '../audit/auditEvents.ts';
+
 export const integratedEnabled = async (db: Sql | Tx, facilityId: string) =>
   Boolean(
     (await db`SELECT integrated_billing_version FROM facilities WHERE id=${facilityId}`)[0]
       ?.integrated_billing_version,
   );
+
 export const integratedReadiness = async (db: Sql | Tx, facilityId: string, now = Date.now()) => {
   const devices =
     await db`SELECT d.id,d.label,v.integrated_billing_version,v.pending_mutation_count,v.recorded_on FROM devices d LEFT JOIN workforce_client_versions v ON v.device_id=d.id WHERE d.facility_id=${facilityId} AND d.status='active' ORDER BY d.id`;
+
   const [migration] = await db`SELECT applied_on FROM schema_migrations WHERE version=42`;
+
   // Include retired devices: revocation cannot revoke an already issued PowerSync JWT.
   const [tokens] =
     await db`SELECT MAX(legacy_integrated_token_expires_on) AS expires_on FROM workforce_client_versions WHERE facility_id=${facilityId}`;
+
   const legacyTokensUntil = new Date(
     Math.max(
       new Date(migration?.applied_on ?? now).getTime() + 86400000,
       tokens.expires_on ? new Date(tokens.expires_on).getTime() : 0,
     ),
   ).toISOString();
+
   return {
     enabled: await integratedEnabled(db, facilityId),
     legacyTokensUntil,
@@ -36,6 +42,7 @@ export const integratedReadiness = async (db: Sql | Tx, facilityId: string, now 
     })),
   };
 };
+
 export const negotiateIntegrated = async (
   tx: Tx,
   who: { facilityId: string; deviceId: string },
@@ -49,13 +56,18 @@ export const negotiateIntegrated = async (
         'Update this financial reader. Pending work is retained.',
       );
     }
+
     await tx`UPDATE workforce_client_versions SET legacy_integrated_token_expires_on=GREATEST(legacy_integrated_token_expires_on,${new Date(now + ttl * 1000).toISOString()}::timestamptz) WHERE device_id=${who.deviceId}`;
+
     return false;
   }
+
   if (await integratedEnabled(tx, who.facilityId)) {
     return true;
   }
+
   const readiness = await integratedReadiness(tx, who.facilityId, now);
+
   if (
     (await catalogueEnabled(tx, who.facilityId)) &&
     readiness.devices.length &&
@@ -69,16 +81,20 @@ export const negotiateIntegrated = async (
       action: 'update',
       metadata: { context: 'integrated_billing_compatible_readers' },
     });
+
     return true;
   }
+
   return false;
 };
+
 export const assertIntegratedUpload = async (
   tx: Tx,
   facilityId: string,
   request: UploadRequest,
 ) => {
   const enabled = await integratedEnabled(tx, facilityId);
+
   if (
     enabled &&
     (request.integratedBillingVersion !== 1 ||
@@ -89,6 +105,7 @@ export const assertIntegratedUpload = async (
       'Update this financial client before upload. Its queued work is retained.',
     );
   }
+
   if (
     request.mutations.some(
       (m) =>

@@ -28,11 +28,13 @@ describe('Release 1 verified financial actors and safe catalogue writes', () => 
   let f: FacilityRegistrationResult;
   let other: FacilityRegistrationResult;
   let cashier: Staff;
+
   const versions = {
     facilityContractVersion: 1,
     schemaVersion: 5,
     policyVersion: POLICY_VERSION,
   } as const;
+
   const raw = (url: string, payload: object, token?: string, actor?: string, credential?: string) =>
     app.inject({
       method: 'POST',
@@ -44,6 +46,7 @@ describe('Release 1 verified financial actors and safe catalogue writes', () => 
         ...(actor ? { 'x-actor-staff-id': actor } : {}),
       },
     });
+
   const fee = (id: string, chargeWhen = 'when_ordered') => ({
     clientId: clientId(),
     op: 'put' as const,
@@ -62,6 +65,7 @@ describe('Release 1 verified financial actors and safe catalogue writes', () => 
       exemptions: [],
     },
   });
+
   const patch = (id: string, changes: Record<string, unknown>) => ({
     clientId: clientId(),
     op: 'patch' as const,
@@ -69,6 +73,7 @@ describe('Release 1 verified financial actors and safe catalogue writes', () => 
     id,
     data: { ...changes, updatedBy: f.admin.id, updatedOn: new Date().toISOString() },
   });
+
   const save = async (
     mutation: ReturnType<typeof fee> | ReturnType<typeof patch>,
     policy = false,
@@ -78,12 +83,14 @@ describe('Release 1 verified financial actors and safe catalogue writes', () => 
       { ...versions, transactionId: null, mutations: [mutation] },
       await staffSessionFor(app, f.device.credential, f.admin.id),
     );
+
   before(async () => {
     db = await scratchDatabase();
     app = testApp(db.sql);
     f = await registerScratchFacility(db.sql);
     other = await registerScratchFacility(db.sql);
     cashier = await addStaff(db.sql, f, { role: 'cashier' });
+
     // Existing intentional automation is historical configuration, not a new automatic fee request.
     for (const chargeWhen of ['first_visit', 'every_visit']) {
       await insertRecord(db.sql, 'fee_item', {
@@ -92,10 +99,12 @@ describe('Release 1 verified financial actors and safe catalogue writes', () => 
       });
     }
   });
+
   after(async () => {
     if (app) {
       await app.close();
     }
+
     if (db) {
       await db.drop();
     }
@@ -118,17 +127,21 @@ describe('Release 1 verified financial actors and safe catalogue writes', () => 
         undefined,
         f.admin.id,
       );
+
       assert.equal(response.statusCode, 403, path);
       assert.equal(response.json().error, 'staff_session_required', path);
     }
+
     const configuration = await raw(
       '/config/save',
       { ...versions, transactionId: null, mutations: [fee('spoofed:fee')] },
       undefined,
       f.admin.id,
     );
+
     assert.equal(configuration.json().error, 'staff_session_required');
     assert.equal(await findRecord(db.sql, 'fee_item', 'spoofed:fee'), undefined);
+
     const department = {
       clientId: clientId(),
       op: 'put',
@@ -141,6 +154,7 @@ describe('Release 1 verified financial actors and safe catalogue writes', () => 
         type: 'billing_department',
       },
     };
+
     assert.equal(
       (
         await raw(
@@ -152,11 +166,13 @@ describe('Release 1 verified financial actors and safe catalogue writes', () => 
       ).json().error,
       'staff_session_required',
     );
+
     assert.equal(
       await findRecord(db.sql, 'billing_department', 'spoofed:department'),
       undefined,
       'a mixed financial batch has no partially accepted configuration',
     );
+
     const insurance = await raw('/insurance/contracts/list', {}, undefined, f.admin.id);
     assert.equal(insurance.json().error, 'staff_session_required');
     const refund = await raw('/billing/refunds', {}, undefined, f.admin.id);
@@ -169,24 +185,29 @@ describe('Release 1 verified financial actors and safe catalogue writes', () => 
       (await raw('/billing/connection/status', { actorStaffId: cashier.id }, token)).json().error,
       'attribution_mismatch',
     );
+
     assert.equal(
       (
         await raw('/billing/connection/status', { actorStaffId: f.admin.id }, token, cashier.id)
       ).json().error,
       'attribution_mismatch',
     );
+
     assert.equal(
       (
         await raw('/billing/connection/status', {}, token, undefined, other.device.credential)
       ).json().error,
       'staff_session_required',
     );
+
     const code = await issueEnrollmentCode(db.sql, f.facility.id, f.admin.id, f.device.deviceId);
+
     const second = await enrollDevice(
       db.sql,
       { code: code.code, deviceId: 'billing-r1:second-device' },
       'http://localhost:8080',
     );
+
     assert.ok(second.ok);
     assert.equal(
       (
@@ -195,6 +216,7 @@ describe('Release 1 verified financial actors and safe catalogue writes', () => 
       'staff_session_required',
       'a session cannot move to another device in the same facility',
     );
+
     await db.sql`UPDATE staff_sessions SET expires_on=now() - interval '1 second' WHERE staff_id=${f.admin.id}`;
     assert.equal(
       (
@@ -202,17 +224,20 @@ describe('Release 1 verified financial actors and safe catalogue writes', () => 
       ).json().error,
       'staff_session_required',
     );
+
     const refreshed = await staffSessionFor(app, f.device.credential, f.admin.id);
     await raw('/staff/session/end', {}, refreshed);
     assert.equal(
       (await raw('/billing/connection/status', {}, refreshed, f.admin.id)).json().error,
       'staff_session_required',
     );
+
     const cashierToken = await staffSessionFor(app, f.device.credential, cashier.id);
     assert.equal(
       (await raw('/billing/connection/status', {}, cashierToken)).json().error,
       'forbidden',
     );
+
     await db.sql`UPDATE staff SET permission='read_only' WHERE id=${cashier.id}`;
     assert.equal(
       (await raw('/billing/transfers/import', { reference: 'synthetic' }, cashierToken)).json()
@@ -220,6 +245,7 @@ describe('Release 1 verified financial actors and safe catalogue writes', () => 
       'forbidden',
       'permission revocation applies to an existing session',
     );
+
     await db.sql`UPDATE staff SET permission='read_write' WHERE id=${cashier.id}`;
     await db.sql`UPDATE staff SET active=false WHERE id=${cashier.id}`;
     assert.equal(
@@ -235,6 +261,7 @@ describe('Release 1 verified financial actors and safe catalogue writes', () => 
       assert.match(response.json().message, /only when selected/);
       assert.equal(await findRecord(db.sql, 'fee_item', 'unsafe:' + mode), undefined);
     }
+
     const safe = await save(fee('safe:fee'));
     assert.equal(safe.statusCode, 200, safe.body);
     assert.equal(
@@ -249,15 +276,19 @@ describe('Release 1 verified financial actors and safe catalogue writes', () => 
       assert.equal(response.statusCode, 409);
       assert.match(response.json().message, /insurance impact/);
     }
+
     const unsafe = await save(
       patch('safe:fee', { chargeWhen: 'every_visit', name: 'Old full form' }),
     );
+
     assert.equal(unsafe.statusCode, 409);
     assert.match(unsafe.json().message, /separate policy editor/);
+
     const mixed = await save(
       patch('safe:fee', { chargeWhen: 'every_visit', name: 'Mixed form' }),
       true,
     );
+
     assert.equal(mixed.statusCode, 409);
     assert.equal(
       (await findRecord<FeeItem>(db.sql, 'fee_item', 'safe:fee'))?.chargeWhen,
@@ -273,7 +304,9 @@ describe('Release 1 verified financial actors and safe catalogue writes', () => 
       }),
       true,
     );
+
     assert.equal(policy.statusCode, 200, policy.body);
+
     for (const mode of ['first_visit', 'every_visit']) {
       const id = 'legacy:' + mode;
       const before = await findRecord<FeeItem>(db.sql, 'fee_item', id);
@@ -283,6 +316,7 @@ describe('Release 1 verified financial actors and safe catalogue writes', () => 
       assert.equal(after?.category, before?.category);
       assert.deepEqual(after?.exemptions, before?.exemptions);
     }
+
     assert.equal(
       (await findRecord<FeeItem>(db.sql, 'fee_item', 'safe:fee'))?.exemptions[0].reason,
       'Under five',
@@ -302,6 +336,7 @@ describe('Release 1 verified financial actors and safe catalogue writes', () => 
       sex: 'female',
       ageYears: 30,
     });
+
     await insertRecord(db.sql, 'charge', {
       ...envelopeFor(f),
       createdBy: f.admin.id,
@@ -315,7 +350,9 @@ describe('Release 1 verified financial actors and safe catalogue writes', () => 
       amountMinor: 10000,
       currency: 'NGN',
     });
+
     await db.sql`UPDATE staff SET active=true WHERE id=${cashier.id}`;
+
     const payment = {
       ...envelopeFor(f),
       createdBy: cashier.id,
@@ -328,6 +365,7 @@ describe('Release 1 verified financial actors and safe catalogue writes', () => 
       currency: 'NGN',
       allocations: [{ chargeId: 'offline:charge', amountMinor: 5000 }],
     };
+
     const response = await raw('/sync/upload', {
       ...versions,
       transactionId: 1,
@@ -335,6 +373,7 @@ describe('Release 1 verified financial actors and safe catalogue writes', () => 
         { clientId: clientId(), op: 'put', table: 'payment', id: payment.id, data: payment },
       ],
     });
+
     assert.equal(response.statusCode, 200, response.body);
     assert.equal(response.json().rejected.length, 0, response.body);
     assert.equal((await findRecord<Payment>(db.sql, 'payment', payment.id))?.amountMinor, 5000);

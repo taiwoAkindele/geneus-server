@@ -42,6 +42,7 @@ export type AppDependencies = {
   paystackFetch?: PaystackFetch;
   smsSender?: SmsSender;
 };
+
 /**
  * `rateLimit: false` is for tests that make many requests from one injected
  * address on purpose; tests/hardening.test.ts keeps it on to prove the limit.
@@ -91,6 +92,7 @@ const RATE_LIMITED_ROUTES = new Set([
   'POST /invitations/link/device',
   'POST /invitations/link/code',
 ]);
+
 const RATE_LIMIT_PER_MINUTE = 10;
 
 export const buildApp = (
@@ -103,12 +105,19 @@ export const buildApp = (
    * would crash the process at boot. Production logs raw JSON to stdout.
    * Tests switch logging off rather than pretty-print every injected request.
    */
-  const logger =
-    options.logger === false
-      ? false
-      : config.isProduction
-        ? { serializers }
-        : { serializers, transport: { target: 'pino-pretty' } };
+  const loggerOptions = () => {
+    if (options.logger === false) {
+      return false;
+    }
+
+    if (config.isProduction) {
+      return { serializers };
+    }
+
+    return { serializers, transport: { target: 'pino-pretty' } };
+  };
+
+  const logger = loggerOptions();
   const app = Fastify({ logger, trustProxy: config.trustProxy });
   const mailer = givenMailer ?? createMailer(config, app.log);
 
@@ -122,9 +131,11 @@ export const buildApp = (
     if (/^\/billing\/[a-z][a-z0-9_]{1,31}\/[^/]+\/webhook(\?|$)/.test(request.url)) {
       billingRawBodies.set(request, body as string);
     }
+
     if (body === '') {
       return done(null, undefined);
     }
+
     try {
       done(null, JSON.parse(body as string));
     } catch (cause) {
@@ -139,6 +150,7 @@ export const buildApp = (
    */
   app.addHook('onRequest', async (request, reply) => {
     const origin = request.headers.origin;
+
     if (origin && config.corsOrigins.includes(origin)) {
       reply.header('access-control-allow-origin', origin);
       reply.header('vary', 'origin');
@@ -146,8 +158,10 @@ export const buildApp = (
         'access-control-allow-headers',
         'content-type, authorization, x-workforce-access, x-actor-staff-id, x-file-mime, x-file-sha256, x-document-meta, x-operator-session, x-staff-session, x-billing-catalogue-version, x-integrated-billing-version',
       );
+
       reply.header('access-control-allow-methods', 'GET, POST, OPTIONS');
     }
+
     if (request.method === 'OPTIONS') {
       return reply.code(204).send();
     }
@@ -157,14 +171,19 @@ export const buildApp = (
     const limiter = createRateLimiter(RATE_LIMIT_PER_MINUTE, 60_000);
     app.addHook('onRequest', async (request, reply) => {
       const route = `${request.method} ${request.routeOptions.url ?? ''}`;
+
       if (!RATE_LIMITED_ROUTES.has(route)) {
         return;
       }
+
       const retryAfter = limiter.hit(`${route} ${request.ip}`);
+
       if (retryAfter === undefined) {
         return;
       }
+
       request.log.warn({ route }, 'rate limited');
+
       return reply
         .code(429)
         .header('retry-after', String(retryAfter))
@@ -185,6 +204,7 @@ export const buildApp = (
     reply.header('referrer-policy', 'no-referrer');
     reply.header('content-security-policy', "default-src 'none'; frame-ancestors 'none'");
     reply.header('cache-control', 'no-store');
+
     if (config.isProduction) {
       reply.header('strict-transport-security', 'max-age=31536000; includeSubDomains');
     }
@@ -199,11 +219,13 @@ export const buildApp = (
     // The mail provider refused or could not be reached: the caller can try again.
     if (error instanceof EmailNotSent) {
       request.log.error({ err: error }, 'email not sent');
+
       return reply.code(502).send({
         error: 'email_not_sent',
         message: 'The email could not be sent — try again in a minute',
       } satisfies ApiErrorBody);
     }
+
     // A payment provider refused, was unreachable or answered unexpectedly. The message is already safe to show
     // (it never names the provider or carries keys); the provider's own detail goes to the log only.
     if (error.code && PROVIDER_ERROR_CODES.includes(error.code)) {
@@ -213,6 +235,7 @@ export const buildApp = (
         providerCall?: string;
         detail?: string;
       };
+
       request.log.warn(
         {
           code: error.code,
@@ -224,18 +247,23 @@ export const buildApp = (
         },
         'payment provider error',
       );
+
       return reply
         .code(502)
         .send({ error: error.code, message: error.message } satisfies ApiErrorBody);
     }
+
     const status = error.statusCode && error.statusCode >= 400 ? error.statusCode : 500;
+
     if (status >= 500) {
       request.log.error({ err: error }, 'request failed');
+
       return reply.code(status).send({
         error: 'internal_error',
         message: 'Something went wrong on the server — try again',
       } satisfies ApiErrorBody);
     }
+
     return reply.code(status).send({
       error: error.code ?? 'bad_request',
       message: error.message || 'The request was not valid',
@@ -255,6 +283,7 @@ export const buildApp = (
       await ensureBootstrapOperators(sql, config.bootstrapOperators);
     }
   });
+
   const startedOn = new Date().toISOString();
 
   /**
@@ -285,6 +314,7 @@ export const buildApp = (
         () => undefined,
       ),
     ]);
+
     const degraded =
       postgres !== 'reachable' ||
       powerSync !== 'reachable' ||
@@ -313,6 +343,7 @@ export const buildApp = (
    */
   app.get('/time', async () => {
     const payload = { now: new Date().toISOString() };
+
     return { ...payload, signature: signer.sign(payload), publicKey: signer.publicKeyBase64 };
   });
 
@@ -334,6 +365,7 @@ export const buildApp = (
     appUrl: config.corsOrigins[0],
     log: app.log,
   });
+
   // Patient links open in the web app, like invitation links.
   registerPatientDocumentRoutes(app, sql, config.corsOrigins[0], {
     rateLimit: options.rateLimit,

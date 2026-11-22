@@ -46,6 +46,7 @@ describe('device enrollment', () => {
 
   const enrolledDevice = async (deviceId: string) => {
     const code = EnrollmentCode.parse((await issueCode(a.device.credential, a.admin.id)).json());
+
     return DeviceCredential.parse((await enroll(code.code, deviceId)).json());
   };
 
@@ -116,11 +117,15 @@ describe('device enrollment', () => {
       assert.deepEqual(await verifyCredential(db.sql, credential.credential), {
         identity: { deviceId: 'device-joiner-1', facilityId: a.facility.id },
       });
+
       const [device] = await db.sql<{ enrolled_by: string; label: string; status: string }[]>`
         SELECT enrolled_by, label, status FROM devices WHERE id = 'device-joiner-1'`;
+
       assert.deepEqual(device, { enrolled_by: a.admin.id, label: 'Test phone', status: 'active' });
+
       const audits =
         await db.sql`SELECT 1 FROM audit_events WHERE entity_id = 'device-joiner-1' AND action = 'enroll'`;
+
       assert.equal(audits.length, 1);
     });
 
@@ -164,6 +169,7 @@ describe('device enrollment', () => {
       assert.deepEqual(await verifyCredential(db.sql, credential.credential), {
         failure: 'revoked',
       });
+
       assert.equal(
         (
           await app.inject({
@@ -174,8 +180,10 @@ describe('device enrollment', () => {
         ).statusCode,
         401,
       );
+
       const audits =
         await db.sql`SELECT 1 FROM audit_events WHERE entity_id = 'device-to-revoke' AND action = 'revoke'`;
+
       assert.equal(audits.length, 1);
     });
 
@@ -186,6 +194,7 @@ describe('device enrollment', () => {
         (await revoke(a.device.credential, 'device-nurse-cannot', nurse.id)).statusCode,
         403,
       );
+
       assert.ok('identity' in (await verifyCredential(db.sql, credential.credential)));
     });
 
@@ -193,9 +202,11 @@ describe('device enrollment', () => {
       const response = await revoke(a.device.credential, b.device.deviceId, a.admin.id);
 
       assert.equal(response.statusCode, 404);
+
       const [device] = await db.sql<
         { status: string }[]
       >`SELECT status FROM devices WHERE id = ${b.device.deviceId}`;
+
       assert.equal(device.status, 'active');
     });
   });

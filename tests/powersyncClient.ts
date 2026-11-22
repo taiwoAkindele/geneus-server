@@ -30,6 +30,7 @@ export const readFirstCheckpoint = async (
 ): Promise<CheckpointResult> => {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+
   try {
     const response = await fetch(`${endpoint}/sync/stream`, {
       method: 'POST',
@@ -43,6 +44,7 @@ export const readFirstCheckpoint = async (
       }),
       signal: controller.signal,
     });
+
     if (!response.ok || !response.body) {
       return { status: response.status, rows: [], buckets: [] };
     }
@@ -55,21 +57,28 @@ export const readFirstCheckpoint = async (
 
     for (;;) {
       const { value, done } = await reader.read();
+
       if (done) {
         break;
       }
+
       buffered += decoder.decode(value, { stream: true });
       let newline: number;
+
       while ((newline = buffered.indexOf('\n')) >= 0) {
         const line = buffered.slice(0, newline).trim();
         buffered = buffered.slice(newline + 1);
+
         if (!line) {
           continue;
         }
+
         const parsed = JSON.parse(line) as DataLine;
+
         if (parsed.checkpoint) {
           buckets.push(...parsed.checkpoint.buckets.map((bucket) => bucket.bucket));
         }
+
         for (const entry of parsed.data?.data ?? []) {
           if (entry.op === 'PUT' && entry.data) {
             rows.push({
@@ -79,12 +88,15 @@ export const readFirstCheckpoint = async (
             });
           }
         }
+
         if (parsed.checkpoint_complete !== undefined) {
           await reader.cancel().catch(() => undefined);
+
           return { status: response.status, rows, buckets };
         }
       }
     }
+
     return { status: response.status, rows, buckets };
   } finally {
     clearTimeout(timer);
@@ -99,13 +111,17 @@ export const waitForRow = async (
   attempts = 10,
 ): Promise<{ found: SyncedRow | undefined; last: CheckpointResult }> => {
   let last: CheckpointResult = { status: 0, rows: [], buckets: [] };
+
   for (let attempt = 0; attempt < attempts; attempt++) {
     last = await readFirstCheckpoint(endpoint, token);
     const found = last.rows.find(predicate);
+
     if (found) {
       return { found, last };
     }
+
     await new Promise((resolve) => setTimeout(resolve, 1000));
   }
+
   return { found: undefined, last };
 };

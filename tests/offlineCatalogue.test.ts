@@ -37,8 +37,10 @@ describe('catalogue and templates edited offline, checked on sync', () => {
   let app: FastifyInstance;
   let facility: FacilityRegistrationResult;
   const env = () => ({ ...envelopeFor(facility), schemaVersion: 5 });
+
   const send = (...mutations: UploadMutation[]) =>
     upload(app, facility.device.credential, { ...versions, transactionId: clientId(), mutations });
+
   const put = (table: UploadMutation['table'], data: Record<string, unknown>): UploadMutation => ({
     clientId: clientId(),
     op: 'put',
@@ -46,6 +48,7 @@ describe('catalogue and templates edited offline, checked on sync', () => {
     id: String(data.id),
     data: { ...env(), type: table, revision: 1, ...data },
   });
+
   const patch = (
     table: UploadMutation['table'],
     id: string,
@@ -64,7 +67,9 @@ describe('catalogue and templates edited offline, checked on sync', () => {
       updatedOn: new Date().toISOString(),
     },
   });
+
   const fbc = STANDARD_TESTS.find((t) => t.key === 'fbc')!;
+
   const fbcDefinition = {
     id: 'service_definition:fbc',
     name: fbc.name,
@@ -74,6 +79,7 @@ describe('catalogue and templates edited offline, checked on sync', () => {
     active: true,
     investigation: { specimen: fbc.specimen, department: fbc.classification, aliases: fbc.aliases },
   };
+
   const offering = (definitionId: string) => ({
     id: `service_offering:${definitionId}`,
     serviceDefinitionId: definitionId,
@@ -99,6 +105,7 @@ describe('catalogue and templates edited offline, checked on sync', () => {
       type: 'unit',
       name: 'Laboratory',
     });
+
     await insertRecord(db.sql, 'location', {
       ...envelopeFor(facility),
       id: 'location:lab',
@@ -107,6 +114,7 @@ describe('catalogue and templates edited offline, checked on sync', () => {
       kind: 'room',
     });
   });
+
   after(async () => {
     await app?.close();
     await db?.drop();
@@ -117,21 +125,25 @@ describe('catalogue and templates edited offline, checked on sync', () => {
       (await recordsInFacility(db.sql, facility.facility.id, 'standard_test')).length,
       0,
     );
+
     const token = await app.inject({
       method: 'POST',
       url: '/sync/token',
       headers: asDevice(facility.device.credential),
       payload: versions,
     });
+
     assert.equal(token.statusCode, 200, token.body);
     assert.equal(
       (await recordsInFacility(db.sql, facility.facility.id, 'standard_test')).length,
       STANDARD_TESTS.length,
     );
+
     assert.equal(
       (await recordsInFacility(db.sql, facility.facility.id, 'standard_template')).length,
       STANDARD_TEMPLATES.length,
     );
+
     const id = `standard_test:${facility.facility.id}:fbc`;
     await db.sql`UPDATE standard_tests SET name = 'Tampered' WHERE id = ${id}`;
     await ensureAllStandardCatalogues(db.sql);
@@ -143,7 +155,9 @@ describe('catalogue and templates edited offline, checked on sync', () => {
       put('service_definition', fbcDefinition),
       put('service_offering', offering(fbcDefinition.id)),
     );
+
     assert.deepEqual(adopted.rejected, []);
+
     const altered = await send(
       put('service_definition', {
         ...fbcDefinition,
@@ -151,7 +165,9 @@ describe('catalogue and templates edited offline, checked on sync', () => {
         name: 'Full blood count (edited)',
       }),
     );
+
     assert.match(altered.rejected[0].reason, /exactly as the standard list/);
+
     const duplicate = await send(
       put('service_definition', {
         ...fbcDefinition,
@@ -161,7 +177,9 @@ describe('catalogue and templates edited offline, checked on sync', () => {
         investigation: { specimen: 'Blood', department: 'Haematology', aliases: [] },
       }),
     );
+
     assert.match(duplicate.rejected[0].reason, /already called “cbc”/);
+
     const own = await send(
       put('service_definition', {
         ...fbcDefinition,
@@ -171,6 +189,7 @@ describe('catalogue and templates edited offline, checked on sync', () => {
         investigation: { specimen: 'Serum', department: 'Chemistry', aliases: [] },
       }),
     );
+
     assert.deepEqual(own.rejected, []);
   });
 
@@ -181,6 +200,7 @@ describe('catalogue and templates edited offline, checked on sync', () => {
       answers: ['Non-reactive', 'Reactive'],
       active: true,
     };
+
     const template = {
       id: 'result_template:ferritin',
       name: 'Ferritin',
@@ -199,28 +219,35 @@ describe('catalogue and templates edited offline, checked on sync', () => {
         },
       ],
     };
+
     assert.deepEqual(
       (await send(put('answer_list', list), put('result_template', template))).rejected,
       [],
     );
+
     // Two edits made offline, one after the other, arrive in order.
     const edits = await send(
       patch('result_template', template.id, 1, { name: 'Serum ferritin' }),
       patch('result_template', template.id, 2, { status: 'active' }),
     );
+
     assert.deepEqual(edits.rejected, []);
     assert.equal(
       (await findRecord<ResultTemplate>(db.sql, 'result_template', template.id))?.revision,
       3,
     );
+
     const [history] =
       await db.sql`SELECT count(*)::int AS n FROM result_template_versions WHERE source_id = ${template.id}`;
+
     assert.equal(history.n, 3);
     const stale = await send(patch('result_template', template.id, 1, { name: 'Stale edit' }));
     assert.equal(stale.rejected.length, 1);
+
     const clash = await send(
       put('result_template', { ...template, id: 'result_template:other', name: 'Other' }),
     );
+
     assert.match(clash.rejected[0].reason, /already uses the template “Serum ferritin”/);
   });
 
@@ -228,6 +255,7 @@ describe('catalogue and templates edited offline, checked on sync', () => {
     const standard = (
       await recordsInFacility(db.sql, facility.facility.id, 'standard_template')
     ).find((t) => t.key === 'fbc') as StandardTemplate;
+
     const adopted = {
       id: 'result_template:fbc',
       name: standard.name,
@@ -237,6 +265,7 @@ describe('catalogue and templates edited offline, checked on sync', () => {
       serviceDefinitionIds: [fbcDefinition.id],
       parts: standard.parts,
     };
+
     const altered = await send(
       put('result_template', {
         ...adopted,
@@ -244,8 +273,10 @@ describe('catalogue and templates edited offline, checked on sync', () => {
         parts: standard.parts.slice(1),
       }),
     );
+
     assert.match(altered.rejected[0].reason, /exactly as the standard list/);
     assert.deepEqual((await send(put('result_template', adopted))).rejected, []);
+
     const again = await send(
       put('result_template', {
         ...adopted,
@@ -253,6 +284,7 @@ describe('catalogue and templates edited offline, checked on sync', () => {
         serviceDefinitionIds: [],
       }),
     );
+
     assert.match(again.rejected[0].reason, /already added/);
   });
 });

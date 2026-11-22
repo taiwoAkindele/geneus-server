@@ -23,6 +23,7 @@ describe('POST /facilities', () => {
 
   const registration = async (overrides: Record<string, unknown> = {}) => {
     const invite = await createInvite(db.sql, 'Test PHC', 1);
+
     return {
       code: scratchFacilityCode(),
       name: 'Test PHC',
@@ -107,9 +108,11 @@ describe('POST /facilities', () => {
 
     assert.equal(response.statusCode, 409);
     assert.equal(response.json().error, 'facility_code_taken');
+
     // The whole registration is one transaction: the failed one rolled its claim back.
     const [invite] = await db.sql<{ claimed_on: string | null }[]>`
       SELECT claimed_on FROM facility_invites WHERE token = ${second.inviteToken}`;
+
     assert.equal(invite.claimed_on, null);
   });
 
@@ -169,6 +172,7 @@ describe('POST /facilities', () => {
         url: '/email-verifications',
         payload: { email: ' Ngozi@Example.ORG ', inviteToken: invite.token },
       });
+
       const refused = await app.inject({
         method: 'POST',
         url: '/email-verifications',
@@ -209,6 +213,7 @@ describe('POST /facilities', () => {
     it('stops accepting a code after five wrong guesses, even the right one', async () => {
       const body = await registration();
       const wrong = body.emailCode === '000000' ? '000001' : '000000';
+
       for (let attempt = 0; attempt < 5; attempt += 1) {
         await post({ ...body, emailCode: wrong });
       }
@@ -223,10 +228,13 @@ describe('POST /facilities', () => {
       const [contact] = await db.sql<
         { email: string }[]
       >`SELECT email FROM staff_contacts WHERE staff_id = ${result.admin.id}`;
+
       assert.equal(contact?.email, 'amaka@example.org');
       assert.equal(JSON.stringify(result.admin).includes('@'), false);
+
       const published =
         await db.sql`SELECT 1 FROM pg_publication_tables WHERE tablename = 'staff_contacts'`;
+
       assert.equal(published.length, 0);
     });
   });

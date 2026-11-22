@@ -22,9 +22,11 @@ if (!facilityCode) {
 }
 
 const sql = createSql(loadConfig().postgresUrl);
+
 try {
   const [facility] = await sql<{ id: string; name: string; device_id: string }[]>`
     SELECT id, name, device_id FROM facilities WHERE id = ${facilityCode.trim().toUpperCase()}`;
+
   if (!facility) {
     throw new Error(`no facility ${facilityCode}`);
   }
@@ -34,12 +36,15 @@ try {
 
   if (!staffId) {
     console.log(`\n  active facility admins of ${facility.name} (${facility.id}):`);
+
     for (const admin of admins) {
       console.log(`    ${admin.id}   ${admin.full_name}`);
     }
+
     console.log('');
   } else {
     const admin = admins.find((candidate) => candidate.id === staffId);
+
     if (!admin) {
       throw new Error(`${staffId} is not an active facility admin of ${facility.id}`);
     }
@@ -53,6 +58,7 @@ try {
       issuedFrom: facility.device_id,
       channel: 'operator',
     });
+
     if (!outcome.ok) {
       throw new Error(`could not issue a code for ${staffId}`);
     }

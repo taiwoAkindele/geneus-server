@@ -49,6 +49,7 @@ export const createSigner = (privateKeyBase64: string | undefined): Signer => {
   const privateKey = privateKeyBase64
     ? toPkcs8(privateKeyBase64)
     : generateKeyPairSync('ed25519').privateKey;
+
   const publicKeyBase64 = publicKeyOf(privateKey);
   const publicKeyFingerprint = fingerprintOf(publicKeyBase64);
 
@@ -61,6 +62,7 @@ export const createSigner = (privateKeyBase64: string | undefined): Signer => {
     signBytes: (data) => sign(null, data, privateKey),
     publicJwk: () => {
       const jwk = createPublicKey(privateKey).export({ format: 'jwk' }) as { x: string };
+
       return {
         kty: 'OKP',
         crv: 'Ed25519',

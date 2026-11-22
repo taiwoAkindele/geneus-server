@@ -28,10 +28,12 @@ export const issueEnrollmentCode = async (
   const code = Array.from({ length: CODE_LENGTH }, () => ALPHABET[randomInt(ALPHABET.length)]).join(
     '',
   );
+
   const expiresOn = new Date(Date.now() + CODE_TTL_MS).toISOString();
   await sql`
     INSERT INTO enrollment_codes (code, facility_id, issued_by, issued_from, expires_on)
     VALUES (${code}, ${facilityId}, ${issuedBy}, ${issuedFrom}, ${expiresOn})`;
+
   return { code, facilityId, expiresOn };
 };
 
@@ -57,6 +59,7 @@ export const enrollDevice = async (
     if (isPostgresError(cause, UNIQUE_VIOLATION)) {
       return { ok: false, error: 'device_already_enrolled' };
     }
+
     throw cause;
   }
 };
@@ -78,11 +81,13 @@ export const claimCodeAndEnroll = async (
       AND claimed_on IS NULL
       AND expires_on >= now()
     RETURNING facility_id, issued_by, issued_from`;
+
   if (!claimed) {
     return { ok: false, error: 'invalid_code' };
   }
 
   const now = new Date().toISOString();
+
   const device = Device.parse({
     id: request.deviceId,
     type: 'device',
@@ -97,6 +102,7 @@ export const claimCodeAndEnroll = async (
     wipeRequested: false,
     enrolledOn: now,
   });
+
   await insertRecord(tx, 'device', device);
   const credential = await issueCredential(tx, device.id);
   await recordAuditEvent(tx, {
@@ -138,6 +144,7 @@ export const revokeDevice = async (
       UPDATE devices
       SET status = 'revoked', revoked_on = now(), wipe_requested = ${wipe}, updated_by = ${revokedBy}, updated_on = now()
       WHERE id = ${targetDeviceId} AND facility_id = ${facilityId}`;
+
     if (updated.count !== 1) {
       return { ok: false, error: 'unknown_device' };
     }
@@ -151,6 +158,8 @@ export const revokeDevice = async (
       entityId: targetDeviceId,
       metadata: { wipe, unsentChangesAccepted: unsentAccepted },
     });
+
     const device = await findRecord<Device>(tx, 'device', targetDeviceId);
+
     return { ok: true, device: device as Device };
   });

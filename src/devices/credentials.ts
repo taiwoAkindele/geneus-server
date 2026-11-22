@@ -23,9 +23,11 @@ const hashSecret = (secret: string): string => createHash('sha256').update(secre
 
 const split = (credential: string): { deviceId: string; secret: string } | undefined => {
   const at = credential.indexOf('.');
+
   if (at <= 0 || at === credential.length - 1) {
     return undefined;
   }
+
   return { deviceId: credential.slice(0, at), secret: credential.slice(at + 1) };
 };
 
@@ -39,6 +41,7 @@ export const issueCredential = async (
   secret = randomBytes(SECRET_BYTES).toString('base64url'),
 ): Promise<string> => {
   await sql`INSERT INTO device_credentials (device_id, credential_hash) VALUES (${deviceId}, ${hashSecret(secret)})`;
+
   return `${deviceId}.${secret}`;
 };
 
@@ -59,6 +62,7 @@ export const verifyCredential = async (
   credential: string,
 ): Promise<{ identity: DeviceIdentity } | { failure: CredentialFailure }> => {
   const parts = split(credential);
+
   if (!parts) {
     return { failure: 'malformed' };
   }
@@ -68,12 +72,14 @@ export const verifyCredential = async (
     FROM device_credentials c
     JOIN devices d ON d.id = c.device_id
     WHERE c.device_id = ${parts.deviceId}`;
+
   if (!row) {
     return { failure: 'unknown_device' };
   }
 
   const presented = Buffer.from(hashSecret(parts.secret), 'hex');
   const stored = Buffer.from(row.credential_hash, 'hex');
+
   if (presented.length !== stored.length || !timingSafeEqual(presented, stored)) {
     return { failure: 'wrong_secret' };
   }
@@ -81,6 +87,7 @@ export const verifyCredential = async (
   if (row.status !== 'active') {
     return { failure: 'revoked' };
   }
+
   if (row.wipe_requested) {
     return { failure: 'wipe_requested' };
   }

@@ -20,6 +20,7 @@ export const importDiagnosisCatalogue = async (
 ) => {
   const system = diagnosisSystemKey(input.codeSystem);
   await tx`SELECT pg_advisory_xact_lock(hashtext(${`${facilityId}:diagnosis_catalogue:${system}`}))`;
+
   const existing = new Map(
     (
       await tx<
@@ -27,19 +28,25 @@ export const importDiagnosisCatalogue = async (
       >`SELECT code, description FROM diagnosis_catalogue_entries WHERE facility_id = ${facilityId} AND code_system = ${system}`
     ).map((e) => [e.code, e.description]),
   );
+
   const incoming = new Map(
     input.lines.map((l) => [normaliseDiagnosisCode(l.code), l.description.trim()]),
   );
+
   const added = [...incoming.keys()].filter((c) => !existing.has(c)).length;
   const changed = [...incoming].filter(([c, d]) => existing.has(c) && existing.get(c) !== d).length;
+
   const removedCodes =
     input.mode === 'replace' ? [...existing.keys()].filter((c) => !incoming.has(c)) : [];
+
   const id = `diagnosis_catalogue_import:${randomUUID()}`;
   await tx`INSERT INTO diagnosis_catalogue_imports (id, facility_id, code_system, edition, licence_reference, mode, file_name, file_sha256, rows, added, changed, removed, imported_by)
     VALUES (${id}, ${facilityId}, ${system}, ${input.edition}, ${input.licenceReference}, ${input.mode}, ${input.source.fileName}, ${input.source.sha256}, ${input.source.rows}, ${added}, ${changed}, ${removedCodes.length}, ${staffId})`;
+
   if (removedCodes.length) {
     await tx`DELETE FROM diagnosis_catalogue_entries WHERE facility_id = ${facilityId} AND code_system = ${system} AND code = ANY(${removedCodes})`;
   }
+
   const entries = [...incoming].map(([code, description]) => ({
     facility_id: facilityId,
     code_system: system,
@@ -47,13 +54,16 @@ export const importDiagnosisCatalogue = async (
     description,
     import_id: id,
   }));
+
   for (let i = 0; i < entries.length; i += 1000) {
     await tx`INSERT INTO diagnosis_catalogue_entries ${tx(entries.slice(i, i + 1000))}
       ON CONFLICT (facility_id, code_system, code) DO UPDATE SET description = EXCLUDED.description, import_id = EXCLUDED.import_id`;
   }
+
   const payloadSha256 = createHash('sha256')
     .update(JSON.stringify([...incoming].sort()))
     .digest('hex');
+
   return {
     importId: id,
     codeSystem: system,
@@ -86,8 +96,10 @@ export const diagnosisCatalogues = async (
     >`SELECT DISTINCT ON (code_system) code_system, edition, licence_reference, imported_by, imported_on
       FROM diagnosis_catalogue_imports WHERE facility_id = ${facilityId} ORDER BY code_system, imported_on DESC`,
   ]);
+
   return counts.flatMap((count) => {
     const latest = imports.find((i) => i.code_system === count.code_system);
+
     return latest
       ? [
           {

@@ -30,6 +30,7 @@ describe('patient registration corrections and identity resolution', () => {
   let records: Staff;
   let nurse: Staff;
   const id = (n: number) => `${facility.facility.id}-${String(n).padStart(6, '0')}-K2`;
+
   const post = (
     path: string,
     body: Record<string, unknown>,
@@ -41,12 +42,14 @@ describe('patient registration corrections and identity resolution', () => {
       headers: { authorization: `Bearer ${credential}` },
       payload: body,
     });
+
   const action = (a: number, b: number, outcome = 'linked') => ({
     patientId: id(a),
     otherPatientId: id(b),
     outcome,
     actorStaffId: records.id,
   });
+
   before(async () => {
     db = await scratchDatabase();
     app = testApp(db.sql);
@@ -54,6 +57,7 @@ describe('patient registration corrections and identity resolution', () => {
     other = await registerScratchFacility(db.sql);
     records = await addStaff(db.sql, facility, { role: 'records_officer' });
     nurse = await addStaff(db.sql, facility, { role: 'nurse' });
+
     for (let n = 1; n <= 10; n++) {
       await insertRecord(db.sql, 'patient', {
         ...envelopeFor(facility),
@@ -69,6 +73,7 @@ describe('patient registration corrections and identity resolution', () => {
         nin: '12345678901',
       });
     }
+
     await insertRecord(db.sql, 'encounter', {
       ...envelopeFor(facility),
       id: 'encounter:alias-history',
@@ -77,10 +82,12 @@ describe('patient registration corrections and identity resolution', () => {
       openedOn: new Date().toISOString(),
     });
   });
+
   after(async () => {
     if (app) {
       await app.close();
     }
+
     if (db) {
       await db.drop();
     }
@@ -101,11 +108,13 @@ describe('patient registration corrections and identity resolution', () => {
           },
         ],
       });
+
     assert.equal(
       (await update({ phone: null, nin: null }, { phone: '08035550147', nin: '12345678901' }))
         .rejected.length,
       0,
     );
+
     const patient = await findRecord<Patient>(db.sql, 'patient', id(1));
     assert.equal(patient?.phone, undefined);
     assert.equal(patient?.nin, undefined);
@@ -124,6 +133,7 @@ describe('patient registration corrections and identity resolution', () => {
       outcome: 'review_requested',
       reason: 'Same details registered on two offline devices',
     };
+
     const send = (data: object) =>
       upload(app, facility.device.credential, {
         transactionId: 1,
@@ -137,6 +147,7 @@ describe('patient registration corrections and identity resolution', () => {
           },
         ],
       });
+
     assert.equal((await send({})).rejected.length, 0);
     assert.equal((await send({ outcome: 'linked' })).rejected[0].category, 'authorization');
     assert.equal((await send({ revision: 9999 })).rejected[0].category, 'validation');
@@ -151,6 +162,7 @@ describe('patient registration corrections and identity resolution', () => {
       (await post('preview', { ...action(1, 2), actorStaffId: nurse.id })).statusCode,
       403,
     );
+
     assert.equal((await post('preview', action(1, 2), other.device.credential)).statusCode, 403);
     const foreign = `${other.facility.id}-000001-K2`;
     await insertRecord(db.sql, 'patient', {
@@ -163,6 +175,7 @@ describe('patient registration corrections and identity resolution', () => {
       sex: 'female',
       ageYears: 20,
     });
+
     assert.equal(
       (await post('preview', { ...action(1, 2), otherPatientId: foreign })).statusCode,
       409,
@@ -177,36 +190,45 @@ describe('patient registration corrections and identity resolution', () => {
         .counts.encounters,
       1,
     );
+
     const body = {
       ...action(1, 2),
       revision: preview.json().revision,
       requestId: randomUUID(),
       reason: 'Confirmed in person with both cards and demographic history',
     };
+
     const responses = await Promise.all([post('confirm', body), post('confirm', body)]);
+
     for (const response of responses) {
       assert.equal(response.statusCode, 200, response.body);
     }
+
     assert.equal(responses[0].json().id, responses[1].json().id);
     assert.equal(
       canonicalPatientId(id(2), await eventsForFacility(db.sql, facility.facility.id)),
       id(1),
     );
+
     const [encounter] =
       await db.sql`SELECT patient_id FROM encounters WHERE id = 'encounter:alias-history'`;
+
     assert.equal(encounter.patient_id, id(2));
     assert.equal(
       (await post('confirm', { ...body, reason: 'Changed retry reason' })).statusCode,
       409,
     );
+
     const [audits] =
       await db.sql`SELECT count(*)::int AS n FROM audit_events WHERE entity_type = 'patient_identity_event' AND entity_id = ${responses[0].json().id}`;
+
     assert.equal(audits.n, 1);
   });
 
   it('refuses stale previews and serialises conflicting decisions', async () => {
     const a = await post('preview', action(3, 4));
     const b = await post('preview', action(5, 4));
+
     const responses = await Promise.all([
       post('confirm', {
         ...action(3, 4),
@@ -221,6 +243,7 @@ describe('patient registration corrections and identity resolution', () => {
         reason: 'Conflicting identity group',
       }),
     ]);
+
     assert.deepEqual(responses.map((r) => r.statusCode).sort(), [200, 409]);
     const preview = await post('preview', action(6, 7));
     await db.sql`UPDATE patients SET address = 'Changed after preview' WHERE id = ${id(7)}`;
@@ -239,23 +262,29 @@ describe('patient registration corrections and identity resolution', () => {
 
   it('corrects a mistaken link and keeps every original record', async () => {
     const preview = await post('preview', action(1, 2, 'unlinked'));
+
     const response = await post('confirm', {
       ...action(1, 2, 'unlinked'),
       revision: preview.json().revision,
       requestId: randomUUID(),
       reason: 'Further evidence established these are different people',
     });
+
     assert.equal(response.statusCode, 200, response.body);
     assert.equal(
       canonicalPatientId(id(2), await eventsForFacility(db.sql, facility.facility.id)),
       id(2),
     );
+
     const [encounter] =
       await db.sql`SELECT patient_id FROM encounters WHERE id = 'encounter:alias-history'`;
+
     assert.equal(encounter.patient_id, id(2));
+
     const failure = await refusal(
       db.sql`UPDATE patient_identity_events SET reason = 'Overwrite' WHERE id = ${response.json().id}`,
     );
+
     assert.equal(failure.code, '42501');
   });
 
@@ -280,6 +309,7 @@ describe('patient registration corrections and identity resolution', () => {
         },
       ],
     });
+
     assert.equal(response.rejected[0].category, 'conflict');
     const preview = await post('preview', action(8, 9));
     assert.equal(preview.statusCode, 409);

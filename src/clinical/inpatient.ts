@@ -22,6 +22,7 @@ export const inpatientRecords = async (tx: Tx, facilityId: string) => {
     tx`SELECT * FROM units WHERE facility_id=${facilityId}`,
     tx`SELECT * FROM patient_identity_events WHERE facility_id=${facilityId}`,
   ]);
+
   return {
     events: events.map((row) => fromRow<InpatientEvent>('inpatient_event', row)),
     ready: ready.map((row) => fromRow<BedReadyEvent>('bed_ready_event', row)),
@@ -32,24 +33,29 @@ export const inpatientRecords = async (tx: Tx, facilityId: string) => {
     ),
   };
 };
+
 export const inpatientUploadIssues = async (
   tx: Tx,
   event: InpatientEvent | BedReadyEvent,
 ): Promise<string[]> => {
   const data = await inpatientRecords(tx, event.facilityId);
+
   if (event.type === 'bed_ready_event') {
     return bedReadyIssues(event, data);
   }
+
   const [encounters, entries] = await Promise.all([
     tx`SELECT * FROM encounters WHERE facility_id=${event.facilityId} AND id=${event.encounterId}`,
     tx`SELECT * FROM encounter_entries WHERE facility_id=${event.facilityId} AND encounter_id=${event.encounterId}`,
   ]);
+
   return inpatientIssues(event, {
     ...data,
     encounters: encounters.map((row) => fromRow<Encounter>('encounter', row)),
     entries: entries.map((row) => fromRow<EncounterEntry>('encounter_entry', row)),
   });
 };
+
 /** A live/unclean bed cannot be retired, reparented or renamed out from under a stay. */
 export const inpatientLocationIssues = async (
   tx: Tx,
@@ -63,10 +69,13 @@ export const inpatientLocationIssues = async (
         before.kind !== after.kind ||
         before.unitId !== after.unitId
       : before.active !== after.active;
+
   if (!changed) {
     return [];
   }
+
   const data = await inpatientRecords(tx, before.facilityId);
+
   if (before.type === 'unit') {
     return data.events.some(
       (event) =>
@@ -79,10 +88,13 @@ export const inpatientLocationIssues = async (
         ]
       : [];
   }
+
   const descendants = new Set([before.id]);
   let found = true;
+
   while (found) {
     found = false;
+
     for (const location of data.locations) {
       if (
         location.parentId &&
@@ -94,7 +106,9 @@ export const inpatientLocationIssues = async (
       }
     }
   }
+
   const states = inpatientBedStates(data.events, data.ready);
+
   return data.locations.some(
     (location) =>
       location.kind === 'bed' && descendants.has(location.id) && states.has(location.id),

@@ -22,9 +22,11 @@ import { findRecord, fromRow } from '../db/records.ts';
 
 export const pharmacyRecords = async (tx: Tx, entry: EncounterEntry): Promise<PharmacyRecords> => {
   const encounter = await findRecord<Encounter>(tx, 'encounter', entry.encounterId);
+
   const appointment = encounter?.appointmentId
     ? await findRecord<Appointment>(tx, 'appointment', encounter.appointmentId)
     : undefined;
+
   const [entries, items, movements, fees, charges, adjustments, wardEvents, patient] =
     await Promise.all([
       tx`SELECT * FROM encounter_entries WHERE facility_id=${entry.facilityId} AND encounter_id=${entry.encounterId} ORDER BY created_on,id`,
@@ -36,9 +38,11 @@ export const pharmacyRecords = async (tx: Tx, entry: EncounterEntry): Promise<Ph
       tx`SELECT * FROM ward_care_events WHERE facility_id=${entry.facilityId} AND patient_id=${entry.patientId}`,
       findRecord<Patient>(tx, 'patient', entry.patientId),
     ]);
+
   const serviceAllocations = (
     await tx`SELECT * FROM service_charge_allocations WHERE facility_id=${entry.facilityId} AND patient_id=${entry.patientId}`
   ).map((r) => fromRow<ServiceChargeAllocation>('service_charge_allocation', r));
+
   return {
     integratedBilling: await integratedEnabled(tx, entry.facilityId),
     serviceAllocations,
@@ -53,17 +57,21 @@ export const pharmacyRecords = async (tx: Tx, entry: EncounterEntry): Promise<Ph
     patient,
   };
 };
+
 export const pharmacyUpload = async (
   tx: Tx,
   entry: EncounterEntry,
 ): Promise<{ issues: string[]; effects: AnyDocument[] }> => {
   const data = await pharmacyRecords(tx, entry);
   const d = dispensingDetails(entry);
+
   if (d?.catalogueVersion === 1 && d.billing === 'charge') {
     const selected = data.fees.find((f) => f.id === d.feeItemId);
+
     const legacyStock = data.items.find(
       (s) => s.id === d.stockItemId && s.feeItemId === d.feeItemId,
     );
+
     if (selected?.category !== 'pharmacy' && !legacyStock) {
       return {
         issues: [
@@ -73,6 +81,7 @@ export const pharmacyUpload = async (
       };
     }
   }
+
   if (
     (d?.action === 'supply' || d?.action === 'price') &&
     d.billing === 'charge' &&
@@ -80,6 +89,7 @@ export const pharmacyUpload = async (
   ) {
     const [version] =
       await tx`SELECT amount_minor,currency,category,exemptions FROM fee_price_versions WHERE facility_id=${entry.facilityId} AND id=${d.feePriceVersion} AND fee_item_id=${d.feeItemId!}`;
+
     if (
       !version ||
       Number(version.amount_minor) !== d.unitPriceMinor ||
@@ -90,12 +100,14 @@ export const pharmacyUpload = async (
         effects: [],
       };
     }
+
     if (d.catalogueVersion === 1 && (!version.category || !Array.isArray(version.exemptions))) {
       return {
         issues: ['Sync the complete price evidence before selecting this new catalogue price'],
         effects: [],
       };
     }
+
     data.fees = data.fees.map((fee) =>
       fee.id === d.feeItemId
         ? ({
@@ -109,16 +121,21 @@ export const pharmacyUpload = async (
         : fee,
     );
   }
+
   const issues = pharmacyIssues(entry, data);
+
   return { issues, effects: issues.length ? [] : pharmacyEffects(entry, data) };
 };
+
 /** A client may upload its locally derived companions only after the parent accepted them atomically. */
 export const pharmacyCompanionMatches = async (tx: Tx, record: AnyDocument): Promise<boolean> => {
   if (!('dispenseEntryId' in record) || !record.dispenseEntryId) {
     return false;
   }
+
   const existing = await findRecord(tx, record.type, record.id);
   const parent = await findRecord<EncounterEntry>(tx, 'encounter_entry', record.dispenseEntryId);
+
   return Boolean(
     existing &&
     parent?.pharmacyVersion === 1 &&
@@ -127,14 +144,20 @@ export const pharmacyCompanionMatches = async (tx: Tx, record: AnyDocument): Pro
     JSON.stringify(normalize(existing)) === JSON.stringify(normalize(record)),
   );
 };
-const normalize = (value: unknown): unknown =>
-  value && typeof value === 'object'
-    ? Array.isArray(value)
-      ? value.map(normalize)
-      : Object.fromEntries(
-          Object.entries(value)
-            .filter(([, v]) => v !== undefined)
-            .sort(([a], [b]) => a.localeCompare(b))
-            .map(([k, v]) => [k, normalize(v)]),
-        )
-    : value;
+
+const normalize = (value: unknown): unknown => {
+  if (!value || typeof value !== 'object') {
+    return value;
+  }
+
+  if (Array.isArray(value)) {
+    return value.map(normalize);
+  }
+
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([, v]) => v !== undefined)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([k, v]) => [k, normalize(v)]),
+  );
+};

@@ -7,15 +7,25 @@ import {
 } from '#shared';
 import type { Sql, Tx } from '../db/client.ts';
 import { findRecord } from '../db/records.ts';
+
+/** The field that names a record across its revisions, for the tables that have one. */
+const BUSINESS_ID_FIELDS: Record<string, string> = {
+  unit: 'unitId',
+  staff_assignment: 'assignmentId',
+  service_session: 'sessionId',
+};
+
 export const FACILITY_FEATURE_SUPPORT = {
   contractVersion: 1,
   minimumSchemaVersion: 4,
   minimumPolicyVersion: 10,
 } as const;
+
 export class WorkforceCompatibilityError extends Error {
   statusCode = 409;
   code = 'upgrade_required';
 }
+
 export const assertWorkforceCompatibility = async (
   sql: Sql | Tx,
   facilityId: string,
@@ -24,6 +34,7 @@ export const assertWorkforceCompatibility = async (
 ): Promise<void> => {
   const facility = await findRecord<Facility>(sql, 'facility', facilityId);
   let protectedConfiguration = false;
+
   for (const mutation of request.mutations.filter((m) =>
     ['unit', 'billing_department'].includes(m.table),
   )) {
@@ -32,10 +43,12 @@ export const assertWorkforceCompatibility = async (
         ? await sql`SELECT id FROM units u WHERE facility_id=${facilityId} AND id=${mutation.id}
       AND (revision IS NOT NULL OR kind IS NOT NULL OR EXISTS(SELECT 1 FROM service_offerings o WHERE o.facility_id=u.facility_id AND o.unit_id=u.id))`
         : await sql`SELECT id FROM billing_departments WHERE facility_id=${facilityId} AND id=${mutation.id} AND (revision IS NOT NULL OR organization_unit_id IS NOT NULL)`;
+
     if (rows.length) {
       protectedConfiguration = true;
     }
   }
+
   const issues = facilityCompatibilityIssues(
     request,
     FACILITY_FEATURE_SUPPORT,
@@ -43,10 +56,12 @@ export const assertWorkforceCompatibility = async (
       workforceEnforcementActive(facility?.workforcePolicy, now) ||
       request.facilityContractVersion !== undefined,
   );
+
   if (issues.length) {
     throw new WorkforceCompatibilityError(issues.join('; '));
   }
 };
+
 /** Preserve original client IDs. A child can be evaluated after its in-batch parents without inventing another queue. */
 export const orderWorkforceMutations = (mutations: readonly UploadMutation[]): UploadMutation[] => {
   const isWitness = (m: UploadMutation) =>
@@ -58,25 +73,29 @@ export const orderWorkforceMutations = (mutations: readonly UploadMutation[]): U
           }
         | undefined
     )?.kind === 'workforce_attestation';
+
   const pending = [...mutations].sort((a, b) => Number(isWitness(b)) - Number(isWitness(a)));
   const result: UploadMutation[] = [];
-  const references = (value: unknown): string[] =>
-    typeof value === 'string'
-      ? [value]
-      : Array.isArray(value)
-        ? value.flatMap(references)
-        : value && typeof value === 'object'
-          ? Object.values(value).flatMap(references)
-          : [];
+
+  const references = (value: unknown): string[] => {
+    if (typeof value === 'string') {
+      return [value];
+    }
+
+    if (Array.isArray(value)) {
+      return value.flatMap(references);
+    }
+
+    if (value && typeof value === 'object') {
+      return Object.values(value).flatMap(references);
+    }
+
+    return [];
+  };
+
   while (pending.length) {
-    const ownBusinessField = (m: UploadMutation) =>
-      m.table === 'unit'
-        ? 'unitId'
-        : m.table === 'staff_assignment'
-          ? 'assignmentId'
-          : m.table === 'service_session'
-            ? 'sessionId'
-            : '';
+    const ownBusinessField = (m: UploadMutation) => BUSINESS_ID_FIELDS[m.table] ?? '';
+
     const index = pending.findIndex(
       (m) =>
         !references(
@@ -105,11 +124,14 @@ export const orderWorkforceMutations = (mutations: readonly UploadMutation[]): U
           ),
         ),
     );
+
     if (index < 0) {
       result.push(...pending);
       break;
     }
+
     result.push(...pending.splice(index, 1));
   }
+
   return result;
 };

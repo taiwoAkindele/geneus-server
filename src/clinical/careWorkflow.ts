@@ -17,18 +17,24 @@ import { isDeepStrictEqual } from 'node:util';
 
 export const careWorkflowIssues = async (tx: Tx, entry: EncounterEntry): Promise<string[]> => {
   const encounter = await findRecord<Encounter>(tx, 'encounter', entry.encounterId);
+
   if (encounter?.workflowVersion === 1 && entry.workflowVersion !== 1) {
     return ['This consultation requires the current clinical workflow'];
   }
+
   const rows =
     await tx`SELECT * FROM encounter_entries WHERE facility_id=${entry.facilityId} AND encounter_id=${entry.encounterId} ORDER BY created_on,id`;
+
   const prior = effectiveEncounterEntries(
     rows.map((row) => fromRow<EncounterEntry>('encounter_entry', row)),
   );
+
   const issues = careEntryIssues(entry, prior, Boolean(encounter?.inpatientContext));
+
   if (issues.length) {
     return issues;
   }
+
   if (entry.step === 'lab_results' && entry.labReport) {
     const reportIssues = await labReportUploadIssues(
       tx,
@@ -36,24 +42,31 @@ export const careWorkflowIssues = async (tx: Tx, entry: EncounterEntry): Promise
       entry.labReport,
       ENCOUNTER_STEP_VALUES.lab_results.parse(entry.values).results,
     );
+
     if (reportIssues.length) {
       return reportIssues;
     }
   }
+
   if (entry.step === 'lab_order' && entry.values.items) {
     const { items } = ENCOUNTER_STEP_VALUES.lab_order.parse(entry.values);
+
     for (const item of items!) {
       // A clinician may always request a test that is not in the catalogue; it carries no catalogue price.
       if (item.custom) {
         if (item.feeItemId || item.priceMinor !== undefined) {
           return ['Unlisted requests cannot invent a catalogue price'];
         }
+
         continue;
       }
+
       if (item.catalogueSource === 'billing') {
         const fee = await findRecord<FeeItem>(tx, 'fee_item', item.feeItemId!);
+
         const [price] =
           await tx`SELECT * FROM fee_price_versions WHERE facility_id=${entry.facilityId} AND id=${item.feePriceVersion!} AND fee_item_id=${item.feeItemId!}`;
+
         if (
           !fee ||
           fee.facilityId !== entry.facilityId ||
@@ -64,39 +77,50 @@ export const careWorkflowIssues = async (tx: Tx, entry: EncounterEntry): Promise
         ) {
           return ['The investigation must preserve its central Laboratory price evidence'];
         }
+
         if (!isDeepStrictEqual(item.exemptions, price.exemptions)) {
           return ['The investigation must retain its selected exemption policy'];
         }
+
         if (item.serviceDefinitionId) {
           const [profile] =
             await tx`SELECT snapshot FROM service_definition_versions WHERE facility_id=${entry.facilityId} AND source_id=${item.serviceDefinitionId} AND revision=${item.definitionRevision ?? 0}`;
+
           const [legacy] = item.offeringId
             ? await tx`SELECT snapshot FROM service_offering_versions WHERE facility_id=${entry.facilityId} AND source_id=${item.offeringId} AND revision=${item.catalogueRevision ?? 0}`
             : [];
+
           const explicitlyLinked =
             legacy?.snapshot.fee_item_id === item.feeItemId &&
             legacy?.snapshot.service_definition_id === item.serviceDefinitionId &&
             legacy?.snapshot.configuration === 'active' &&
             legacy?.snapshot.resource_readiness === 'available';
+
           if (!profile || (profile.snapshot.fee_item_id !== item.feeItemId && !explicitlyLinked)) {
             return ['The clinical profile must belong to this selected central Laboratory item'];
           }
         }
+
         const manual =
           await tx`SELECT id FROM charges WHERE facility_id=${entry.facilityId} AND patient_id=${entry.patientId} AND fee_item_id=${item.feeItemId!} AND order_item_id IS NULL AND dispense_entry_id IS NULL AND (encounter_id IS NULL OR encounter_id=${entry.encounterId}) LIMIT 1`;
+
         if (manual.length && !item.billingReviewReason && !item.additionalChargeReason) {
           return [
             'An existing manual bill may cover this investigation. Review billing before adding another charge',
           ];
         }
+
         continue;
       }
+
       const offering = await findRecord<ServiceOffering>(tx, 'service_offering', item.offeringId!);
+
       const definition = await findRecord<ServiceDefinition>(
         tx,
         'service_definition',
         item.serviceDefinitionId!,
       );
+
       if (
         !offering ||
         !definition ||
@@ -105,10 +129,13 @@ export const careWorkflowIssues = async (tx: Tx, entry: EncounterEntry): Promise
       ) {
         return ['The investigation must reference this facility’s catalogue'];
       }
+
       const [offeringVersion] =
         await tx`SELECT snapshot FROM service_offering_versions WHERE facility_id=${entry.facilityId} AND source_id=${item.offeringId!} AND revision=${item.catalogueRevision ?? 0}`;
+
       const [definitionVersion] =
         await tx`SELECT snapshot FROM service_definition_versions WHERE facility_id=${entry.facilityId} AND source_id=${item.serviceDefinitionId!} AND revision=${item.definitionRevision ?? 0}`;
+
       if (
         !offeringVersion ||
         offeringVersion.snapshot.service_definition_id !== item.serviceDefinitionId ||
@@ -121,20 +148,25 @@ export const careWorkflowIssues = async (tx: Tx, entry: EncounterEntry): Promise
       ) {
         return ['The requested investigation version was not available for ordering'];
       }
+
       if (
         item.name !== offeringVersion.snapshot.name ||
         item.feeItemId !== (offeringVersion.snapshot.fee_item_id ?? undefined)
       ) {
         return ['The investigation must preserve its selected catalogue version'];
       }
+
       if (item.feeItemId) {
         const fee = await findRecord<FeeItem>(tx, 'fee_item', item.feeItemId);
+
         if (!fee || fee.facilityId !== entry.facilityId || item.priceMinor === undefined) {
           return ['The investigation pricing reference is invalid'];
         }
+
         if (item.feePriceVersion) {
           const [price] =
             await tx`SELECT amount_minor,currency FROM fee_price_versions WHERE id=${item.feePriceVersion} AND facility_id=${entry.facilityId} AND fee_item_id=${item.feeItemId}`;
+
           if (
             !price ||
             Number(price.amount_minor) !== item.priceMinor ||
@@ -149,8 +181,10 @@ export const careWorkflowIssues = async (tx: Tx, entry: EncounterEntry): Promise
       // The snapshot is preserved even if a catalogue changes while this device is offline.
     }
   }
+
   if (entry.step === 'disposition' && entry.values.kind === 'referral') {
     const referral = await findRecord<Referral>(tx, 'referral', String(entry.values.referralId));
+
     if (
       !referral ||
       referral.facilityId !== entry.facilityId ||
@@ -160,8 +194,10 @@ export const careWorkflowIssues = async (tx: Tx, entry: EncounterEntry): Promise
       return ['The referral must belong to this patient and destination'];
     }
   }
+
   if (entry.step === 'injection') {
     const order = [...prior].reverse().find((p) => p.step === 'injection_order');
+
     if (
       order &&
       (!order.values.required ||
@@ -172,6 +208,7 @@ export const careWorkflowIssues = async (tx: Tx, entry: EncounterEntry): Promise
       return ['Administration must match the signed injection order'];
     }
   }
+
   return [];
 };
 
@@ -193,10 +230,13 @@ export const chargeOrderIssues = async (
   if (!charge.orderItemId && !charge.orderEntryId) {
     return [];
   }
+
   if (!charge.orderEntryId || !charge.orderItemId) {
     return ['Order charges require both order and item identities'];
   }
+
   const order = await findRecord<EncounterEntry>(tx, 'encounter_entry', charge.orderEntryId);
+
   if (
     !order ||
     order.step !== 'lab_order' ||
@@ -206,20 +246,24 @@ export const chargeOrderIssues = async (
   ) {
     return ['This charge must reference its own patient and encounter order'];
   }
+
   const item = (order.values.items as InvestigationItem[] | undefined)?.find(
     (i) => i.id === charge.orderItemId,
   );
+
   if (item?.billingReviewReason) {
     return [
       'This investigation is awaiting billing review; it cannot create another automatic charge',
     ];
   }
+
   if (
     item?.catalogueSource === 'billing' &&
     (charge.feePriceVersion !== item.feePriceVersion || charge.quantity !== 1)
   ) {
     return ['Preserve the central order price version and its single investigation quantity'];
   }
+
   return !item ||
     item.feeItemId !== charge.feeItemId ||
     item.priceMinor !== charge.listPriceMinor ||
@@ -233,5 +277,6 @@ export const routeReferral = async (tx: Tx, referral: Referral) => {
   const id = `inbound:${referral.id}`;
   await tx`INSERT INTO inbound_referrals(id,facility_id,schema_version,created_by,created_on,device_id,source_referral_id,from_facility_id,sender_patient_id,tier1,sent_on,status)
     SELECT ${id},f.id,4,'system',now(),f.device_id,${referral.id},${referral.facilityId},${referral.patientId},${tx.json(referral.tier1)},${referral.sentOn},'received' FROM facilities f WHERE f.id=${referral.toFacilityId} ON CONFLICT(facility_id,source_referral_id) DO NOTHING`;
+
   await tx`UPDATE referrals SET delivery_status='alert_sent' WHERE id=${referral.id} AND facility_id=${referral.facilityId}`;
 };

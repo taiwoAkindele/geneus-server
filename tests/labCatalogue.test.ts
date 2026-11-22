@@ -27,6 +27,7 @@ describe('server-owned laboratory catalogue', () => {
   let app: FastifyInstance;
   let facility: FacilityRegistrationResult;
   let other: FacilityRegistrationResult;
+
   const post = (path: string, body: Record<string, unknown>, f = facility) =>
     app.inject({
       method: 'POST',
@@ -34,10 +35,12 @@ describe('server-owned laboratory catalogue', () => {
       headers: asDevice(f.device.credential),
       payload: { actorStaffId: f.admin.id, ...body },
     });
+
   const definitions = async (f = facility) =>
     (await recordsInFacility(db.sql, f.facility.id, 'service_definition')).filter(
       (d) => d.investigation,
     );
+
   before(async () => {
     db = await scratchDatabase();
     app = testApp(db.sql);
@@ -45,6 +48,7 @@ describe('server-owned laboratory catalogue', () => {
       await registerScratchFacility(db.sql),
       await registerScratchFacility(db.sql),
     ];
+
     // The first facility already set up its Laboratory; the other has none yet.
     await insertRecord(db.sql, 'unit', {
       ...envelopeFor(facility),
@@ -53,6 +57,7 @@ describe('server-owned laboratory catalogue', () => {
       type: 'unit',
       name: 'Laboratory',
     });
+
     await insertRecord(db.sql, 'location', {
       ...envelopeFor(facility),
       id: 'location:lab',
@@ -61,6 +66,7 @@ describe('server-owned laboratory catalogue', () => {
       kind: 'room',
     });
   });
+
   after(async () => {
     await app?.close();
     await db?.drop();
@@ -80,11 +86,13 @@ describe('server-owned laboratory catalogue', () => {
       code: '58410-2',
       label: 'Full blood count',
     });
+
     assert.deepEqual(saved.find((d) => d.name === 'Widal test')?.concept, {
       system: 'urn:geneus:standard-test',
       code: 'widal',
       label: 'Widal test',
     });
+
     const offerings = await recordsInFacility(db.sql, facility.facility.id, 'service_offering');
     assert.ok(
       saved.every((d) =>
@@ -98,12 +106,14 @@ describe('server-owned laboratory catalogue', () => {
         ),
       ),
     );
+
     assert.equal(
       (await recordsInFacility(db.sql, facility.facility.id, 'unit')).filter(
         (u) => u.name.toLowerCase() === 'laboratory',
       ).length,
       1,
     );
+
     assert.ok(
       (await post('standard-tests', {}))
         .json()
@@ -117,14 +127,18 @@ describe('server-owned laboratory catalogue', () => {
       { tests: [{ name: 'Malaria smear', specimen: 'Blood', classification: 'Haematology' }] },
       other,
     );
+
     assert.deepEqual(first.json(), { added: ['Malaria smear'], skipped: [] });
     await post('standard-tests/adopt', { keys: ['esr'] }, other);
+
     const units = (await recordsInFacility(db.sql, other.facility.id, 'unit')).filter(
       (u) => u.name === 'Laboratory',
     );
+
     const locations = (await recordsInFacility(db.sql, other.facility.id, 'location')).filter(
       (l) => l.name === 'Laboratory',
     );
+
     assert.equal(units.length, 1);
     assert.equal(locations.length, 1);
     assert.equal(locations[0].unitId, units[0].id);
@@ -137,6 +151,7 @@ describe('server-owned laboratory catalogue', () => {
 
   it('skips duplicates by name or other name, including within one request, and changes nothing existing', async () => {
     const before = await definitions();
+
     const result = await post('tests', {
       tests: [
         {
@@ -154,10 +169,12 @@ describe('server-owned laboratory catalogue', () => {
         { name: 'anc  PANEL', specimen: 'Blood', classification: 'Antenatal', aliases: [] },
       ],
     });
+
     assert.deepEqual(result.json(), {
       added: ['Antenatal panel'],
       skipped: ['Complete blood count', 'anc  PANEL'],
     });
+
     const after = await definitions();
     assert.equal(after.length, before.length + 1);
     assert.equal(after.find((d) => d.name === 'Antenatal panel')?.concept.system, 'local');
@@ -165,6 +182,7 @@ describe('server-owned laboratory catalogue', () => {
       after.find((d) => d.name === 'Full blood count'),
       before.find((d) => d.name === 'Full blood count'),
     );
+
     assert.deepEqual((await post('standard-tests/adopt', { keys: ['fbc'] })).json(), {
       added: [],
       skipped: ['Full blood count'],
@@ -174,12 +192,14 @@ describe('server-owned laboratory catalogue', () => {
   it('refuses unknown standard keys and staff without service management', async () => {
     assert.equal((await post('standard-tests/adopt', { keys: ['not-a-test'] })).statusCode, 400);
     const nurse = await addStaff(db.sql, facility, { role: 'nurse', permission: 'read_write' });
+
     const denied = await app.inject({
       method: 'POST',
       url: '/investigations/standard-tests/adopt',
       headers: asDevice(facility.device.credential),
       payload: { actorStaffId: nurse.id, keys: ['hba1c'] },
     });
+
     assert.equal(denied.statusCode, 403);
     assert.ok(!(await definitions()).some((d) => d.name === 'HbA1c'));
   });
@@ -192,6 +212,7 @@ describe('server-owned laboratory catalogue', () => {
       id,
       data: { ...envelopeFor(facility), ...data, id, type: 'service_definition' },
     });
+
     const forged = await upload(app, facility.device.credential, {
       ...versions,
       transactionId: clientId(),
@@ -207,11 +228,14 @@ describe('server-owned laboratory catalogue', () => {
         }),
       ],
     });
+
     assert.equal(forged.applied, 0);
     assert.match(forged.rejected[0].reason, /not on the standard list/);
+
     const existing = (await definitions()).find(
       (d) => d.name === 'Widal test',
     ) as ServiceDefinition;
+
     const patch = (data: Record<string, unknown>): UploadMutation => ({
       clientId: clientId(),
       op: 'patch',
@@ -225,18 +249,22 @@ describe('server-owned laboratory catalogue', () => {
         updatedOn: new Date().toISOString(),
       },
     });
+
     const recoded = await upload(app, facility.device.credential, {
       ...versions,
       transactionId: clientId(),
       mutations: [patch({ concept: { ...existing.concept, code: 'other' } })],
     });
+
     assert.equal(recoded.applied, 0);
     assert.match(recoded.rejected[0].reason, /keeps its original code/);
+
     const renamed = await upload(app, facility.device.credential, {
       ...versions,
       transactionId: clientId(),
       mutations: [patch({ name: 'Widal (febrile antigens)' })],
     });
+
     assert.equal(renamed.applied, 1, JSON.stringify(renamed.rejected));
   });
 
@@ -244,6 +272,7 @@ describe('server-owned laboratory catalogue', () => {
     const env = envelopeFor(facility);
     const patientId = `${facility.facility.code}-000001-K2`;
     const encounterId = 'encounter:unlisted';
+
     const entry = (id: string, step: string, values: Record<string, unknown>) => ({
       ...env,
       id,
@@ -255,12 +284,14 @@ describe('server-owned laboratory catalogue', () => {
       step,
       values,
     });
+
     const item = {
       id: 'order_item:unlisted',
       name: 'Serum ferritin',
       custom: true,
       priority: 'routine',
     };
+
     const records = [
       Patient.parse({
         ...env,
@@ -288,6 +319,7 @@ describe('server-owned laboratory catalogue', () => {
         orderEntryId: 'entry:order',
       }),
     ];
+
     const send = (all: Record<string, unknown>[]) =>
       upload(app, facility.device.credential, {
         clinicalWorkflowVersion: 1,
@@ -301,8 +333,10 @@ describe('server-owned laboratory catalogue', () => {
           data: record,
         })),
       });
+
     const accepted = await send(records);
     assert.deepEqual(accepted.rejected, []);
+
     const priced = await send([
       entry('entry:priced-order', 'lab_order', {
         tests: ['Serum zinc'],
@@ -317,6 +351,7 @@ describe('server-owned laboratory catalogue', () => {
         ],
       }),
     ]);
+
     assert.match(
       priced.rejected[0].reason,
       /cannot (invent a catalogue price|carry catalogue prices)/,

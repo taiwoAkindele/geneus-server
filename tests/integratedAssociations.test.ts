@@ -39,6 +39,7 @@ describe('integrated prepayment, clinical supply, association, return, refund an
   let first: EncounterEntry;
   let second: EncounterEntry;
   let returned: EncounterEntry;
+
   const versions = {
     integratedBillingVersion: 1,
     billingCatalogueVersion: 1,
@@ -48,8 +49,10 @@ describe('integrated prepayment, clinical supply, association, return, refund an
     clinicalWorkflowVersion: 1,
     pharmacyWorkflowVersion: 1,
   } as const;
+
   const send = (...mutations: UploadMutation[]) =>
     upload(app, f.device.credential, { ...versions, transactionId: null, mutations });
+
   const mutation = (record: Record<string, unknown>): UploadMutation => ({
     clientId: clientId(),
     op: 'put',
@@ -57,6 +60,7 @@ describe('integrated prepayment, clinical supply, association, return, refund an
     id: String(record.id),
     data: record,
   });
+
   const association = (
     id: string,
     source: EncounterEntry,
@@ -79,8 +83,10 @@ describe('integrated prepayment, clinical supply, association, return, refund an
       reason: 'Reviewed exact prepaid purchase against actual signed supply',
       ...changes,
     });
+
   const supply = async (id: string, d: DispensingDetails) => {
     const data = await pharmacyRecords(db.sql as never, rx);
+
     const e = EncounterEntry.parse({
       ...base,
       id,
@@ -98,11 +104,14 @@ describe('integrated prepayment, clinical supply, association, return, refund an
         lines: [{ drug: 'Synthetic medication', dispensed: false, reason: 'Pending' }],
       },
     });
+
     e.values.lines = dispensingSummary(rx, data.entries, e);
     const result = await send(mutation(e));
     assert.deepEqual(result.rejected, []);
+
     return e;
   };
+
   before(async () => {
     db = await scratchDatabase();
     f = await registerScratchFacility(db.sql);
@@ -122,6 +131,7 @@ describe('integrated prepayment, clinical supply, association, return, refund an
       ageYears: 30,
       address: 'Synthetic address',
     });
+
     await insertRecord(db.sql, 'encounter', {
       ...base,
       id: 'visit:prepaid',
@@ -129,6 +139,7 @@ describe('integrated prepayment, clinical supply, association, return, refund an
       patientId,
       openedOn: base.createdOn,
     });
+
     rx = EncounterEntry.parse({
       ...base,
       id: 'rx:prepaid',
@@ -151,6 +162,7 @@ describe('integrated prepayment, clinical supply, association, return, refund an
         ],
       },
     });
+
     await insertRecord(db.sql, 'encounter_entry', rx);
     await insertRecord(db.sql, 'fee_item', {
       ...base,
@@ -162,6 +174,7 @@ describe('integrated prepayment, clinical supply, association, return, refund an
       currency: 'NGN',
       chargeWhen: 'when_ordered',
     });
+
     const fee = (await findRecord<FeeItem>(db.sql, 'fee_item', 'fee:prepaid'))!;
     await insertRecord(db.sql, 'stock_item', {
       ...base,
@@ -173,6 +186,7 @@ describe('integrated prepayment, clinical supply, association, return, refund an
       quantityOnHand: 100,
       feeItemId: fee.id,
     });
+
     await insertRecord(db.sql, 'charge', {
       ...base,
       id: 'charge:prepaid',
@@ -189,7 +203,9 @@ describe('integrated prepayment, clinical supply, association, return, refund an
       unitPriceMinor: 450000,
       feePriceVersion: fee.priceVersion,
     });
+
     charge = (await findRecord<Charge>(db.sql, 'charge', 'charge:prepaid'))!;
+
     const paid = {
       ...base,
       id: 'payment:prepaid',
@@ -202,12 +218,15 @@ describe('integrated prepayment, clinical supply, association, return, refund an
       amountMinor: 1350000,
       allocations: [{ chargeId: charge.id, amountMinor: 1350000 }],
     };
+
     assert.deepEqual((await send(mutation(paid))).rejected, []);
   });
+
   after(async () => {
     await app?.close();
     await db?.drop();
   });
+
   it('retains one fully paid charge while actual 2+1 supplies consume exact purchased quantity', async () => {
     const details = (quantity: number, previousEntryId?: string): DispensingDetails => ({
       catalogueVersion: 1,
@@ -223,6 +242,7 @@ describe('integrated prepayment, clinical supply, association, return, refund an
       reason: 'Possible existing prepaid charge needs exact financial association',
       ...(previousEntryId ? { previousEntryId } : {}),
     });
+
     first = await supply('supply:two', details(2));
     assert.deepEqual((await send(mutation(association('association:two', first, 2)))).rejected, []);
     second = await supply('supply:one', details(1, first.id));
@@ -231,33 +251,43 @@ describe('integrated prepayment, clinical supply, association, return, refund an
     assert.equal((await send(m)).duplicates, 1);
     assert.equal((await db.sql`SELECT id FROM charges WHERE patient_id=${patientId}`).length, 1);
     assert.equal((await db.sql`SELECT id FROM payments WHERE patient_id=${patientId}`).length, 1);
+
     const [stock] =
       await db.sql`SELECT SUM(change) AS n FROM stock_movements WHERE item_id='stock:prepaid'`;
+
     assert.equal(Number(stock.n), -3);
+
     const associations = (await db.sql`SELECT * FROM service_charge_allocations`).map((r) =>
       fromRow<Allocation>('service_charge_allocation', r),
     );
+
     const evidence = serviceFulfillment(charge, {
       associations,
       associatedEntries: [first, second],
       results: [],
       visitEntries: [],
     });
+
     assert.equal(evidence.kind, 'association');
+
     if (evidence.kind === 'association') {
       assert.deepEqual(evidence.entryIds.sort(), [first.id, second.id].sort());
     }
   });
+
   it('refuses duplicate consumption without losing clinical facts or money and attributes the review', async () => {
     const result = await send(mutation(association('association:duplicate', first, 1)));
     assert.equal(result.rejected.length, 1);
+
     const [review] =
       await db.sql`SELECT * FROM sync_rejections WHERE entity_id='association:duplicate'`;
+
     assert.equal(review.attributed_to, cashier.id);
     assert.equal(review.refused_record.sourceEntryId, first.id);
     assert.ok(await findRecord(db.sql, 'encounter_entry', first.id));
     assert.ok(await findRecord(db.sql, 'payment', 'payment:prepaid'));
   });
+
   it('records the actual partial return first, then an authorized release and credit, without restating a price', async () => {
     returned = await supply('return:one', {
       prescriptionEntryId: rx.id,
@@ -272,7 +302,9 @@ describe('integrated prepayment, clinical supply, association, return, refund an
       creditMinor: 0,
       reason: 'Patient returned one intact unit',
     });
+
     assert.equal((await db.sql`SELECT id FROM billing_adjustments`).length, 0);
+
     const request = association('release:return', first, 1, {
       action: 'release',
       reversesId: 'association:two',
@@ -280,12 +312,16 @@ describe('integrated prepayment, clinical supply, association, return, refund an
       creditReturnedUnits: true,
       createdBy: f.admin.id,
     });
+
     assert.deepEqual((await send(mutation(request))).rejected, []);
+
     const [credit] =
       await db.sql`SELECT amount_minor FROM billing_adjustments WHERE charge_id=${charge.id}`;
+
     assert.equal(Number(credit.amount_minor), 450000);
     assert.equal((await findRecord<Charge>(db.sql, 'charge', charge.id))?.listPriceMinor, 1350000);
     const proof = await staffSessionFor(app, f.device.credential, f.admin.id);
+
     const refund = await app.inject({
       method: 'POST',
       url: '/billing/refunds',
@@ -304,10 +340,13 @@ describe('integrated prepayment, clinical supply, association, return, refund an
         reason: 'Refund the approved returned unit',
       },
     });
+
     assert.equal(refund.statusCode, 201, refund.body);
+
     const snapshot = await db.sql.begin((tx) =>
       buildPatientStatement(tx as never, f.facility.id, patientId, 'NGN', new Date().toISOString()),
     );
+
     assert.equal(snapshot.totals.originalMinor, 1350000);
     assert.equal(snapshot.totals.netMinor, 900000);
     assert.equal(snapshot.totals.patientReceivedMinor, 1350000);
@@ -315,19 +354,23 @@ describe('integrated prepayment, clinical supply, association, return, refund an
     assert.equal(snapshot.totals.patientBalanceMinor, 0);
     assert.equal(snapshot.categories[0].totals.netMinor, snapshot.totals.netMinor);
   });
+
   it('blocks credited quantity reuse and denies a cashier clinical signing or an unauthorized return credit', async () => {
     const reconsume = association('association:credited', second, 1);
     assert.equal((await send(mutation(reconsume))).rejected.length, 1);
     const forged = { ...first, id: 'supply:cashier', createdBy: cashier.id };
     assert.equal((await send(mutation(forged))).rejected.length, 1);
+
     const badCredit = association('release:cashier', second, 1, {
       action: 'release',
       reversesId: 'association:one',
       returnEntryId: returned.id,
       creditReturnedUnits: true,
     });
+
     assert.equal((await send(mutation(badCredit))).rejected.length, 1);
   });
+
   it('never reuses withdrawn clinical quantity against a different new purchase after a credited return', async () => {
     await insertRecord(db.sql, 'charge', {
       ...charge,
@@ -336,6 +379,7 @@ describe('integrated prepayment, clinical supply, association, return, refund an
       listPriceMinor: 450000,
       amountMinor: 450000,
     });
+
     const result = await send(
       mutation(
         association('association:withdrawn-reuse', first, 1, {
@@ -343,9 +387,11 @@ describe('integrated prepayment, clinical supply, association, return, refund an
         }),
       ),
     );
+
     assert.equal(result.rejected.length, 1);
     assert.match(result.rejected[0].reason, /returned/);
   });
+
   const laboratory = async (id: string, quantity: number) => {
     const feeId = 'fee:' + id;
     await insertRecord(db.sql, 'fee_item', {
@@ -358,6 +404,7 @@ describe('integrated prepayment, clinical supply, association, return, refund an
       currency: 'NGN',
       chargeWhen: 'when_ordered',
     });
+
     const fee = (await findRecord<FeeItem>(db.sql, 'fee_item', feeId))!;
     await insertRecord(db.sql, 'charge', {
       ...base,
@@ -375,6 +422,7 @@ describe('integrated prepayment, clinical supply, association, return, refund an
       amountMinor: 10000 * quantity,
       currency: 'NGN',
     });
+
     const order = EncounterEntry.parse({
       ...base,
       id: 'order:' + id,
@@ -399,7 +447,9 @@ describe('integrated prepayment, clinical supply, association, return, refund an
         })),
       },
     });
+
     await insertRecord(db.sql, 'encounter_entry', order);
+
     const a = (suffix: string) =>
       ServiceChargeAllocation.parse({
         ...base,
@@ -416,8 +466,10 @@ describe('integrated prepayment, clinical supply, association, return, refund an
         unit: 'item',
         reason: 'Exact signed repeat investigation and prepaid quantity reviewed',
       });
+
     return { fee, order, a };
   };
+
   it('supports repeated legitimate investigations by exact item IDs and preserves the original price after catalogue edits', async () => {
     const scene = await laboratory('repeated', 2);
     const before = await findRecord<Charge>(db.sql, 'charge', 'charge:repeated');
@@ -428,6 +480,7 @@ describe('integrated prepayment, clinical supply, association, return, refund an
     duplicate.id = 'association:duplicate-repeat';
     assert.equal((await send(mutation(duplicate))).rejected.length, 1);
   });
+
   it('serializes two offline intentions competing for one remaining purchased unit while retaining both signed investigations', async () => {
     const scene = await laboratory('race', 1);
     const results = await Promise.all([send(mutation(scene.a('a'))), send(mutation(scene.a('b')))]);
@@ -435,16 +488,19 @@ describe('integrated prepayment, clinical supply, association, return, refund an
       results.reduce((n, r) => n + r.applied, 0),
       1,
     );
+
     assert.equal(
       results.reduce((n, r) => n + r.rejected.length, 0),
       1,
     );
+
     assert.ok(await findRecord(db.sql, 'encounter_entry', scene.order.id));
     assert.equal(
       (await db.sql`SELECT id FROM service_charge_allocations WHERE charge_id='charge:race'`)
         .length,
       1,
     );
+
     assert.equal(
       (
         await db.sql`SELECT id FROM sync_rejections WHERE entity_id IN ('association:race:a','association:race:b')`

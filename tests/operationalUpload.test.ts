@@ -20,6 +20,7 @@ describe('stock ledger and versioned register uploads', () => {
   let other: FacilityRegistrationResult;
   let nurse: Staff;
   let readOnly: Staff;
+
   const put = (
     table: UploadMutation['table'],
     id: string,
@@ -38,8 +39,10 @@ describe('stock ledger and versioned register uploads', () => {
       type: table,
     },
   });
+
   const send = (...mutations: UploadMutation[]) =>
     upload(app, facility.device.credential, { transactionId: 1, mutations });
+
   const movement = (
     id: string,
     change: number,
@@ -53,6 +56,7 @@ describe('stock ledger and versioned register uploads', () => {
       { itemId: 'stock:item', change, reason, movedOn: new Date().toISOString(), ...extra },
       actor,
     );
+
   const entry = (id: string, values: Record<string, unknown>, registerVersion = 1) =>
     put('register_entry', id, {
       registerId: 'register:daily',
@@ -60,6 +64,7 @@ describe('stock ledger and versioned register uploads', () => {
       entryDate: '2026-10-26',
       values,
     });
+
   const patch = (fields: Record<string, unknown>): UploadMutation => ({
     clientId: clientId(),
     op: 'patch',
@@ -67,6 +72,7 @@ describe('stock ledger and versioned register uploads', () => {
     id: 'stock:item',
     data: { ...fields, updatedBy: facility.admin.id, updatedOn: new Date().toISOString() },
   });
+
   before(async () => {
     db = await scratchDatabase();
     app = testApp(db.sql);
@@ -74,6 +80,7 @@ describe('stock ledger and versioned register uploads', () => {
     other = await registerScratchFacility(db.sql);
     nurse = await addStaff(db.sql, facility, { role: 'nurse' });
     readOnly = await addStaff(db.sql, facility, { role: 'nurse', permission: 'read_only' });
+
     const response = await send(
       put('stock_item', 'stock:item', {
         name: 'Test supplies',
@@ -107,30 +114,38 @@ describe('stock ledger and versioned register uploads', () => {
         fields: [],
       }),
     );
+
     assert.deepEqual(response.rejected, []);
   });
+
   after(async () => {
     if (app) {
       await app.close();
     }
+
     if (db) {
       await db.drop();
     }
   });
+
   it('preserves an attributed movement ledger and acknowledges retries without applying twice', async () => {
     const received = movement('stock:received', 5, 'received', {}, nurse);
     assert.deepEqual(
       (await send(received, movement('stock:used', -3, 'dispensed', {}, nurse))).rejected,
       [],
     );
+
     assert.deepEqual((await send(received)).rejected, []);
+
     const [row] =
       await db.sql`SELECT count(*)::int AS n, sum(change) AS change FROM stock_movements WHERE item_id = 'stock:item'`;
+
     assert.equal(row.n, 2);
     assert.equal(Number(row.change), 2);
     const [item] = await db.sql`SELECT quantity_on_hand FROM stock_items WHERE id = 'stock:item'`;
     assert.equal(Number(item.quantity_on_hand), 10);
   });
+
   it('rejects zero movements, reversed signs and unexplained count adjustments', async () => {
     const response = await send(
       movement('stock:zero', 0),
@@ -138,34 +153,43 @@ describe('stock ledger and versioned register uploads', () => {
       movement('stock:positive-dispense', 1, 'dispensed'),
       movement('stock:unexplained', 2, 'adjustment'),
     );
+
     assert.equal(response.rejected.length, 4);
     assert.ok(response.rejected.every((rejection) => rejection.category === 'validation'));
   });
+
   it('preserves an offline-reported usage discrepancy rather than silently losing physical movements', async () => {
     assert.deepEqual(
       (await send(movement('stock:offline-usage', -50, 'dispensed', {}, nurse))).rejected,
       [],
     );
+
     const [row] =
       await db.sql`SELECT sum(change) AS change FROM stock_movements WHERE item_id = 'stock:item'`;
+
     assert.equal(10 + Number(row.change), -38);
   });
+
   it('prevents editing opening balances and changing measurement units after movements', async () => {
     assert.match(
       (await send(patch({ quantityOnHand: 999 }))).rejected[0]?.reason ?? '',
       /opening stock balance/,
     );
+
     assert.match(
       (await send(patch({ unitOfMeasure: 'tablets' }))).rejected[0]?.reason ?? '',
       /unit of measure/,
     );
+
     assert.deepEqual((await send(patch({ name: 'Renamed supplies' }))).rejected, []);
   });
+
   it('enforces staff permissions and facility ownership', async () => {
     assert.equal(
       (await send(movement('stock:readonly', 1, 'received', {}, readOnly))).rejected[0]?.category,
       'authorization',
     );
+
     assert.deepEqual(
       (
         await upload(app, other.device.credential, {
@@ -188,12 +212,14 @@ describe('stock ledger and versioned register uploads', () => {
       ).rejected,
       [],
     );
+
     assert.equal(
       (await send(movement('stock:cross-facility', 1, 'received', { itemId: 'stock:foreign' })))
         .rejected[0]?.category,
       'validation',
     );
   });
+
   it('validates actual required fields and options against the saved published register version', async () => {
     const response = await send(
       entry('entry:missing', {}),
@@ -201,6 +227,7 @@ describe('stock ledger and versioned register uploads', () => {
       entry('entry:extra', { name: 'Test', result: 'Negative', outside: 'not defined' }),
       entry('entry:draft', {}, 2),
     );
+
     assert.equal(response.rejected.length, 4);
     assert.ok(response.rejected.every((rejection) => rejection.category === 'validation'));
     assert.deepEqual(
@@ -208,9 +235,11 @@ describe('stock ledger and versioned register uploads', () => {
       [],
     );
   });
+
   it('retains refused values for review and accepts old-version entries after a new publication', async () => {
     const [rejection] =
       await db.sql`SELECT refused_record FROM sync_rejections WHERE entity_id = 'entry:bad-option'`;
+
     assert.equal(rejection.refused_record.values.result, 'Unknown');
     assert.deepEqual(
       (
@@ -229,6 +258,7 @@ describe('stock ledger and versioned register uploads', () => {
       [],
     );
   });
+
   it('keeps handoffs attached to the correct visit and prevents reopening completed work', async () => {
     const patientId = `${facility.facility.id}-000001-K2`;
     const otherPatientId = `${facility.facility.id}-000002-K2`;
@@ -256,6 +286,7 @@ describe('stock ledger and versioned register uploads', () => {
       ).rejected,
       [],
     );
+
     const handoff = {
       patientId,
       encounterId: 'encounter:handoff',
@@ -263,6 +294,7 @@ describe('stock ledger and versioned register uploads', () => {
       toUnitId: 'unit:to',
       instruction: 'Carry out the requested work',
     };
+
     assert.equal(
       (
         await send(
@@ -271,7 +303,9 @@ describe('stock ledger and versioned register uploads', () => {
       ).rejected[0]?.category,
       'validation',
     );
+
     assert.deepEqual((await send(put('handoff', 'handoff:valid', handoff, nurse))).rejected, []);
+
     const update = (data: Record<string, unknown>, id = 'handoff:valid'): UploadMutation => ({
       clientId: clientId(),
       op: 'patch',
@@ -280,12 +314,14 @@ describe('stock ledger and versioned register uploads', () => {
       previous: { status: 'pending' },
       data: { ...data, updatedBy: nurse.id, updatedOn: new Date().toISOString() },
     });
+
     assert.deepEqual((await send(update({ status: 'done' }))).rejected, []);
     assert.equal((await send(update({ status: 'received' }))).rejected[0]?.category, 'conflict');
     assert.equal(
       (await send(update({ instruction: 'Changed silently' }))).rejected[0]?.category,
       'authorization',
     );
+
     const [row] = await db.sql`SELECT status, instruction FROM handoffs WHERE id = 'handoff:valid'`;
     assert.equal(row.status, 'done');
     assert.equal(row.instruction, handoff.instruction);
@@ -294,9 +330,11 @@ describe('stock ledger and versioned register uploads', () => {
       send(update({ status: 'done' }, 'handoff:race')),
       send(update({ status: 'received' }, 'handoff:race')),
     ]);
+
     const [raced] = await db.sql`SELECT status FROM handoffs WHERE id = 'handoff:race'`;
     assert.equal(raced.status, 'done');
   });
+
   it('keeps named draft snapshots separate from the published form and its pinned entries', async () => {
     const first = put('register_definition', 'authoring:v1', {
       registerId: 'authoring',
@@ -306,8 +344,10 @@ describe('stock ledger and versioned register uploads', () => {
       status: 'draft',
       fields: [],
     });
+
     assert.deepEqual((await send(first)).rejected, []);
     assert.deepEqual((await send(first)).rejected, []);
+
     const form = {
       registerId: 'authoring',
       name: 'Published form',
@@ -315,6 +355,7 @@ describe('stock ledger and versioned register uploads', () => {
       status: 'published',
       fields: [{ id: 'patient_name', type: 'text', label: 'Patient name', required: true }],
     };
+
     assert.deepEqual(
       (
         await send(
@@ -330,6 +371,7 @@ describe('stock ledger and versioned register uploads', () => {
       ).rejected,
       [],
     );
+
     assert.deepEqual(
       (
         await send(
@@ -343,6 +385,7 @@ describe('stock ledger and versioned register uploads', () => {
       ).rejected,
       [],
     );
+
     assert.equal(
       (
         await send(
@@ -357,6 +400,7 @@ describe('stock ledger and versioned register uploads', () => {
       'validation',
     );
   });
+
   it('rejects ambiguous definitions, reused identities and missing authoring versions', async () => {
     const base = {
       registerId: 'authoring',
@@ -365,6 +409,7 @@ describe('stock ledger and versioned register uploads', () => {
       status: 'published',
       version: 4,
     };
+
     const fields = [{ id: 'patient_name', type: 'text', label: 'Patient name' }];
     assert.equal(
       (
@@ -377,6 +422,7 @@ describe('stock ledger and versioned register uploads', () => {
       ).rejected[0]?.category,
       'validation',
     );
+
     assert.equal(
       (
         await send(
@@ -388,11 +434,13 @@ describe('stock ledger and versioned register uploads', () => {
       ).rejected[0]?.category,
       'validation',
     );
+
     assert.equal(
       (await send(put('register_definition', 'authoring:gap', { ...base, version: 5, fields })))
         .rejected[0]?.category,
       'conflict',
     );
+
     assert.deepEqual(
       (
         await send(
@@ -404,15 +452,19 @@ describe('stock ledger and versioned register uploads', () => {
       ).rejected,
       [],
     );
+
     assert.match(
       (await send(put('register_definition', 'authoring:retired', { ...base, version: 5, fields })))
         .rejected[0]?.reason ?? '',
       /removed field identity/,
     );
+
     const [row] =
       await db.sql`SELECT count(*)::int AS n FROM register_definitions WHERE register_id = 'authoring'`;
+
     assert.equal(row.n, 4);
   });
+
   it('enforces authoring permission for draft saves as well as publication', async () => {
     const fields = {
       registerId: 'forbidden',
@@ -422,6 +474,7 @@ describe('stock ledger and versioned register uploads', () => {
       status: 'draft',
       fields: [],
     };
+
     for (const actor of [nurse, readOnly]) {
       assert.equal(
         (await send(put('register_definition', 'forbidden:' + actor.id, fields, actor))).rejected[0]
@@ -430,6 +483,7 @@ describe('stock ledger and versioned register uploads', () => {
       );
     }
   });
+
   it('retains a competing offline configuration instead of overwriting the winning snapshot', async () => {
     const fields = {
       registerId: 'authoring-race',
@@ -439,20 +493,26 @@ describe('stock ledger and versioned register uploads', () => {
       status: 'draft',
       fields: [],
     };
+
     const mutations = [
       put('register_definition', 'authoring-race:v1', fields),
       put('register_definition', 'authoring-race:v1', { ...fields, name: 'Draft two' }),
     ];
+
     const results = await Promise.all(mutations.map((mutation) => send(mutation)));
     assert.equal(
       results.reduce((count, result) => count + result.rejected.length, 0),
       1,
     );
+
     const [refused] =
       await db.sql`SELECT refused_record FROM sync_rejections WHERE entity_id = 'authoring-race:v1'`;
+
     assert.ok(['Draft one', 'Draft two'].includes(refused.refused_record.name));
+
     const [count] =
       await db.sql`SELECT count(*)::int AS n FROM register_definitions WHERE register_id = 'authoring-race'`;
+
     assert.equal(count.n, 1);
   });
 });

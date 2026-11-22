@@ -19,10 +19,13 @@ const UNAUTHORIZED: ApiErrorBody = {
 
 const bearerOf = (request: FastifyRequest): string | undefined => {
   const header = request.headers.authorization;
+
   if (!header) {
     return undefined;
   }
+
   const [scheme, token, ...rest] = header.trim().split(/\s+/);
+
   return scheme?.toLowerCase() === 'bearer' && token && rest.length === 0 ? token : undefined;
 };
 
@@ -32,12 +35,15 @@ export const authenticateDevice = async (
   reply: FastifyReply,
 ): Promise<DeviceIdentity | undefined> => {
   const credential = bearerOf(request);
+
   if (!credential) {
     await reply.code(401).send(UNAUTHORIZED);
+
     return undefined;
   }
 
   const outcome = await verifyCredential(sql, credential);
+
   if ('failure' in outcome) {
     // The device id is the part before the dot; logging it (and never the
     // secret) is what lets a refused device be found in `devices`.
@@ -45,7 +51,9 @@ export const authenticateDevice = async (
       { deviceId: credential.split('.')[0], failure: outcome.failure },
       'device credential refused',
     );
+
     await reply.code(401).send(UNAUTHORIZED);
+
     return undefined;
   }
 
@@ -63,5 +71,6 @@ export const touchDevice = async (sql: Sql, deviceId: string): Promise<string | 
     FROM (SELECT id, last_seen_on FROM devices WHERE id = ${deviceId} FOR UPDATE) AS before
     WHERE d.id = before.id
     RETURNING before.last_seen_on AS previous`;
+
   return row?.previous ?? undefined;
 };

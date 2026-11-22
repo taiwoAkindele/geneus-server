@@ -28,6 +28,7 @@ describe('hospital department billing and Paystack reconciliation', () => {
   const secret = 'sk_live_FictionalBillingTestKey';
   const master = 'ab'.repeat(32);
   let calls = 0;
+
   const account = (id: string) => ({
     id: Number(id),
     account_number: id === '101' ? '9910000001' : '9910000002',
@@ -36,10 +37,12 @@ describe('hospital department billing and Paystack reconciliation', () => {
     currency: 'NGN',
     bank: { name: 'Test bank' },
   });
+
   const fetcher: typeof fetch = async (url, options) => {
     calls++;
     const path = new URL(String(url)).pathname;
     let data: unknown;
+
     if (path === '/transaction') {
       data = [];
     } else if (path === '/virtual_terminal') {
@@ -76,11 +79,13 @@ describe('hospital department billing and Paystack reconciliation', () => {
       data = account(path.split('/').at(-1)!);
     } else {
       const reference = decodeURIComponent(path.split('/').at(-1)!);
+
       const requestMode = String(
         (options?.headers as Record<string, string>)?.authorization,
       ).includes('sk_test_')
         ? 'test'
         : 'live';
+
       data = {
         reference,
         status: 'success',
@@ -95,20 +100,24 @@ describe('hospital department billing and Paystack reconciliation', () => {
         },
       };
     }
+
     return new Response(JSON.stringify({ status: true, data }), {
       status: 200,
       headers: { 'content-type': 'application/json' },
     });
   };
+
   const enrolled = new Set<string>();
   let activeStaff = '';
   let session: Promise<string> | undefined;
+
   const post = async (
     path: string,
     body: Record<string, unknown>,
     credential = facility.device.credential,
   ) => {
     const staffId = String(body.actorStaffId ?? '');
+
     if (credential === facility.device.credential && staffId && activeStaff !== staffId) {
       activeStaff = staffId;
       session = (async () => {
@@ -120,21 +129,27 @@ describe('hospital department billing and Paystack reconciliation', () => {
               issuedFrom: facility.device.deviceId,
             })
           : undefined;
+
         if (proof) {
           assert.ok(proof.ok);
         }
+
         const response = await app.inject({
           method: 'POST',
           url: proof ? '/staff/session/enrol' : '/staff/session',
           headers: { authorization: `Bearer ${credential}` },
           payload: { staffId, pin: '246810', ...(proof?.ok ? { setupCode: proof.code } : {}) },
         });
+
         assert.equal(response.statusCode, 200, response.body);
         enrolled.add(staffId);
+
         return response.json().token as string;
       })();
     }
+
     const token = credential === facility.device.credential ? await session : undefined;
+
     return app.inject({
       method: 'POST',
       url: `/billing/${path}`,
@@ -145,12 +160,15 @@ describe('hospital department billing and Paystack reconciliation', () => {
       payload: body,
     });
   };
+
   const notify = (reference: string, valid = true) => {
     // The received amount is deliberately false: only server verification supplies the ledger amount.
     const raw = JSON.stringify({ event: 'charge.success', data: { reference, amount: 1 } });
+
     const signature = createHmac('sha512', valid ? secret : 'wrong')
       .update(raw)
       .digest('hex');
+
     return app.inject({
       method: 'POST',
       url: `/billing/paystack/${facility.facility.id}/webhook`,
@@ -158,7 +176,9 @@ describe('hospital department billing and Paystack reconciliation', () => {
       payload: raw,
     });
   };
+
   const patient = (n = '000001') => `${facility.facility.id}-${n}-K2`;
+
   const match = (
     source: string,
     chargeId: string,
@@ -172,6 +192,7 @@ describe('hospital department billing and Paystack reconciliation', () => {
       allocations: [{ chargeId, amountMinor }],
       requestId,
     });
+
   before(async () => {
     db = await scratchDatabase();
     facility = await registerScratchFacility(db.sql);
@@ -187,7 +208,9 @@ describe('hospital department billing and Paystack reconciliation', () => {
       },
       { logger: false, rateLimit: false },
     );
+
     const envelope = { ...envelopeFor(facility), createdBy: facility.admin.id };
+
     for (const id of ['pharmacy', 'oncology', 'dental', 'gs']) {
       await insertRecord(db.sql, 'billing_department', {
         ...envelope,
@@ -196,6 +219,7 @@ describe('hospital department billing and Paystack reconciliation', () => {
         name: id,
       });
     }
+
     for (const n of ['000001', '000002']) {
       await insertRecord(db.sql, 'patient', {
         ...envelope,
@@ -208,6 +232,7 @@ describe('hospital department billing and Paystack reconciliation', () => {
         ageYears: 30,
       });
     }
+
     for (const departmentId of ['pharmacy', 'oncology']) {
       await insertRecord(db.sql, 'fee_item', {
         ...envelope,
@@ -220,6 +245,7 @@ describe('hospital department billing and Paystack reconciliation', () => {
         currency: 'NGN',
         chargeWhen: 'when_ordered',
       });
+
       for (const n of ['000001', '000002']) {
         await insertRecord(db.sql, 'charge', {
           ...envelope,
@@ -237,34 +263,43 @@ describe('hospital department billing and Paystack reconciliation', () => {
       }
     }
   });
+
   after(async () => {
     if (app) {
       await app.close();
     }
+
     if (db) {
       await db.drop();
     }
   });
+
   it('connects only with management permission, and never returns or stores plaintext keys', async () => {
     assert.equal(
       (await post('connection', { actorStaffId: cashier.id, secretKey: secret })).statusCode,
       403,
     );
+
     const response = await post('connection', {
       actorStaffId: facility.admin.id,
       secretKey: secret,
     });
+
     assert.equal(response.statusCode, 200);
     assert(!response.body.includes(secret));
+
     const [saved] =
       await db.sql`SELECT encrypted_secret FROM billing_connections WHERE facility_id = ${facility.facility.id}`;
+
     assert(saved.encrypted_secret !== secret);
     assert(!saved.encrypted_secret.includes(secret));
     const state = await post('connection/status', { actorStaffId: facility.admin.id });
     assert.equal(state.json().mode, 'live');
     assert(!state.body.includes(secret));
+
     const audit =
       await db.sql`SELECT actor_staff_id, device_id, metadata FROM audit_events WHERE facility_id = ${facility.facility.id} AND metadata->>'context' = 'billing_provider_connected'`;
+
     assert.equal(audit.length, 1);
     assert.equal(audit[0].actor_staff_id, facility.admin.id);
     assert.equal(audit[0].device_id, facility.device.deviceId);
@@ -273,6 +308,7 @@ describe('hospital department billing and Paystack reconciliation', () => {
       'audit contains attribution and mode, never provider secrets',
     );
   });
+
   it('links multiple department accounts within the hospital connection and retains account ownership', async () => {
     for (const [providerAccountId, departmentId] of [
       ['101', 'pharmacy'],
@@ -283,9 +319,11 @@ describe('hospital department billing and Paystack reconciliation', () => {
         providerAccountId,
         departmentId,
       });
+
       assert.equal(response.statusCode, 200, response.body);
       assert.equal(response.json().departmentId, departmentId);
     }
+
     assert.equal(
       (
         await post('accounts/link', {
@@ -296,6 +334,7 @@ describe('hospital department billing and Paystack reconciliation', () => {
       ).statusCode,
       409,
     );
+
     assert.equal(
       (
         await post(
@@ -307,6 +346,7 @@ describe('hospital department billing and Paystack reconciliation', () => {
       403,
     );
   });
+
   it('rejects invalid signatures without querying Paystack or creating receipts', async () => {
     const before = calls;
     assert.equal((await notify('forged', false)).statusCode, 401);
@@ -314,61 +354,78 @@ describe('hospital department billing and Paystack reconciliation', () => {
     const [row] = await db.sql`SELECT count(*)::int AS n FROM incoming_transfers`;
     assert.equal(row.n, 0);
   });
+
   it('creates a general hospital payment point and preserves explicitly linked legacy account metadata', async () => {
     const created = await post('accounts/create-terminal', {
       actorStaffId: facility.admin.id,
       notificationPhone: '+2348012345678',
     });
+
     assert.equal(created.statusCode, 200, created.body);
     assert.equal(created.json().departmentId, undefined);
     const status = await post('connection/status', { actorStaffId: facility.admin.id });
     assert.equal(status.json().receivingAccountId, created.json().id);
+
     const existing = await post('accounts/link', {
       actorStaffId: facility.admin.id,
       providerAccountId: 'VT_GS',
       departmentId: 'gs',
     });
+
     assert.equal(existing.statusCode, 200, existing.body);
     assert.equal(existing.json().departmentId, 'gs');
   });
+
   it('verifies transfer data and records one department receipt across concurrent webhook retries', async () => {
     const responses = await Promise.all([notify('verified'), notify('verified')]);
+
     for (const response of responses) {
       assert.equal(response.statusCode, 200, response.body);
     }
+
     const rows =
       await db.sql`SELECT * FROM incoming_transfers WHERE provider_reference = 'verified'`;
+
     assert.equal(rows.length, 1);
     assert.equal(rows[0].amount_minor, 120000);
     assert.equal(rows[0].department_id, 'pharmacy');
   });
+
   it('rejects wrong-mode transactions and retains unlinked-account receipts for reconciliation', async () => {
     assert.equal((await notify('wrong-mode')).statusCode, 409);
     assert.equal((await notify('unlinked')).statusCode, 200);
+
     const [row] =
       await db.sql`SELECT * FROM incoming_transfers WHERE provider_reference = 'unlinked'`;
+
     assert.equal(row.department_id, null);
   });
+
   it('allows cross-category collection through an existing account while retaining patient, facility and currency isolation', async () => {
     const [source] =
       await db.sql`SELECT id FROM incoming_transfers WHERE provider_reference = 'verified'`;
+
     assert.equal((await match(source.id, 'charge:oncology:000001', 1000)).statusCode, 200);
     assert.equal(
       (await match(source.id, 'charge:pharmacy:000001', 1000, randomUUID(), patient('000002')))
         .statusCode,
       409,
     );
+
     const refused = await post(`transfers/${encodeURIComponent(source.id)}/match`, {
       actorStaffId: nurse.id,
       patientId: patient(),
       allocations: [{ chargeId: 'charge:pharmacy:000001', amountMinor: 1000 }],
       requestId: randomUUID(),
     });
+
     assert.equal(refused.statusCode, 403);
   });
+
   it('allocates once on retry, issues a valid receipt, and refuses changing an existing request', async () => {
     const [source] =
       await db.sql`SELECT id FROM incoming_transfers WHERE provider_reference = 'verified'`;
+
     const requestId = randomUUID();
     const first = await match(source.id, 'charge:pharmacy:000001', 20000, requestId);
     assert.equal(first.statusCode, 200, first.body);
@@ -379,24 +436,33 @@ describe('hospital department billing and Paystack reconciliation', () => {
       (await match(source.id, 'charge:pharmacy:000001', 10000, requestId)).statusCode,
       409,
     );
+
     const payment = await findRecord(db.sql, 'payment', first.json().id);
     assert(payment);
   });
+
   it('serializes simultaneous allocations so a transfer cannot be spent twice', async () => {
     assert.equal((await notify('race')).statusCode, 200);
+
     const [source] =
       await db.sql`SELECT id FROM incoming_transfers WHERE provider_reference = 'race'`;
+
     const responses = await Promise.all([
       match(source.id, 'charge:pharmacy:000001', 50000),
       match(source.id, 'charge:pharmacy:000002', 50000, randomUUID(), patient('000002')),
     ]);
+
     assert.deepEqual(responses.map((r) => r.statusCode).sort(), [200, 409]);
+
     const [row] =
       await db.sql`SELECT sum(amount_minor)::int AS n FROM payments WHERE incoming_transfer_id = ${source.id}`;
+
     assert.equal(row.n, 50000);
   });
+
   it('refuses a device forging a provider receipt or verified payment link', async () => {
     const env = { ...envelopeFor(facility), createdBy: facility.admin.id };
+
     const result = await upload(app, facility.device.credential, {
       transactionId: 500,
       mutations: [
@@ -417,8 +483,10 @@ describe('hospital department billing and Paystack reconciliation', () => {
         },
       ],
     });
+
     assert.equal(result.rejected[0]?.category, 'authorization');
   });
+
   it('records attributed discounts and rejects reductions exceeding the current debt', async () => {
     const make = (id: string, amountMinor: number, by = facility.admin.id) => ({
       clientId: clientId(),
@@ -436,35 +504,46 @@ describe('hospital department billing and Paystack reconciliation', () => {
         reason: 'Approved staff concession',
       },
     });
+
     const denied = await upload(app, facility.device.credential, {
       transactionId: 600,
       mutations: [make('adj:cashier', 10000, cashier.id)],
     });
+
     assert.equal(denied.rejected[0]?.category, 'authorization');
+
     const saved = await upload(app, facility.device.credential, {
       transactionId: 601,
       mutations: [make('adj:one', 25000)],
     });
+
     assert.equal(saved.rejected.length, 0);
+
     const excessive = await upload(app, facility.device.credential, {
       transactionId: 602,
       mutations: [make('adj:two', 80000)],
     });
+
     assert.equal(excessive.rejected[0]?.category, 'conflict');
   });
+
   it('keeps test-mode receipts visible without allowing them to settle real bills', async () => {
     const key = 'sk_test_FictionalTestOnly';
     assert.equal(
       (await post('connection', { actorStaffId: facility.admin.id, secretKey: key })).statusCode,
       200,
     );
+
     const imported = await post('transfers/import', {
       actorStaffId: cashier.id,
       reference: 'test-only',
     });
+
     assert.equal(imported.statusCode, 200, imported.body);
+
     const [source] =
       await db.sql`SELECT * FROM incoming_transfers WHERE provider_reference = 'test-only'`;
+
     assert.equal(source.mode, 'test');
     assert.equal((await match(source.id, 'charge:pharmacy:000001', 1)).statusCode, 409);
   });

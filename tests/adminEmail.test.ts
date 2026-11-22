@@ -34,6 +34,7 @@ describe('admin recovery email', () => {
     ...asDevice(credential),
     'x-staff-session': (await staffSessionFor(app, credential, staffId)) ?? '',
   });
+
   const requestCode = async (staffId: string, email: string, requestedBy = staffId) =>
     app.inject({
       method: 'POST',
@@ -41,6 +42,7 @@ describe('admin recovery email', () => {
       headers: await provenAs(a.device.credential, requestedBy),
       payload: { email, requestedBy },
     });
+
   const confirm = async (staffId: string, payload: Record<string, unknown>) =>
     app.inject({
       method: 'POST',
@@ -48,12 +50,14 @@ describe('admin recovery email', () => {
       headers: await provenAs(a.device.credential, staffId),
       payload: { requestedBy: staffId, ...payload },
     });
+
   const emailPinCode = (staffId: string, credential = a.device.credential) =>
     app.inject({
       method: 'POST',
       url: `/staff/${staffId}/pin-codes/email`,
       headers: asDevice(credential),
     });
+
   const contactOf = async (staffId: string) =>
     (
       await db.sql<
@@ -80,8 +84,10 @@ describe('admin recovery email', () => {
       assert.equal(response.statusCode, 202, response.body);
       assert.equal(response.json().sentTo, 'a•••@example.org');
       const code = lastCodeSentTo('admin@example.org');
+
       const [row] = await db.sql<Record<string, unknown>[]>`
         SELECT * FROM pin_setup_codes WHERE staff_id = ${a.admin.id} AND revoked_on IS NULL AND used_on IS NULL`;
+
       const stored = fromRow<PinSetupCode>('pin_setup_code', row as Record<string, unknown>);
       assert.equal(hashPinSetupCode(code, stored.codeSalt, stored.codeIterations), stored.codeHash);
     });
@@ -119,6 +125,7 @@ describe('admin recovery email', () => {
         email: 'new@example.org',
         code: lastCodeSentTo('new@example.org'),
       });
+
       assert.equal(withoutCurrent.statusCode, 403);
       assert.equal(withoutCurrent.json().error, 'invalid_current_code');
       assert.equal(await contactOf(a.admin.id), 'admin@example.org');
@@ -135,8 +142,10 @@ describe('admin recovery email', () => {
 
       assert.equal(response.statusCode, 204, response.body);
       assert.equal(await contactOf(a.admin.id), 'new@example.org');
+
       const [audit] =
         await db.sql`SELECT metadata FROM audit_events WHERE entity_id = ${a.admin.id} AND action = 'update'`;
+
       assert.equal((audit?.metadata as Record<string, string>).recoveryEmail, 'replaced');
     });
 
@@ -149,6 +158,7 @@ describe('admin recovery email', () => {
         headers: asB,
         payload: { email: 'first@example.org', requestedBy: b.admin.id },
       });
+
       const before = mailbox.length;
 
       const response = await app.inject({

@@ -16,6 +16,14 @@ import {
   revokeOpenPinSetupCodes,
 } from './pinSetupCodes.ts';
 
+const newDeviceState = (row: { allows_new_device: unknown; device_enrolled_on: unknown }) => {
+  if (!row.allows_new_device) {
+    return 'not_allowed';
+  }
+
+  return row.device_enrolled_on ? 'used' : 'allowed';
+};
+
 /**
  * Staff invitations (SCHEMA.md §10): the PIN setup code an administrator would
  * read aloud, sent instead to a contact they entered. The person redeems it on
@@ -43,6 +51,7 @@ export const INVITATION_LIMITS = {
 } as const;
 
 export type InvitationStatus = 'pending' | 'expired' | 'locked' | 'accepted' | 'revoked';
+
 export type InvitationDelivery =
   'sending' | 'provider_accepted' | 'provider_rejected' | 'not_configured';
 
@@ -81,16 +90,25 @@ const iso = (value: Date | string) => new Date(value).toISOString();
 const statusOf = (
   row: Pick<InvitationRow, 'accepted_on' | 'revoked_on' | 'failed_attempts' | 'expires_on'>,
   now = Date.now(),
-): InvitationStatus =>
-  row.accepted_on
-    ? 'accepted'
-    : row.revoked_on
-      ? 'revoked'
-      : row.failed_attempts >= INVITATION_LIMITS.failedAttempts
-        ? 'locked'
-        : new Date(row.expires_on).getTime() <= now
-          ? 'expired'
-          : 'pending';
+): InvitationStatus => {
+  if (row.accepted_on) {
+    return 'accepted';
+  }
+
+  if (row.revoked_on) {
+    return 'revoked';
+  }
+
+  if (row.failed_attempts >= INVITATION_LIMITS.failedAttempts) {
+    return 'locked';
+  }
+
+  if (new Date(row.expires_on).getTime() <= now) {
+    return 'expired';
+  }
+
+  return 'pending';
+};
 
 /**
  * The address is shown in full only while it is just what the administrator
@@ -99,9 +117,11 @@ const statusOf = (
  */
 const viewOf = (row: InvitationRow, verifiedEmail?: string): InvitationView => {
   const status = statusOf(row);
+
   const proven =
     status === 'accepted' ||
     (verifiedEmail !== undefined && verifiedEmail.toLowerCase() === row.destination);
+
   return {
     id: row.id,
     channel: row.channel,
@@ -138,6 +158,7 @@ const VIEW_COLUMNS = [
 const same = (a: string, b: string) => {
   const x = Buffer.from(a);
   const y = Buffer.from(b);
+
   return x.length === y.length && timingSafeEqual(x, y);
 };
 
@@ -195,10 +216,13 @@ export const issueStaffInvitation = async (
     const [facility] = await tx<
       { name: string }[]
     >`SELECT name FROM facilities WHERE id = ${input.facilityId} FOR UPDATE`;
+
     if (input.staffId === input.issuedBy) {
       return { ok: false, error: 'own_account' };
     }
+
     const refusal = await pinAuthorityRefusal(tx, input, true);
+
     if (refusal) {
       return { ok: false, error: refusal };
     }
@@ -206,15 +230,18 @@ export const issueStaffInvitation = async (
     const email = input.email.trim().toLowerCase();
     // A proven address is changed only by its owner (with codes to old and new), never redirected by an invitation.
     const verified = await findStaffEmail(tx, input.facilityId, input.staffId);
+
     if (verified && verified.toLowerCase() !== email) {
       return { ok: false, error: 'contact_change_required' };
     }
+
     const [taken] = await tx`
       SELECT 1 FROM staff s
       WHERE s.facility_id = ${input.facilityId} AND s.id <> ${input.staffId} AND s.active AND (
         EXISTS (SELECT 1 FROM staff_contacts c WHERE c.facility_id = s.facility_id AND c.staff_id = s.id AND lower(c.email) = ${email})
         OR EXISTS (SELECT 1 FROM staff_invitations i WHERE i.facility_id = s.facility_id AND i.staff_id = s.id AND i.destination = ${email}
           AND i.accepted_on IS NULL AND i.revoked_on IS NULL AND i.expires_on > now()))`;
+
     if (taken) {
       return { ok: false, error: 'email_in_use' };
     }
@@ -224,6 +251,7 @@ export const issueStaffInvitation = async (
         (SELECT extract(epoch FROM now() - max(created_on)) * 1000 FROM staff_invitations WHERE facility_id = ${input.facilityId} AND staff_id = ${input.staffId})::float8 AS since_last_ms,
         (SELECT count(*) FROM staff_invitations WHERE facility_id = ${input.facilityId} AND staff_id = ${input.staffId} AND created_on > now() - interval '1 day')::int AS today,
         (SELECT count(*) FROM staff_invitations WHERE facility_id = ${input.facilityId} AND created_on > now() - interval '1 hour')::int AS this_hour`;
+
     if (
       counts.since_last_ms !== null &&
       counts.since_last_ms < INVITATION_LIMITS.resendCooldownMs
@@ -236,9 +264,11 @@ export const issueStaffInvitation = async (
         ),
       };
     }
+
     if (counts.today >= INVITATION_LIMITS.perPersonPerDay) {
       return { ok: false, error: 'daily_limit' };
     }
+
     if (counts.this_hour >= INVITATION_LIMITS.perFacilityPerHour) {
       return { ok: false, error: 'facility_limit' };
     }
@@ -253,14 +283,17 @@ export const issueStaffInvitation = async (
     const salt = randomBytes(16).toString('base64');
     const id = `staff_invitation:${randomUUID()}`;
     const expiresOn = new Date(Date.now() + PIN_SETUP_CODE_TTL_MS).toISOString();
+
     const [row] = await tx<InvitationRow[]>`
       INSERT INTO staff_invitations (id, facility_id, staff_id, channel, destination, code_hash, code_salt, code_iterations, created_by, created_from, expires_on, link_hash, allows_new_device)
       VALUES (${id}, ${input.facilityId}, ${input.staffId}, 'email', ${email}, ${hashPinSetupCode(code, salt, PIN_SETUP_CODE_ITERATIONS)}, ${salt},
         ${PIN_SETUP_CODE_ITERATIONS}, ${input.issuedBy}, ${input.issuedFrom}, ${expiresOn}, ${linkHash(linkToken)}, ${input.allowNewDevice === true})
       RETURNING ${tx(VIEW_COLUMNS)}`;
+
     const [staff] = await tx<
       { full_name: string }[]
     >`SELECT full_name FROM staff WHERE facility_id = ${input.facilityId} AND id = ${input.staffId}`;
+
     await recordAuditEvent(tx, {
       facilityId: input.facilityId,
       deviceId: input.issuedFrom,
@@ -277,6 +310,7 @@ export const issueStaffInvitation = async (
         allowsNewDevice: input.allowNewDevice === true,
       },
     });
+
     return {
       ok: true,
       code,
@@ -339,6 +373,7 @@ export const deliverInvitation = async (
   let delivery: InvitationDelivery;
   let messageId: string | null = null;
   let problem: string | null = null;
+
   try {
     const receipt = await mailer.send({
       to: issued.destination,
@@ -350,18 +385,22 @@ export const deliverInvitation = async (
         facilityName: issued.facilityName,
       }),
     });
+
     delivery = mailer.configured ? 'provider_accepted' : 'not_configured';
     messageId = receipt?.providerMessageId ?? null;
   } catch (cause) {
     if (!(cause instanceof EmailNotSent)) {
       throw cause;
     }
+
     delivery = 'provider_rejected';
     problem = cause.message.slice(0, 500);
   }
+
   const [row] = await sql<InvitationRow[]>`
     UPDATE staff_invitations SET delivery_status = ${delivery}, provider_message_id = ${messageId}, delivery_error = ${problem}, delivery_attempted_on = now()
     WHERE id = ${issued.invitation.id} RETURNING ${sql(VIEW_COLUMNS)}`;
+
   return viewOf(row, issued.verifiedEmail);
 };
 
@@ -374,9 +413,11 @@ export const revokeStaffInvitation = async (
     const [row] = await tx<{ id: string }[]>`
       UPDATE staff_invitations SET revoked_on = now(), revoked_by = ${input.revokedBy}, revoked_reason = 'revoked'
       WHERE facility_id = ${input.facilityId} AND staff_id = ${input.staffId} AND accepted_on IS NULL AND revoked_on IS NULL RETURNING id`;
+
     if (!row) {
       return false;
     }
+
     await recordAuditEvent(tx, {
       facilityId: input.facilityId,
       deviceId: input.deviceId,
@@ -386,6 +427,7 @@ export const revokeStaffInvitation = async (
       entityId: input.staffId,
       metadata: { context: 'staff_invitation_revoked', invitationId: row.id },
     });
+
     return true;
   });
 
@@ -411,13 +453,17 @@ export const matchInvitationCode = async (
     SELECT id, code_hash, code_salt, code_iterations FROM staff_invitations
     WHERE facility_id = ${facilityId} AND staff_id = ${staffId} AND accepted_on IS NULL AND revoked_on IS NULL
       AND expires_on > now() AND failed_attempts < ${INVITATION_LIMITS.failedAttempts}`;
+
   if (!open) {
     return undefined;
   }
+
   if (same(hashPinSetupCode(code, open.code_salt, open.code_iterations), open.code_hash)) {
     return open.id;
   }
+
   await sql`UPDATE staff_invitations SET failed_attempts = failed_attempts + 1 WHERE id = ${open.id}`;
+
   return undefined;
 };
 
@@ -440,22 +486,32 @@ export const acceptInvitation = async (
     WHERE id = ${invitationId} AND facility_id = ${identity.facilityId} AND staff_id = ${staffId}
       AND accepted_on IS NULL AND revoked_on IS NULL AND expires_on > now() AND failed_attempts < ${INVITATION_LIMITS.failedAttempts}
     RETURNING destination`;
+
   if (!row) {
     return false;
   }
+
   const current = await findStaffEmail(tx, identity.facilityId, staffId);
+
   const [taken] = await tx`
     SELECT 1 FROM staff_contacts c JOIN staff s ON s.facility_id = c.facility_id AND s.id = c.staff_id
     WHERE c.facility_id = ${identity.facilityId} AND lower(c.email) = ${row.destination} AND c.staff_id <> ${staffId} AND s.active`;
-  const contact =
-    current && current.toLowerCase() !== row.destination
-      ? 'kept_existing'
-      : taken
-        ? 'in_use_elsewhere'
-        : 'verified';
+
+  // A person who already has a different email keeps it; an address someone else uses is not taken over.
+  const contactOutcome = () => {
+    if (current && current.toLowerCase() !== row.destination) {
+      return 'kept_existing';
+    }
+
+    return taken ? 'in_use_elsewhere' : 'verified';
+  };
+
+  const contact = contactOutcome();
+
   if (contact === 'verified') {
     await saveStaffEmail(tx, identity.facilityId, staffId, row.destination);
   }
+
   await recordAuditEvent(tx, {
     facilityId: identity.facilityId,
     deviceId: identity.deviceId,
@@ -471,6 +527,7 @@ export const acceptInvitation = async (
       contact,
     },
   });
+
   return true;
 };
 
@@ -493,13 +550,17 @@ export const contactActivation = async (
   staffId: string,
 ): Promise<ContactActivation> => {
   const email = await findStaffEmail(sql, facilityId, staffId);
+
   const [latest] = await sql<InvitationRow[]>`
     SELECT ${sql(VIEW_COLUMNS)} FROM staff_invitations WHERE facility_id = ${facilityId} AND staff_id = ${staffId} ORDER BY created_on DESC LIMIT 1`;
+
   const [pins] = await sql<{ devices: number; last: Date | null }[]>`
     SELECT count(*)::int AS devices, max(enrolled_on) AS last FROM staff_device_pins WHERE facility_id = ${facilityId} AND staff_id = ${staffId}`;
+
   const nextSend = latest
     ? new Date(latest.created_on).getTime() + INVITATION_LIMITS.resendCooldownMs
     : 0;
+
   return {
     ...(email ? { email: { address: maskEmail(email), verified: true as const } } : {}),
     ...(latest ? { invitation: viewOf(latest, email) } : {}),
@@ -524,6 +585,7 @@ export const onboardingSummaries = async (
 ): Promise<StaffOnboardingSummary[]> => {
   const latest = await sql<(InvitationRow & { staff_id: string })[]>`
     SELECT DISTINCT ON (staff_id) staff_id, ${sql(VIEW_COLUMNS)} FROM staff_invitations WHERE facility_id = ${facilityId} ORDER BY staff_id, created_on DESC`;
+
   const activated = new Set(
     (
       await sql<
@@ -531,10 +593,13 @@ export const onboardingSummaries = async (
       >`SELECT DISTINCT staff_id FROM staff_device_pins WHERE facility_id = ${facilityId}`
     ).map((r) => r.staff_id),
   );
+
   const summaries = new Map<string, StaffOnboardingSummary>();
+
   for (const staffId of activated) {
     summaries.set(staffId, { staffId, activated: true });
   }
+
   for (const row of latest) {
     summaries.set(row.staff_id, {
       staffId: row.staff_id,
@@ -546,6 +611,7 @@ export const onboardingSummaries = async (
       },
     });
   }
+
   return [...summaries.values()];
 };
 
@@ -597,6 +663,7 @@ const findByLink = async (
     JOIN facilities f ON f.id = i.facility_id
     WHERE i.link_hash = ${linkHash(token)}
     ${lock ? tx`FOR UPDATE OF i` : tx``}`;
+
   return row;
 };
 
@@ -610,9 +677,11 @@ export const openInvitationLink = async (
   token: string,
 ): Promise<InvitationLinkView | undefined> => {
   const row = await findByLink(sql, token, false);
+
   if (!row) {
     return undefined;
   }
+
   return {
     staffId: row.staff_id,
     staffName: row.full_name,
@@ -621,7 +690,7 @@ export const openInvitationLink = async (
     facilityName: row.facility_name,
     expiresOn: iso(row.expires_on),
     status: row.staff_active ? statusOf(row) : 'revoked',
-    newDevice: !row.allows_new_device ? 'not_allowed' : row.device_enrolled_on ? 'used' : 'allowed',
+    newDevice: newDeviceState(row),
   };
 };
 
@@ -645,34 +714,41 @@ export const enrolDeviceFromInvitation = async (
   try {
     return await sql.begin(async (tx): Promise<LinkDeviceOutcome> => {
       const row = await findByLink(tx, request.token, true);
+
       if (!usable(row)) {
         return { ok: false, error: 'invalid_invitation' };
       }
+
       if (!row.allows_new_device || row.device_enrolled_on) {
         return { ok: false, error: 'device_not_allowed' };
       }
+
       // The allowance is the sender's authority, so it lapses if they lose it.
       if (
         'denial' in (await authorizeStaff(tx, row.facility_id, row.created_by, 'device:enroll'))
       ) {
         return { ok: false, error: 'device_not_allowed' };
       }
+
       const { code } = await issueEnrollmentCode(
         tx,
         row.facility_id,
         row.created_by,
         row.created_from,
       );
+
       const enrolled = await claimCodeAndEnroll(
         tx,
         { code, deviceId: request.deviceId, deviceLabel: request.deviceLabel },
         syncEndpoint,
       );
+
       if (!enrolled.ok) {
         throw new Error(
           `An enrollment code issued for invitation ${row.id} could not be claimed: ${enrolled.error}`,
         );
       }
+
       await tx`UPDATE staff_invitations SET device_enrolled_on = now(), device_enrolled_id = ${request.deviceId} WHERE id = ${row.id}`;
       await recordAuditEvent(tx, {
         facilityId: row.facility_id,
@@ -687,12 +763,14 @@ export const enrolDeviceFromInvitation = async (
           staffId: row.staff_id,
         },
       });
+
       return { ok: true, credential: enrolled.credential };
     });
   } catch (cause) {
     if (isPostgresError(cause, UNIQUE_VIOLATION)) {
       return { ok: false, error: 'device_already_enrolled' };
     }
+
     throw cause;
   }
 };
@@ -715,17 +793,21 @@ export const invitationLinkCode = async (
 ): Promise<LinkCodeOutcome> =>
   sql.begin(async (tx): Promise<LinkCodeOutcome> => {
     const row = await findByLink(tx, token, true);
+
     if (!usable(row)) {
       return { ok: false, error: 'invalid_invitation' };
     }
+
     if (row.facility_id !== identity.facilityId) {
       return { ok: false, error: 'other_facility' };
     }
+
     const code = newPinSetupCode();
     const salt = randomBytes(16).toString('base64');
     await tx`
       UPDATE staff_invitations SET code_hash = ${hashPinSetupCode(code, salt, PIN_SETUP_CODE_ITERATIONS)}, code_salt = ${salt}, code_iterations = ${PIN_SETUP_CODE_ITERATIONS}
       WHERE id = ${row.id}`;
+
     await recordAuditEvent(tx, {
       facilityId: row.facility_id,
       deviceId: identity.deviceId,
@@ -735,5 +817,6 @@ export const invitationLinkCode = async (
       entityId: row.staff_id,
       metadata: { context: 'staff_invitation_link_opened', invitationId: row.id },
     });
+
     return { ok: true, staffId: row.staff_id, code };
   });

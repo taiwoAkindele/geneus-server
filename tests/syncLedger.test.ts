@@ -35,12 +35,15 @@ describe('sync ledger', () => {
   const applyOnce = (clientId: number, sequence: string) =>
     db.sql.begin(async (tx) => {
       const identity = { deviceId: facility.device.deviceId, clientId, transactionId: 1 };
+
       if (
         !(await claimMutation(tx, identity, 'patient', `TEST-LEDGER-${sequence}-K2`, 'applied'))
       ) {
         return 'duplicate';
       }
+
       await insertRecord(tx, 'patient', patient(sequence));
+
       return 'applied';
     });
 
@@ -79,6 +82,7 @@ describe('sync ledger', () => {
           'x',
           'applied',
         );
+
         throw new Error('the write failed');
       })
       .catch(() => undefined);
@@ -87,6 +91,7 @@ describe('sync ledger', () => {
       await wasApplied(db.sql, { deviceId: facility.device.deviceId, clientId: 2 }),
       false,
     );
+
     assert.equal(await applyOnce(2, '000002'), 'applied');
   });
 
@@ -126,6 +131,7 @@ describe('sync ledger', () => {
     assert.deepEqual(stored?.conflicts, [
       { column: 'phone', deviceValue: '0801', serverValue: '0802' },
     ]);
+
     assert.equal(stored?.resolvedOn, undefined);
     assert.equal(stored?.createdBy, 'system');
   });

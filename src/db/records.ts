@@ -127,6 +127,7 @@ const JSONB_COLUMNS: Partial<Record<DocType, readonly string[]>> = {
 
 export const snakeCase = (key: string): string =>
   key.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`);
+
 export const camelCase = (key: string): string =>
   key.replace(/_([a-z0-9])/g, (_, letter: string) => letter.toUpperCase());
 
@@ -139,13 +140,16 @@ type Row = Record<string, unknown>;
 export const toRow = (sql: Sql | Tx, type: DocType, record: Record<string, unknown>): Row => {
   const jsonb = JSONB_COLUMNS[type] ?? [];
   const row: Row = {};
+
   for (const [key, value] of Object.entries(record)) {
     if (key === 'type' || value === undefined) {
       continue;
     }
+
     const column = snakeCase(key);
     row[column] = jsonb.includes(column) ? sql.json(value as never) : value;
   }
+
   return row;
 };
 
@@ -156,24 +160,30 @@ export const toRow = (sql: Sql | Tx, type: DocType, record: Record<string, unkno
  */
 export const fromRow = <T extends AnyDocument>(type: DocType, row: Row): T => {
   const record: Row = { type };
+
   for (const [column, value] of Object.entries(row)) {
     if (type === 'authority_snapshot' && column === 'is_current') {
       continue;
     }
+
     if (value === null) {
       continue;
     }
+
     record[camelCase(column)] =
       ['quantity', 'unit_price_minor'].includes(column) && typeof value === 'string'
         ? Number(value)
         : value;
   }
+
   const parsed = parseDocument(record);
+
   if (!parsed.success) {
     throw new Error(
       `row ${String(row.id)} in ${TABLE_FOR[type]} does not match the contract: ${parsed.error.message}`,
     );
   }
+
   return parsed.data as T;
 };
 
@@ -188,9 +198,11 @@ export const insertRecord = async (
   record: Record<string, unknown>,
 ): Promise<void> => {
   const parsed = parseDocument({ ...record, type });
+
   if (!parsed.success) {
     throw new Error(`refusing to insert ${type} ${String(record.id)}: ${parsed.error.message}`);
   }
+
   await sql`INSERT INTO ${sql(TABLE_FOR[type])} ${sql(toRow(sql, type, parsed.data))}`;
 };
 
@@ -200,5 +212,6 @@ export const findRecord = async <T extends AnyDocument>(
   id: string,
 ): Promise<T | undefined> => {
   const [row] = await sql<Row[]>`SELECT * FROM ${sql(TABLE_FOR[type])} WHERE id = ${id}`;
+
   return row ? fromRow<T>(type, row) : undefined;
 };

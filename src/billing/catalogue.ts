@@ -17,25 +17,31 @@ export class BillingCompatibilityError extends Error {
   statusCode = 409;
   code = 'upgrade_required';
 }
+
 export const catalogueEnabled = async (sql: Sql | Tx, facilityId: string) =>
   Boolean(
     (await sql`SELECT billing_catalogue_version FROM facilities WHERE id=${facilityId}`)[0]
       ?.billing_catalogue_version,
   );
+
 export const catalogueReadiness = async (sql: Sql | Tx, facilityId: string, now = Date.now()) => {
   const devices =
     await sql`SELECT d.id,d.label,v.billing_catalogue_version,v.pending_mutation_count,v.recorded_on,v.legacy_billing_token_expires_on
     FROM devices d LEFT JOIN workforce_client_versions v ON v.device_id=d.id WHERE d.facility_id=${facilityId} AND d.status='active' ORDER BY d.id`;
+
   const [migration] = await sql`SELECT applied_on FROM schema_migrations WHERE version=41`;
+
   // Revocation prevents new tokens; already issued JWTs still live until expiry.
   const [tokens] =
     await sql`SELECT MAX(legacy_billing_token_expires_on) AS expires_on FROM workforce_client_versions WHERE facility_id=${facilityId}`;
+
   const legacyUntil = new Date(
     Math.max(
       new Date(migration?.applied_on ?? now).getTime() + 86400000,
       tokens.expires_on ? new Date(tokens.expires_on).getTime() : 0,
     ),
   ).toISOString();
+
   return {
     enabled: await catalogueEnabled(sql, facilityId),
     legacyTokensUntil: legacyUntil,
@@ -58,6 +64,7 @@ export const catalogueReadiness = async (sql: Sql | Tx, facilityId: string, now 
     })),
   };
 };
+
 /** Called under the existing facility lock; no per-item activation or automatic device retirement. */
 export const negotiateCatalogue = async (
   tx: Tx,
@@ -72,13 +79,18 @@ export const negotiateCatalogue = async (
         'Update this device before opening financial records. Its pending work is retained.',
       );
     }
+
     await tx`UPDATE workforce_client_versions SET legacy_billing_token_expires_on=GREATEST(legacy_billing_token_expires_on,${new Date(now + tokenTtlSeconds * 1000).toISOString()}::timestamptz) WHERE device_id=${identity.deviceId}`;
+
     return false;
   }
+
   if (await catalogueEnabled(tx, identity.facilityId)) {
     return true;
   }
+
   const readiness = await catalogueReadiness(tx, identity.facilityId, now);
+
   if (
     readiness.devices.length &&
     readiness.devices.every((d) => !d.blockers.length) &&
@@ -91,17 +103,22 @@ export const negotiateCatalogue = async (
       action: 'update',
       metadata: { context: 'billing_catalogue_compatible_readers' },
     });
+
     return true;
   }
+
   return false;
 };
+
 export const assertCatalogueUpload = async (tx: Tx, facilityId: string, request: UploadRequest) => {
   const enabled = await catalogueEnabled(tx, facilityId);
+
   if (enabled && (request.billingCatalogueVersion !== 1 || (request.schemaVersion ?? 0) < 6)) {
     throw new BillingCompatibilityError(
       'Update this device before uploading. Pending records have not been acknowledged.',
     );
   }
+
   if (
     request.mutations.some(usesBillingCatalogue) &&
     (!enabled || request.billingCatalogueVersion !== 1 || (request.schemaVersion ?? 0) < 6)
@@ -111,11 +128,14 @@ export const assertCatalogueUpload = async (tx: Tx, facilityId: string, request:
     );
   }
 };
+
 export const stockPriceIssue = async (tx: Tx, record: StockItem, current?: StockItem) => {
   if (!record.feeItemId || record.feeItemId === current?.feeItemId) {
     return undefined;
   }
+
   const fee = await findRecord<FeeItem>(tx, 'fee_item', record.feeItemId);
+
   return !fee || fee.facilityId !== record.facilityId || !fee.active || fee.category !== 'pharmacy'
     ? 'New stock links must select an active central Pharmacy item in this facility'
     : undefined;
@@ -126,10 +146,12 @@ export const chargePriceIssues = async (tx: Tx, charge: Charge): Promise<string[
   if (charge.billId) {
     const [other] =
       await tx`SELECT patient_id,currency FROM charges WHERE facility_id=${charge.facilityId} AND bill_id=${charge.billId} LIMIT 1`;
+
     if (other && (other.patient_id !== charge.patientId || other.currency !== charge.currency)) {
       return ['A bill reference belongs to one patient and currency in this hospital'];
     }
   }
+
   if (
     charge.servicePointId &&
     !(
@@ -138,6 +160,7 @@ export const chargePriceIssues = async (tx: Tx, charge: Charge): Promise<string[
   ) {
     return ['Choose a recorded service point in this facility'];
   }
+
   if (!charge.feePriceVersion) {
     return !isLegacyFeeCategory(charge.category) ||
       (charge.schemaVersion >= 6 &&
@@ -147,8 +170,10 @@ export const chargePriceIssues = async (tx: Tx, charge: Charge): Promise<string[
       ? ['New catalogue charges require immutable price and quantity evidence']
       : [];
   }
+
   const [version] =
     await tx`SELECT * FROM fee_price_versions WHERE facility_id=${charge.facilityId} AND fee_item_id=${charge.feeItemId} AND id=${charge.feePriceVersion}`;
+
   if (
     !version ||
     Number(version.amount_minor) !== charge.unitPriceMinor ||
@@ -158,38 +183,50 @@ export const chargePriceIssues = async (tx: Tx, charge: Charge): Promise<string[
   ) {
     return ['The charge must retain its selected facility price version'];
   }
+
   const patient = await findRecord<Patient>(tx, 'patient', charge.patientId);
+
   if (!patient) {
     return ['The charge patient is unavailable'];
   }
+
   const [visit] = charge.encounterId
     ? await tx`SELECT visit_type FROM encounters WHERE facility_id=${charge.facilityId} AND id=${charge.encounterId}`
     : [];
+
   const [booking] = charge.appointmentId
     ? await tx`SELECT visit_type FROM appointments WHERE facility_id=${charge.facilityId} AND id=${charge.appointmentId}`
     : [];
+
   const exemption = findExemption(version.exemptions as FeeItem['exemptions'], {
     ageYears: patientAge(patient, charge.createdOn.slice(0, 10)),
     sex: patient.sex,
     visitType: visit?.visit_type ?? booking?.visit_type,
   });
+
   return charge.amountMinor !== (exemption ? 0 : charge.listPriceMinor) ||
     charge.exemptionReason !== exemption?.reason
     ? ['The charge must preserve its selected exemption policy and patient facts']
     : [];
 };
+
 export const newCategoryTerms = (value: unknown): boolean => {
   if (!value || typeof value !== 'object') {
     return false;
   }
+
   if (Array.isArray(value)) {
     return value.some(newCategoryTerms);
   }
-  return Object.entries(value).some(([key, v]) =>
-    key === 'categories' && v && typeof v === 'object'
-      ? Array.isArray(v)
-        ? v.some((c) => !isLegacyFeeCategory(c))
-        : Object.keys(v).some((c) => !isLegacyFeeCategory(c))
-      : newCategoryTerms(v),
-  );
+
+  return Object.entries(value).some(([key, v]) => {
+    if (key !== 'categories' || !v || typeof v !== 'object') {
+      return newCategoryTerms(v);
+    }
+
+    // Categories appear as a list or as the keys of a per-category map.
+    const categories = Array.isArray(v) ? v : Object.keys(v);
+
+    return categories.some((c) => !isLegacyFeeCategory(c));
+  });
 };

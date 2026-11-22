@@ -21,6 +21,7 @@ const WASH = rgb(0.93, 0.96, 0.94);
  * becomes "?", so a name can never stop a PDF being made.
  */
 const KEEP = new Set('€‚ƒ„…†‡ˆ‰Š‹ŒŽ‘’“”•–—˜™š›œžŸ');
+
 export const pdfSafe = (text: string) =>
   text
     .normalize('NFD')
@@ -49,12 +50,15 @@ class Layout {
     doc.setTitle(pdfSafe(title));
     doc.setProducer('Geneus');
     doc.setCreator('Geneus');
+
     const layout = new Layout(
       doc,
       await doc.embedFont(StandardFonts.Helvetica),
       await doc.embedFont(StandardFonts.HelveticaBold),
     );
+
     layout.newPage();
+
     return layout;
   }
   newPage() {
@@ -72,8 +76,10 @@ class Layout {
   ensure(height: number) {
     if (this.y - height < MARGIN + FOOTER) {
       this.newPage();
+
       return true;
     }
+
     return false;
   }
   text(
@@ -105,21 +111,28 @@ class Layout {
     const fits = (s: string) => font.widthOfTextAtSize(s, size) <= width;
     const lines: string[] = [];
     let line = '';
+
     for (const word of pdfSafe(value).split(' ')) {
       let rest = word;
+
       while (!fits(rest)) {
         let cut = rest.length - 1;
+
         while (cut > 1 && !fits(rest.slice(0, cut))) {
           cut--;
         }
+
         if (line) {
           lines.push(line);
           line = '';
         }
+
         lines.push(rest.slice(0, cut));
         rest = rest.slice(cut);
       }
+
       const next = line ? `${line} ${rest}` : rest;
+
       if (fits(next)) {
         line = next;
       } else {
@@ -127,9 +140,11 @@ class Layout {
         line = rest;
       }
     }
+
     if (line || !lines.length) {
       lines.push(line);
     }
+
     return lines;
   }
   rule(color = LINE) {
@@ -145,6 +160,7 @@ class Layout {
     const top = this.y;
     this.text(hospital.name, MARGIN, { size: 16, bold: true, color: BRAND });
     let y = top - 16;
+
     for (const line of [hospital.address, hospital.phone, hospital.email].filter((v): v is string =>
       Boolean(v),
     )) {
@@ -153,6 +169,7 @@ class Layout {
         y -= 12;
       }
     }
+
     this.text(title, this.right, { size: 20, bold: true, align: 'right', y: top - 2 });
     this.y = Math.min(y, top - 30) - 10;
     this.rule(BRAND);
@@ -167,12 +184,15 @@ class Layout {
       this.text(line, MARGIN, { size: i ? 9 : 11, bold: i === 0, y, color: i ? SOFT : INK });
       y -= i ? 12 : 14;
     });
+
     let ry = top;
+
     for (const [label, value] of right) {
       this.text(label, this.right - 170, { size: 9, color: SOFT, y: ry });
       this.text(value, this.right, { size: 9, bold: true, align: 'right', y: ry });
       ry -= 14;
     }
+
     this.y = Math.min(y, ry) - 16;
   }
   tableHeader(columns: Column[]) {
@@ -183,7 +203,9 @@ class Layout {
       height: 20,
       color: WASH,
     });
+
     let x = MARGIN + 6;
+
     for (const c of columns) {
       this.text(c.label, c.align ? x + c.width - 12 : x, {
         size: 8,
@@ -192,16 +214,20 @@ class Layout {
         align: c.align,
         y: this.y,
       });
+
       x += c.width;
     }
+
     this.y -= 22;
   }
   /** A table row; wraps the first column and repeats the header on a new page. */
   tableRow(columns: Column[], cells: string[], options: { bold?: boolean; header?: boolean } = {}) {
     const lines = this.wrap(cells[0], columns[0].width - 12, 9, options.bold);
+
     if (this.ensure(lines.length * 12 + 8)) {
       this.tableHeader(columns);
     }
+
     let x = MARGIN + 6;
     columns.forEach((c, i) => {
       if (i === 0) {
@@ -215,8 +241,10 @@ class Layout {
           align: 'right',
         });
       }
+
       x += c.width;
     });
+
     this.y -= lines.length * 12 + 6;
     this.rule();
     this.y -= 12;
@@ -230,6 +258,7 @@ class Layout {
       align: 'right',
       color: strong ? INK : SOFT,
     });
+
     this.text(value, this.right, { size: strong ? 11 : 9, bold: strong, align: 'right' });
     this.y -= strong ? 18 : 14;
   }
@@ -256,6 +285,7 @@ class Layout {
         font: this.regular,
         color: SOFT,
       });
+
       page.drawText(label, {
         x: this.right - this.regular.widthOfTextAtSize(label, 8),
         y: MARGIN - 8,
@@ -264,12 +294,14 @@ class Layout {
         color: SOFT,
       });
     });
+
     return this.doc.save();
   }
 }
 
 const generated = (timeZone: string, now: Date) =>
   `Generated from the hospital's records on ${when(now.toISOString(), timeZone, true)}`;
+
 const ITEM_COLUMNS = (width: number): Column[] => [
   { label: 'Description', width: width - 255 },
   { label: 'Qty', width: 45, align: 'right' },
@@ -301,10 +333,13 @@ export const invoicePdf = async (
       ['Status', bill.status],
     ],
   );
+
   const columns = ITEM_COLUMNS(l.width);
   l.tableHeader(columns);
+
   for (const category of [...new Set(bill.lines.map((line) => line.category))]) {
     l.tableRow(columns, [category, '', '', ''], { bold: true });
+
     for (const line of bill.lines.filter((x) => x.category === category)) {
       l.tableRow(columns, [
         line.exempt ? `${line.description} (exempt)` : line.description,
@@ -314,45 +349,59 @@ export const invoicePdf = async (
       ]);
     }
   }
+
   const t = bill.totals;
   l.y -= 4;
   l.total('Subtotal', m(t.subtotalMinor));
+
   if (t.exemptMinor) {
     l.total('Exemptions', `- ${m(t.exemptMinor)}`);
   }
+
   if (t.reducedMinor) {
     l.total('Discounts and waivers', `- ${m(t.reducedMinor)}`);
   }
+
   if (t.insuranceMinor) {
     l.total('Insurance pays', `- ${m(t.insuranceMinor)}`);
   }
+
   if (t.undecidedMinor) {
     l.total('Awaiting insurance decision', `- ${m(t.undecidedMinor)}`);
   }
+
   l.total('Total', m(t.totalMinor), true);
   l.total('Amount paid', m(t.paidMinor));
   l.total('Balance due', m(t.dueMinor), true);
+
   if (t.creditMinor) {
     l.total('Credit held for you', m(t.creditMinor));
   }
+
   if (t.undecidedMinor) {
     l.paragraph(
       "Part of this bill is waiting for your insurer's decision. It is not included in the balance due; the hospital will tell you if you need to pay any of it.",
     );
   }
+
   // How to pay: the bill's link and a QR code for scanning it from paper.
   l.ensure(130);
   l.heading('View and pay this bill online');
+
   const qr = await l.doc.embedPng(
     await QRCode.toBuffer(link, { type: 'png', margin: 1, width: 300, errorCorrectionLevel: 'M' }),
   );
+
   const top = l.y + 8;
   l.page.drawImage(qr, { x: l.right - 96, y: top - 96, width: 96, height: 96 });
+
   for (const line of l.wrap(link, l.width - 120, 9)) {
     l.text(line, MARGIN, { size: 9, color: BRAND });
     l.y -= 13;
   }
+
   l.y -= 4;
+
   for (const line of l.wrap(
     'Scan the code or open the link to see this bill and download it. Please quote the invoice number when you contact the hospital about it.',
     l.width - 120,
@@ -361,7 +410,9 @@ export const invoicePdf = async (
     l.text(line, MARGIN, { size: 9, color: SOFT });
     l.y -= 13;
   }
+
   l.y = Math.min(l.y, top - 104);
+
   return l.finish(generated(tz, now));
 };
 
@@ -370,6 +421,7 @@ export const receiptPdf = async (receipt: ReceiptView, now = new Date()): Promis
   const m = (minor: number) => money(minor, receipt.currency);
   const tz = receipt.hospital.timeZone;
   l.letterhead(receipt.hospital, 'PAYMENT RECEIPT');
+
   if (receipt.reversal) {
     l.page.drawRectangle({
       x: MARGIN,
@@ -378,9 +430,11 @@ export const receiptPdf = async (receipt: ReceiptView, now = new Date()): Promis
       height: 24,
       color: rgb(0.99, 0.93, 0.9),
     });
+
     l.text('REVERSAL · not a new payment', MARGIN + 8, { bold: true, color: rgb(0.6, 0.15, 0.1) });
     l.y -= 30;
   }
+
   l.facts(
     {
       heading: 'Received from',
@@ -393,20 +447,27 @@ export const receiptPdf = async (receipt: ReceiptView, now = new Date()): Promis
       ...(receipt.reference ? [['Reference', receipt.reference] as [string, string]] : []),
     ],
   );
+
   const columns: Column[] = [
     { label: 'Bill · item', width: l.width - 105 },
     { label: 'Amount applied', width: 105, align: 'right' },
   ];
+
   l.tableHeader(columns);
+
   for (const a of receipt.applied) {
     l.tableRow(columns, [`${a.bill} · ${a.item}`, m(a.amountMinor)]);
   }
+
   l.y -= 4;
   l.total(receipt.reversal ? 'Amount reversed' : 'Amount received', m(receipt.amountMinor), true);
+
   for (const b of receipt.stillDue) {
     l.total(`Still due on ${b.bill}`, m(b.dueMinor));
   }
+
   l.y -= 6;
   l.paragraph(`Received by: ${receipt.receivedBy}`);
+
   return l.finish(generated(tz, now));
 };

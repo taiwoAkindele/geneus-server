@@ -38,6 +38,7 @@ export type ConfirmRequest = {
   /** Whether the person holds coverage:approve_liability_change, decided by the server from its own staff row. */
   mayApproveLiability?: boolean;
 };
+
 export type ConfirmOutcome =
   | {
       chargeId: string;
@@ -62,12 +63,15 @@ export const confirmAllocations = async (
 ): Promise<ConfirmOutcome[]> => {
   const charges = await chargesById(tx, request.facilityId, request.chargeIds, true);
   const found = new Set(charges.map((c) => c.id));
+
   const outcomes: ConfirmOutcome[] = request.chargeIds
     .filter((id) => !found.has(id))
     .map((chargeId) => ({ chargeId, outcome: 'skipped', reason: 'not_found' }));
+
   if (!charges.length) {
     return outcomes;
   }
+
   const [records, timeZone, positions, periods] = await Promise.all([
     loadCoverageRecords(
       tx,
@@ -78,51 +82,65 @@ export const confirmAllocations = async (
     chargePositions(tx, request.facilityId, charges),
     billingPeriods(tx, request.facilityId),
   ]);
+
   const dispenseIds = charges
     .map((c) => c.dispenseEntryId)
     .filter((id): id is string => Boolean(id));
+
   const entries = new Map(
     (dispenseIds.length
       ? await tx`SELECT * FROM encounter_entries WHERE facility_id = ${request.facilityId} AND id = ANY(${dispenseIds})`
       : []
     ).map((row) => {
       const e = fromRow<EncounterEntry>('encounter_entry', row);
+
       return [e.id, e] as const;
     }),
   );
+
   const now = new Date().toISOString();
 
   for (const charge of charges) {
     const skip = (reason: string) =>
       outcomes.push({ chargeId: charge.id, outcome: 'skipped', reason });
+
     const [returned] =
       await tx`SELECT id FROM service_charge_allocations WHERE facility_id=${request.facilityId} AND charge_id=${charge.id} AND credit_returned_units LIMIT 1`;
+
     if (returned) {
       skip('returned_quantity_requires_explicit_insurance_review');
       continue;
     }
+
     const current = currentAllocation(charge.id, records.allocations);
+
     if (current && request.basis !== 'exception') {
       skip('already_confirmed');
       continue;
     }
+
     // No retrospective cover: a charge raised outside every billing period stays as billed. Corrections are ordinary billing adjustments.
     if (!inBillingPeriod(charge.createdOn, periods)) {
       skip('outside_billing_period');
       continue;
     }
+
     const serviceDate = serviceDateOf(charge.createdOn, timeZone(charge.createdOn));
+
     const units = chargeUnits(
       charge,
       charge.dispenseEntryId ? entries.get(charge.dispenseEntryId) : undefined,
     );
+
     // A correction re-derives the estimate as if the old snapshot did not exist.
     // An exception that applies cover also sets aside the patient's earlier self-pay choice for this charge:
     // the choice stays on record, and any payment it led to becomes a credit to refund.
     const overrideChoice = request.basis === 'exception' && request.decision === 'apply_cover';
+
     const elections = overrideChoice
       ? records.elections.filter((e) => !(e.kind === 'self_pay' && e.chargeIds.includes(charge.id)))
       : records.elections;
+
     const estimate: CoverageEstimate = estimateCoverage({
       charge,
       serviceDate,
@@ -134,8 +152,10 @@ export const confirmAllocations = async (
         allocations: records.allocations.filter((a) => a.chargeId !== charge.id),
       },
     });
+
     const money = positions.get(charge.id)!.money;
     const paid = money.receivedMinor + money.waivedByPaymentMinor - money.refundedMinor;
+
     const base = {
       id: `coverage_allocation:${randomUUID()}`,
       type: 'coverage_allocation' as const,
@@ -162,44 +182,54 @@ export const confirmAllocations = async (
         base,
         current?.state === 'finalised',
       );
+
       if ('reason' in outcome) {
         skip(outcome.reason);
       } else {
         outcomes.push(outcome);
       }
+
       continue;
     }
+
     if (estimate.state !== 'estimated') {
       skip(
         estimate.state === 'undetermined'
           ? `undetermined:${estimate.reason}`
           : `nothing_to_confirm:${estimate.state}`,
       );
+
       continue;
     }
+
     if (request.basis !== 'exception' && !isRoutine(estimate, paid)) {
       skip('not_routine');
       continue;
     }
+
     const version = await findContractVersion(
       tx,
       request.facilityId,
       estimate.schedule.contractVersionId,
     );
+
     if (!version || version.status !== 'active') {
       skip('contract_unavailable');
       continue;
     }
+
     const computed = computeAllocation({
       terms: version.terms,
       planCode: estimate.cover.planCode,
       charge,
       units,
     });
+
     if (!computed.ok) {
       skip(`undetermined:${computed.reason}`);
       continue;
     }
+
     // The device estimated from the schedule; the confirmation uses the terms. They must agree exactly.
     if (
       computed.split.patientShareMinor !== estimate.patientShareMinor ||
@@ -208,6 +238,7 @@ export const confirmAllocations = async (
       skip('schedule_mismatch');
       continue;
     }
+
     const allocation = CoverageAllocation.parse({
       ...base,
       state: 'finalised',
@@ -215,6 +246,7 @@ export const confirmAllocations = async (
       arrangement: computed.split.arrangement,
       patientShareMinor: computed.split.patientShareMinor,
     });
+
     await insertRecord(tx, 'coverage_allocation', allocation);
     await insertDetails(tx, request, allocation.id, charge.listPriceMinor, computed.split, {
       calculationVersion: CALCULATION_VERSION,
@@ -252,6 +284,7 @@ export const confirmAllocations = async (
       // The exact terms the arithmetic used, so the snapshot recomputes without the contract.
       termsSlice: sliceTerms(version.terms, estimate.cover.planCode, charge),
     });
+
     outcomes.push({
       chargeId: charge.id,
       outcome: 'confirmed',
@@ -260,6 +293,7 @@ export const confirmAllocations = async (
       patientShareMinor: allocation.patientShareMinor,
     });
   }
+
   return outcomes;
 };
 
@@ -270,8 +304,10 @@ const sliceTerms = (
   charge: Pick<Charge, 'feeItemId' | 'category'>,
 ) => {
   const plan = terms.plans.find((p) => p.planCode === planCode)!;
+
   const item = <T>(record: Record<string, T>) =>
     charge.feeItemId in record ? { [charge.feeItemId]: record[charge.feeItemId] } : {};
+
   return {
     payerId: terms.payerId,
     effectiveFrom: terms.effectiveFrom,
@@ -339,6 +375,7 @@ const CONFIGURATION_GAPS = new Set([
   'quantity_unavailable',
   'self_pay_not_permitted',
 ]);
+
 const confirmSelfPay = async (
   tx: Tx,
   request: ConfirmRequest,
@@ -352,15 +389,20 @@ const confirmSelfPay = async (
   if (request.basis !== 'exception' || !request.reason) {
     return { reason: 'reason_required' };
   }
+
   const liability = request.liability;
+
   if (!liability) {
     return { reason: 'ground_required' };
   }
+
   const [onClaim] =
     await tx`SELECT 1 FROM insurance_claim_lines WHERE facility_id = ${request.facilityId} AND charge_id = ${charge.id} AND current LIMIT 1`;
+
   if (onClaim) {
     return { reason: 'on_current_claim' };
   }
+
   if (
     estimate.state === 'undetermined' &&
     (estimate.reason === 'not_billable_to_patient' ||
@@ -368,9 +410,11 @@ const confirmSelfPay = async (
   ) {
     return { reason: 'patient_liability_not_permitted' };
   }
+
   if (estimate.state === 'undetermined' && estimate.reason === 'choose_cover') {
     return { reason: 'choose_cover_first' };
   }
+
   if (
     estimate.state === 'undetermined' &&
     CONFIGURATION_GAPS.has(estimate.reason) &&
@@ -378,24 +422,33 @@ const confirmSelfPay = async (
   ) {
     return { reason: 'missing_configuration_is_not_a_ground' };
   }
+
   const cover = 'cover' in estimate ? estimate.cover : undefined;
+
   if (!cover) {
     return { reason: `nothing_to_confirm:${estimate.state}` };
   }
+
   if (!serviceDate) {
     return { reason: 'timezone_required' };
   }
+
   // The rule is the contract version in force on the date of service, not today's.
   const schedule = scheduleOn(cover.payerId, cover.planCode, serviceDate, records.schedules);
+
   if (schedule?.selfPayElection === 'not_allowed') {
     return { reason: 'self_pay_prohibited_by_payer' };
   }
+
   let check: CoverageRecords['checks'][number] | undefined;
+
   if (liability.ground === 'patient_election' && schedule?.selfPayElection !== 'allowed') {
     return { reason: 'contract_does_not_allow_self_pay' };
   }
+
   if (liability.ground === 'not_eligible') {
     check = records.checks.find((c) => c.id === liability.coverCheckId);
+
     if (
       !check ||
       check.coverId !== cover.id ||
@@ -405,19 +458,23 @@ const confirmSelfPay = async (
       return { reason: 'not_eligible_check_required' };
     }
   }
+
   const payerExpectedToPay = estimate.state === 'estimated' || replacesFinalised;
+
   if (
     (payerExpectedToPay || liability.ground === 'contract_clause') &&
     !request.mayApproveLiability
   ) {
     return { reason: 'liability_approval_required' };
   }
+
   const allocation = CoverageAllocation.parse({
     ...base,
     state: 'self_pay_confirmed',
     payerId: cover.payerId,
     patientShareMinor: charge.amountMinor,
   });
+
   await insertRecord(tx, 'coverage_allocation', allocation);
   await insertDetails(
     tx,
@@ -460,6 +517,7 @@ const confirmSelfPay = async (
         payerExpectedToPay || liability.ground === 'contract_clause' ? request.staffId : null,
     },
   );
+
   return {
     chargeId: charge.id,
     outcome: 'confirmed',

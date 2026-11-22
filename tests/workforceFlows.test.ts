@@ -11,27 +11,34 @@ import {
   type ScratchDatabase,
 } from './postgres.ts';
 import { put, setupWorkforce } from './workforceFixtures.ts';
+
 describe('PHC and hospital workforce flows', { timeout: 120000 }, () => {
   let db: ScratchDatabase;
   before(async () => {
     db = await scratchDatabase();
   });
+
   after(async () => {
     if (db) {
       await db.drop();
     }
   });
+
   it('keeps ownership with the outgoing worker until the named recipient accepts, despite competing offline claims', async () => {
     const f = await setupWorkforce(db.sql);
+
     try {
       const receiver = await addStaff(db.sql, f.facility, { role: 'nurse' });
+
       const assignment = {
         ...f.assignment,
         id: `assignment:${randomUUID()}:v1`,
         assignmentId: `assignment:${randomUUID()}`,
         staffId: receiver.id,
       };
+
       assert.equal((await f.send([put(assignment, { expectedPreviousId: null })])).applied, 1);
+
       const instruction = {
         ...f.env,
         type: 'handoff',
@@ -42,7 +49,9 @@ describe('PHC and hospital workforce flows', { timeout: 120000 }, () => {
         instruction: 'Synthetic service instruction',
         status: 'pending',
       };
+
       assert.equal((await f.send([put(instruction)])).applied, 1);
+
       const claim = (owner: string) => ({
         ...f.env,
         createdBy: owner,
@@ -55,6 +64,7 @@ describe('PHC and hospital workforce flows', { timeout: 120000 }, () => {
         action: 'claim',
         ownerStaffId: owner,
       });
+
       const a = claim(f.worker.id);
       const b = claim(receiver.id);
       const results = await Promise.all([f.send([put(a)]), f.send([put(b)])]);
@@ -62,9 +72,12 @@ describe('PHC and hospital workforce flows', { timeout: 120000 }, () => {
         results.reduce((n, r) => n + r.applied, 0),
         1,
       );
+
       const [head] =
         await db.sql`SELECT * FROM work_ownership_events WHERE source_id=${instruction.id}`;
+
       const next = head.owner_staff_id === f.worker.id ? receiver.id : f.worker.id;
+
       const offer = {
         ...claim(head.owner_staff_id as string),
         id: `ownership:${randomUUID()}`,
@@ -73,21 +86,26 @@ describe('PHC and hospital workforce flows', { timeout: 120000 }, () => {
         recipientStaffId: next,
         reason: 'Next clinical session',
       };
+
       assert.equal((await f.send([put(offer)])).applied, 1);
       assert.equal((await findRecord(db.sql, 'handoff', instruction.id))?.type, 'handoff');
+
       const bad = {
         ...claim(head.owner_staff_id as string),
         previousId: offer.id,
         action: 'accept_transfer',
         reason: 'Wrong recipient',
       };
+
       assert.ok((await f.send([put(bad)])).rejected.length);
+
       const accept = {
         ...claim(next),
         previousId: offer.id,
         action: 'accept_transfer',
         reason: 'Accepted responsibility',
       };
+
       assert.equal((await f.send([put(accept)])).applied, 1);
       const source = await findRecord(db.sql, 'handoff', instruction.id);
       assert.equal(source?.type === 'handoff' && source.status, 'pending');
@@ -95,8 +113,10 @@ describe('PHC and hospital workforce flows', { timeout: 120000 }, () => {
       await f.app.close();
     }
   });
+
   it('respects aggregate room capacity and preserves booked care when a session is cancelled', async () => {
     const f = await setupWorkforce(db.sql);
+
     try {
       const room: UploadMutation = {
         clientId: clientId(),
@@ -112,7 +132,9 @@ describe('PHC and hospital workforce flows', { timeout: 120000 }, () => {
           updatedOn: new Date().toISOString(),
         },
       };
+
       assert.equal((await f.send([room])).applied, 1);
+
       const shared = {
         ...f.session,
         id: `session:${randomUUID()}`,
@@ -120,7 +142,9 @@ describe('PHC and hospital workforce flows', { timeout: 120000 }, () => {
         previousId: f.session.id,
         participants: f.session.participants.map((p) => ({ ...p, commitment: 'shared' })),
       };
+
       assert.equal((await f.send([put(shared, { expectedPreviousId: f.session.id })])).applied, 1);
+
       const second = {
         ...shared,
         id: `session:${randomUUID()}`,
@@ -128,19 +152,24 @@ describe('PHC and hospital workforce flows', { timeout: 120000 }, () => {
         version: 1,
         previousId: undefined,
       };
+
       assert.equal((await f.send([put(second, { expectedPreviousId: null })])).applied, 1);
+
       const third = {
         ...second,
         id: `session:${randomUUID()}`,
         sessionId: `session:${randomUUID()}`,
       };
+
       assert.ok(
         (await f.send([put(third, { expectedPreviousId: null })])).rejected.some((r) =>
           r.reason.includes('capacity'),
         ),
       );
+
       const booking = f.booking();
       assert.equal((await f.send([put(booking)])).applied, 1);
+
       const cancel = {
         ...shared,
         id: `session:${randomUUID()}`,
@@ -149,20 +178,24 @@ describe('PHC and hospital workforce flows', { timeout: 120000 }, () => {
         status: 'cancelled',
         reason: 'Requires explicit rescheduling',
       };
+
       assert.ok((await f.send([put(cancel, { expectedPreviousId: shared.id })])).rejected.length);
       assert.ok(await findRecord(db.sql, 'appointment', booking.id));
     } finally {
       await f.app.close();
     }
   });
+
   it('reschedules atomically, replaces the exact acceptance proof and frees the old slot', async () => {
     const f = await setupWorkforce(db.sql);
+
     try {
       const booking = f.booking();
       assert.equal((await f.send([put(booking)])).applied, 1);
       const at = new Date().toISOString();
       const to = booking.allocation!.endsAt;
       const allocation = { ...booking.allocation!, endsAt: f.session.endsAt };
+
       const change: UploadMutation = {
         clientId: clientId(),
         op: 'patch',
@@ -194,10 +227,13 @@ describe('PHC and hospital workforce flows', { timeout: 120000 }, () => {
           activity: null,
         },
       };
+
       const result = await f.send([change]);
       assert.equal(result.applied, 1, JSON.stringify(result.rejected));
+
       const [proof] =
         await db.sql`SELECT revision,allocation_fingerprint FROM appointment_reservations WHERE appointment_id=${booking.id} ORDER BY revision DESC LIMIT 1`;
+
       assert.equal(proof.revision, 2);
       assert.ok(proof.allocation_fingerprint.includes(String(Date.parse(to))));
       assert.equal((await f.send([put(f.booking())])).applied, 1);
@@ -207,8 +243,10 @@ describe('PHC and hospital workforce flows', { timeout: 120000 }, () => {
       await f.app.close();
     }
   });
+
   it('continues distinct overnight sessions and validates all canonical duty roles and assignable grants in PostgreSQL', async () => {
     const f = await setupWorkforce(db.sql);
+
     try {
       for (const role of Role.options) {
         const id = `staff:${randomUUID()}`;
@@ -227,13 +265,17 @@ describe('PHC and hospital workforce flows', { timeout: 120000 }, () => {
           }),
         );
       }
+
       const start = new Date(f.now);
       start.setUTCHours(22, 0, 0, 0);
+
       if (start.getTime() <= f.now + 2 * 3600000) {
         start.setUTCDate(start.getUTCDate() + 1);
       }
+
       const startsAt = start.toISOString();
       const endsAt = new Date(start.getTime() + 8 * 3600000).toISOString();
+
       const overnight = {
         ...f.session,
         id: `session:${randomUUID()}`,
@@ -241,7 +283,9 @@ describe('PHC and hospital workforce flows', { timeout: 120000 }, () => {
         startsAt,
         endsAt,
       };
+
       assert.equal((await f.send([put(overnight, { expectedPreviousId: null })])).applied, 1);
+
       const open = {
         ...f.env,
         type: 'session_event',
@@ -251,7 +295,9 @@ describe('PHC and hospital workforce flows', { timeout: 120000 }, () => {
         action: 'open',
         observedOn: new Date().toISOString(),
       };
+
       assert.equal((await f.send([put(open)])).applied, 1);
+
       const pause = {
         ...open,
         id: `intake:${randomUUID()}`,
@@ -259,11 +305,13 @@ describe('PHC and hospital workforce flows', { timeout: 120000 }, () => {
         action: 'pause',
         reason: 'Temporary resource pause',
       };
+
       assert.equal((await f.send([put(pause)])).applied, 1);
       assert.ok(
         (await f.send([put({ ...pause, id: `intake:${randomUUID()}`, action: 'close' })])).rejected
           .length,
       );
+
       assert.equal((await findRecord(db.sql, 'staff', f.worker.id))?.type, 'staff');
     } finally {
       await f.app.close();

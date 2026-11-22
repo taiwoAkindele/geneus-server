@@ -12,6 +12,7 @@ const esc = (value: string) =>
     /[&<>"']/g,
     (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch]!,
   );
+
 /** Keeps an SMS to one part where it can: GSM-7 has no curly quotes or ₦, and names are cut, never the link. */
 const smsSafe = (value: string, max: number) =>
   value
@@ -58,6 +59,7 @@ export const billMessage = (bill: BillView, url: string): DocumentMessage => {
   const paid = bill.totals.dueMinor === 0;
   const stop = `${url}/messages`;
   const name = smsSafe(bill.hospital.name, 40);
+
   return {
     sms: paid
       ? `${name}: bill ${bill.reference}, paid in full. View: ${url}`
@@ -98,6 +100,7 @@ export const receiptMessage = (receipt: ReceiptView, url: string): DocumentMessa
   const stop = `${url}/messages`;
   const name = smsSafe(receipt.hospital.name, 40);
   const what = receipt.reversal ? 'reversal' : 'receipt';
+
   return {
     sms: receipt.reversal
       ? `${name}: payment ${receipt.number} reversed, ${amount}. Details: ${url}`

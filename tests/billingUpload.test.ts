@@ -148,6 +148,7 @@ describe('billing on upload', () => {
       chargePut('charge:3', patientId('000001')),
       chargePut('charge:usd', patientId('000001'), { currency: 'USD' }),
     );
+
     assert.deepEqual(setup.rejected, []);
   });
 

@@ -32,17 +32,22 @@ describe('provisional patient upload and immutable identification', () => {
     facility = await registerScratchFacility(db.sql);
     doctor = await addStaff(db.sql, facility, { role: 'doctor' });
   });
+
   after(async () => {
     if (app) {
       await app.close();
     }
+
     if (db) {
       await db.drop();
     }
   });
+
   const id = (n: number) => `${facility.facility.id}-${String(n).padStart(6, '0')}-K2`;
+
   const create = async (n: number) => {
     const patientId = id(n);
+
     const result = await upload(app, facility.device.credential, {
       transactionId: null,
       mutations: [
@@ -63,9 +68,12 @@ describe('provisional patient upload and immutable identification', () => {
         },
       ],
     });
+
     assert.equal(result.rejected.length, 0, JSON.stringify(result.rejected));
+
     return (await findRecord<Patient>(db.sql, 'patient', patientId))!;
   };
+
   const patch = (patient: Patient, changes: Record<string, unknown>) =>
     upload(app, facility.device.credential, {
       transactionId: null,
@@ -85,8 +93,10 @@ describe('provisional patient upload and immutable identification', () => {
         },
       ],
     });
+
   const identification = (patient: Patient) => {
     const now = new Date().toISOString();
+
     return {
       identityStatus: 'identified',
       fullName: 'Synthetic Identified Patient',
@@ -111,9 +121,11 @@ describe('provisional patient upload and immutable identification', () => {
     assert.equal(first.ageYears, undefined);
     assert.equal(first.address, undefined);
   });
+
   it('retains clinical history and records an audited, attributed identification on the same patient ID', async () => {
     const patient = await create(103);
     const encounterId = 'encounter:synthetic-provisional';
+
     const care = await upload(app, facility.device.credential, {
       transactionId: null,
       mutations: [
@@ -131,6 +143,7 @@ describe('provisional patient upload and immutable identification', () => {
         },
       ],
     });
+
     assert.equal(care.rejected.length, 0);
     assert.equal((await patch(patient, identification(patient))).rejected.length, 0);
     const saved = (await findRecord<Patient>(db.sql, 'patient', patient.id))!;
@@ -139,10 +152,13 @@ describe('provisional patient upload and immutable identification', () => {
     assert.equal(saved.identifiedBy, doctor.id);
     const [encounter] = await db.sql`SELECT patient_id FROM encounters WHERE id=${encounterId}`;
     assert.equal(encounter.patient_id, patient.id);
+
     const audits =
       await db.sql`SELECT id FROM audit_events WHERE entity_type='patient' AND entity_id=${patient.id} AND actor_staff_id=${doctor.id} AND action='update'`;
+
     assert.equal(audits.length, 1);
   });
+
   it('refuses incomplete or falsely attributed identification without changing the record', async () => {
     const patient = await create(104);
     assert.equal(
@@ -150,16 +166,19 @@ describe('provisional patient upload and immutable identification', () => {
         .length,
       1,
     );
+
     assert.equal(
       (await patch(patient, { ...identification(patient), identifiedBy: 'staff:forged' })).rejected
         .length,
       1,
     );
+
     assert.equal(
       (await findRecord<Patient>(db.sql, 'patient', patient.id))?.identityStatus,
       'provisional',
     );
   });
+
   it('prevents direct SQL from rewriting the original circumstances or completed identity history', async () => {
     const patient = await create(105);
     assert.ok(
@@ -167,6 +186,7 @@ describe('provisional patient upload and immutable identification', () => {
         db.sql`UPDATE patients SET provisional_reason='Replace original history' WHERE id=${patient.id}`,
       ),
     );
+
     assert.equal((await patch(patient, identification(patient))).rejected.length, 0);
     assert.ok(
       await refusal(
@@ -174,6 +194,7 @@ describe('provisional patient upload and immutable identification', () => {
       ),
     );
   });
+
   it('does not partially identify a patient after another device changed a demographic field', async () => {
     const patient = await create(106);
     await db.sql`UPDATE patients SET sex='male' WHERE id=${patient.id}`;
@@ -183,6 +204,7 @@ describe('provisional patient upload and immutable identification', () => {
     assert.equal(saved.sex, 'male');
     assert.equal(saved.identifiedBy, undefined);
   });
+
   it('refuses a changed identity detail even when that field was untouched in the identification patch', async () => {
     const patient = await create(107);
     await db.sql`UPDATE patients SET phone='08000000002' WHERE id=${patient.id}`;

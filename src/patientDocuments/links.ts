@@ -35,11 +35,14 @@ export const createDocumentLink = async (
   now = new Date(),
 ) => {
   const token = randomBytes(32).toString('base64url');
+
   const expiresOn = new Date(
     now.getTime() + DOCUMENT_LINK_DAYS[link.kind] * 86_400_000,
   ).toISOString();
+
   await sql`INSERT INTO patient_document_links (id, facility_id, kind, subject, patient_id, token_hash, created_by, created_on, expires_on)
     VALUES (${`document_link:${randomUUID()}`}, ${link.facilityId}, ${link.kind}, ${link.subject}, ${link.patientId}, ${hashOf(token)}, ${link.createdBy}, ${now.toISOString()}, ${expiresOn})`;
+
   return { token, expiresOn };
 };
 
@@ -53,6 +56,7 @@ export const openDocumentLink = async (
   if (!TOKEN.test(token)) {
     return undefined;
   }
+
   const [row] = await sql<
     {
       id: string;
@@ -65,6 +69,7 @@ export const openDocumentLink = async (
   >`
     SELECT id, facility_id, kind, subject, patient_id, expires_on FROM patient_document_links
     WHERE token_hash = ${hashOf(token)} AND kind = ${kind} AND stopped_on IS NULL AND expires_on > ${now.toISOString()}`;
+
   return row
     ? {
         id: row.id,
@@ -88,5 +93,6 @@ export const stopDocumentLinks = async (
   const rows =
     await sql`UPDATE patient_document_links SET stopped_on = now(), stopped_by = ${stoppedBy}
     WHERE facility_id = ${facilityId} AND kind = ${kind} AND subject = ${subject} AND stopped_on IS NULL RETURNING id`;
+
   return rows.length;
 };

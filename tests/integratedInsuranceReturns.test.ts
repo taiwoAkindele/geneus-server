@@ -33,6 +33,7 @@ describe('verified insured returns reuse the original insurance rules without re
   let originalAllocation: CoverageAllocation;
   let originalCharge: Charge;
   let originalDetails: Record<string, unknown>;
+
   const versions = {
     integratedBillingVersion: 1,
     billingCatalogueVersion: 1,
@@ -42,12 +43,14 @@ describe('verified insured returns reuse the original insurance rules without re
     schemaVersion: 7,
     policyVersion: 17,
   } as const;
+
   const headers = () => ({
     ...asDevice(f.device.credential),
     'x-staff-session': proof,
     'x-billing-catalogue-version': '1',
     'x-integrated-billing-version': '1',
   });
+
   const input = (quantity = 1, returnEntryId = 'insured:return:one') => ({
     patientId,
     chargeId: 'charge:integrated-insured',
@@ -62,6 +65,7 @@ describe('verified insured returns reuse the original insurance rules without re
     returnEntryId,
     creditReturnedUnits: true,
   });
+
   const post = (requestId: string, quantity = 1, returnEntryId = 'insured:return:one') =>
     app.inject({
       method: 'POST',
@@ -69,10 +73,12 @@ describe('verified insured returns reuse the original insurance rules without re
       headers: headers(),
       payload: { requestId, input: input(quantity, returnEntryId) },
     });
+
   const snapshot = () =>
     db.sql.begin((tx) =>
       buildPatientStatement(tx as never, f.facility.id, patientId, 'NGN', new Date().toISOString()),
     );
+
   before(async () => {
     db = await scratchDatabase();
     f = await registerScratchFacility(db.sql);
@@ -95,6 +101,7 @@ describe('verified insured returns reuse the original insurance rules without re
       patientId,
       openedOn: base.createdOn,
     });
+
     await insertRecord(db.sql, 'encounter_entry', {
       ...base,
       id: 'insured:supply',
@@ -121,6 +128,7 @@ describe('verified insured returns reuse the original insurance rules without re
         },
       },
     });
+
     const a = ServiceChargeAllocation.parse({
       ...base,
       id: 'insured:association',
@@ -135,11 +143,13 @@ describe('verified insured returns reuse the original insurance rules without re
       unit: 'tablets',
       reason: 'Reviewed exact historic purchase and actual supply',
     });
+
     const accepted = await upload(app, f.device.credential, {
       ...versions,
       transactionId: null,
       mutations: [{ clientId: clientId(), op: 'put', table: a.type, id: a.id, data: a }],
     });
+
     assert.deepEqual(accepted.rejected, []);
     await insertRecord(db.sql, 'encounter_entry', {
       ...base,
@@ -169,20 +179,24 @@ describe('verified insured returns reuse the original insurance rules without re
         },
       },
     });
+
     originalAllocation = (await findRecord<CoverageAllocation>(
       db.sql,
       'coverage_allocation',
       'allocation:integrated-insured',
     ))!;
+
     originalCharge = (await findRecord<Charge>(db.sql, 'charge', 'charge:integrated-insured'))!;
     originalDetails = (
       await db.sql`SELECT * FROM coverage_allocation_details WHERE allocation_id=${originalAllocation.id}`
     )[0];
   });
+
   after(async () => {
     await app?.close();
     await db?.drop();
   });
+
   it('requires verified insurance authority; an offline upload cannot alter a confirmed split', async () => {
     const denied = await app.inject({
       method: 'POST',
@@ -190,7 +204,9 @@ describe('verified insured returns reuse the original insurance rules without re
       headers: { ...asDevice(f.device.credential), 'x-actor-staff-id': f.admin.id },
       payload: { requestId: randomUUID(), input: input() },
     });
+
     assert.equal(denied.statusCode, 403);
+
     const a = ServiceChargeAllocation.parse({
       ...envelopeFor(f),
       schemaVersion: 7,
@@ -198,15 +214,18 @@ describe('verified insured returns reuse the original insurance rules without re
       type: 'service_charge_allocation',
       ...input(),
     });
+
     const result = await upload(app, f.device.credential, {
       ...versions,
       transactionId: null,
       mutations: [{ clientId: clientId(), op: 'put', table: a.type, id: a.id, data: a }],
     });
+
     assert.equal(result.rejected.length, 1);
     assert.ok(await findRecord(db.sql, 'encounter_entry', 'insured:return:one'));
     assert.equal((await db.sql`SELECT id FROM coverage_allocations`).length, 1);
   });
+
   it('appends one recalculated decision for two remaining units, with distinct return and contractual adjustments', async () => {
     const requestId = randomUUID();
     const response = await post(requestId);
@@ -231,17 +250,20 @@ describe('verified insured returns reuse the original insurance rules without re
       await findRecord(db.sql, 'coverage_allocation', originalAllocation.id),
       originalAllocation,
     );
+
     assert.deepEqual(
       (
         await db.sql`SELECT * FROM coverage_allocation_details WHERE allocation_id=${originalAllocation.id}`
       )[0],
       originalDetails,
     );
+
     assert.equal(
       (await db.sql`SELECT id FROM billing_adjustments`).length,
       0,
       'the new share is not reduced twice',
     );
+
     const retry = await post(requestId, 2);
     assert.equal(retry.statusCode, 409);
     assert.equal(
@@ -250,6 +272,7 @@ describe('verified insured returns reuse the original insurance rules without re
       'same returned quantity cannot be credited twice',
     );
   });
+
   it('keeps ordinary reconfirmation from restoring quantities that were already credited and reuses claim revision', async () => {
     const result = await db.sql.begin((tx) =>
       confirmAllocations(tx as never, {
@@ -263,7 +286,9 @@ describe('verified insured returns reuse the original insurance rules without re
         reason: 'Do not restore returned quantity',
       }),
     );
+
     assert.equal(result[0].outcome, 'skipped');
+
     const revised = await app.inject({
       method: 'POST',
       url: '/insurance/claims/claim:integrated/revise',
@@ -273,16 +298,19 @@ describe('verified insured returns reuse the original insurance rules without re
         requestKey: randomUUID(),
       },
     });
+
     assert.equal(revised.statusCode, 200, revised.body);
     assert.equal(revised.json().lines, 1);
     const s = await snapshot();
     assert.equal(s.claims[0].settlement.expectedMinor, 720000);
     assert.equal(s.claims[0].settlement.paidMinor, 400000);
   });
+
   it('fully credits remaining returned units without inventing payer refunds or rewriting earlier remittances', async () => {
     const pharmacist = (
       await db.sql`SELECT id FROM staff WHERE facility_id=${f.facility.id} AND role='pharmacy_staff'`
     )[0];
+
     const base = { ...envelopeFor(f), schemaVersion: 7 };
     await insertRecord(
       db.sql,
@@ -316,16 +344,20 @@ describe('verified insured returns reuse the original insurance rules without re
         },
       }),
     );
+
     const officer = (
       await db.sql`SELECT id FROM staff WHERE facility_id=${f.facility.id} AND role='insurance_officer'`
     )[0];
+
     officerProof = (await staffSessionFor(app, f.device.credential, officer.id))!;
+
     const response = await app.inject({
       method: 'POST',
       url: '/billing/associations/insurance-return',
       headers: { ...headers(), 'x-staff-session': officerProof },
       payload: { requestId: randomUUID(), input: input(2, 'insured:return:rest') },
     });
+
     assert.equal(response.statusCode, 200, response.body);
     const s = await snapshot();
     assert.equal(s.totals.returnAdjustmentMinor, 1350000);

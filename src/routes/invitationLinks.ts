@@ -12,7 +12,9 @@ import {
 
 const refuse = (reply: FastifyReply, status: number, error: string, message: string) =>
   reply.code(status).send({ error, message } satisfies ApiErrorBody);
+
 const Token = z.string().trim().min(20).max(200);
+
 const INVALID =
   'This invitation link is not valid. It may have expired, been used or been replaced by a newer one. Ask your administrator to send a new invitation';
 
@@ -27,6 +29,7 @@ const INVALID =
 export const registerInvitationLinkRoutes = (app: FastifyInstance, sql: Sql, config: Config) => {
   app.post('/invitations/link/open', async (request, reply) => {
     const body = z.strictObject({ token: Token }).safeParse(request.body);
+
     if (!body.success) {
       return refuse(
         reply,
@@ -35,10 +38,13 @@ export const registerInvitationLinkRoutes = (app: FastifyInstance, sql: Sql, con
         'The invitation link is incomplete. Open it again from the email',
       );
     }
+
     const view = await openInvitationLink(sql, body.data.token);
+
     if (!view) {
       return refuse(reply, 404, 'invalid_invitation', INVALID);
     }
+
     return view;
   });
 
@@ -50,6 +56,7 @@ export const registerInvitationLinkRoutes = (app: FastifyInstance, sql: Sql, con
         deviceLabel: z.string().trim().min(1).max(80),
       })
       .safeParse(request.body);
+
     if (!body.success) {
       return refuse(
         reply,
@@ -58,11 +65,14 @@ export const registerInvitationLinkRoutes = (app: FastifyInstance, sql: Sql, con
         'Give this device a name, such as "Ward 2 phone"',
       );
     }
+
     const outcome = await enrolDeviceFromInvitation(sql, body.data, config.powerSyncPublicUrl);
+
     if (!outcome.ok) {
       if (outcome.error === 'invalid_invitation') {
         return refuse(reply, 404, outcome.error, INVALID);
       }
+
       if (outcome.error === 'device_not_allowed') {
         return refuse(
           reply,
@@ -71,6 +81,7 @@ export const registerInvitationLinkRoutes = (app: FastifyInstance, sql: Sql, con
           "This invitation cannot set up a new device. Open it on one of the facility's devices, or ask your administrator to add this device",
         );
       }
+
       return refuse(
         reply,
         409,
@@ -78,19 +89,24 @@ export const registerInvitationLinkRoutes = (app: FastifyInstance, sql: Sql, con
         'This device is already enrolled. Open the link again to continue',
       );
     }
+
     request.log.info(
       { facilityId: outcome.credential.facilityId, deviceId: outcome.credential.deviceId },
       'device enrolled from invitation',
     );
+
     return reply.code(201).send(outcome.credential);
   });
 
   app.post('/invitations/link/code', async (request, reply) => {
     const identity = await authenticateDevice(sql, request, reply);
+
     if (!identity) {
       return;
     }
+
     const body = z.strictObject({ token: Token }).safeParse(request.body);
+
     if (!body.success) {
       return refuse(
         reply,
@@ -99,7 +115,9 @@ export const registerInvitationLinkRoutes = (app: FastifyInstance, sql: Sql, con
         'The invitation link is incomplete. Open it again from the email',
       );
     }
+
     const outcome = await invitationLinkCode(sql, identity, body.data.token);
+
     if (!outcome.ok) {
       if (outcome.error === 'other_facility') {
         return refuse(
@@ -109,12 +127,15 @@ export const registerInvitationLinkRoutes = (app: FastifyInstance, sql: Sql, con
           "This invitation is for another facility. Open it on one of that facility's devices",
         );
       }
+
       return refuse(reply, 404, outcome.error, INVALID);
     }
+
     request.log.info(
       { facilityId: identity.facilityId, staffId: outcome.staffId },
       'invitation link opened on a facility device',
     );
+
     return { staffId: outcome.staffId, code: outcome.code };
   });
 };

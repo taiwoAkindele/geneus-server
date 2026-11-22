@@ -17,6 +17,14 @@ import { activationBlockers } from './contracts.ts';
 import { closeBillingPeriod, openBillingPeriod } from './billingPeriods.ts';
 import { recordFacilityTimeZone } from '../facility/timeZone.ts';
 
+const emailState = (officer: { verified?: unknown; pending?: unknown }) => {
+  if (officer.verified) {
+    return 'verified';
+  }
+
+  return officer.pending ? 'pending' : 'none';
+};
+
 type Row = Record<string, unknown>;
 
 export const activationRequestRow = (r: Row): InsuranceActivationRequest => ({
@@ -40,6 +48,7 @@ export const latestActivationRequest = async (
     Row[]
   >`SELECT r.*, s.full_name AS requested_by_name FROM insurance_activation_requests r LEFT JOIN staff s ON s.facility_id = r.facility_id AND s.id = r.requested_by
     WHERE r.facility_id = ${facilityId} ORDER BY r.requested_on DESC LIMIT 1`;
+
   return row ? activationRequestRow(row) : undefined;
 };
 
@@ -55,12 +64,15 @@ export const insuranceSetupStatus = async (
   now = Date.now(),
 ): Promise<InsuranceSetupStatus> => {
   const facility = await findRecord<Facility>(sql, 'facility', facilityId);
+
   if (!facility) {
     throw new Error('Facility not found');
   }
+
   const [row] = await sql<
     { insurance_state: InsuranceState }[]
   >`SELECT insurance_state FROM facilities WHERE id = ${facilityId}`;
+
   const payers = await sql<
     { id: string; name: string; contract: boolean; profile: boolean; document: boolean }[]
   >`
@@ -69,15 +81,18 @@ export const insuranceSetupStatus = async (
       EXISTS (SELECT 1 FROM payer_submission_profiles s WHERE s.facility_id = p.facility_id AND s.payer_id = p.id) AS profile,
       EXISTS (SELECT 1 FROM insurance_documents d WHERE d.facility_id = p.facility_id AND d.payer_id = p.id AND d.document_type = 'contract' AND d.verification = 'verified') AS document
     FROM payers p WHERE p.facility_id = ${facilityId} AND p.active ORDER BY p.name`;
+
   const [{ n: activeContracts }] = await sql<
     { n: number }[]
   >`SELECT COUNT(*)::int AS n FROM payer_contract_versions WHERE facility_id = ${facilityId} AND status = 'active' AND ended_on IS NULL`;
+
   // Everyone who can confirm insurance work: insurance officers, administrators, and anyone granted it.
   const staffRows = await sql<
     Row[]
   >`SELECT s.*, EXISTS (SELECT 1 FROM staff_contacts c WHERE c.facility_id = s.facility_id AND c.staff_id = s.id) AS verified_email,
       EXISTS (SELECT 1 FROM staff_email_requests r WHERE r.facility_id = s.facility_id AND r.staff_id = s.id AND r.status = 'pending') AS pending_email
     FROM staff s WHERE s.facility_id = ${facilityId} AND s.active ORDER BY s.full_name`;
+
   const officers = staffRows
     .filter((r) => staffPermissions(fromRow<Staff>('staff', r)).includes('coverage:confirm'))
     .map((r) => ({
@@ -86,17 +101,21 @@ export const insuranceSetupStatus = async (
       verified: r.verified_email as boolean,
       pending: r.pending_email as boolean,
     }));
+
   const people: SetupPerson[] = officers.map((o) => ({
     staffId: o.id,
     name: o.full_name,
-    email: o.verified ? 'verified' : o.pending ? 'pending' : 'none',
+    email: emailState(o),
   }));
+
   // A revoked device never syncs again; losing its unsent work is accepted by name when a contract is activated, not here.
   const devices = (await activationBlockers(sql, facilityId, now)).filter(
     (d) => !d.reasons.includes('revoked_with_unsent_changes'),
   );
+
   const missing = (key: 'contract' | 'profile' | 'document') =>
     payers.filter((p) => !p[key]).map((p) => ({ id: p.id, name: p.name }));
+
   const items: InsuranceSetupItem[] = [
     {
       kind: 'time_zone_recorded',
@@ -139,7 +158,9 @@ export const insuranceSetupStatus = async (
       payers: missing('document'),
     },
   ];
+
   const activation = await latestActivationRequest(sql, facilityId);
+
   return {
     state: row.insurance_state,
     ...(facility.timeZone ? { timeZone: facility.timeZone } : {}),
@@ -174,10 +195,12 @@ const recordSwitch = async (
     : await tx<
         { id: string }[]
       >`SELECT id FROM devices WHERE facility_id = ${facilityId} ORDER BY enrolled_on LIMIT 1`;
+
   if (actor.operator) {
     await tx`INSERT INTO insurance_operator_commands (id, facility_id, enabled, state, time_zone, operator, governance_reference)
       VALUES (${`insurance_switch:${randomUUID()}`}, ${facilityId}, ${to === 'active'}, ${to}, ${(await findRecord<Facility>(tx, 'facility', facilityId))?.timeZone ?? null}, ${actor.operator}, ${actor.governanceReference!})`;
   }
+
   if (device) {
     await recordAuditEvent(tx, {
       facilityId,
@@ -211,24 +234,30 @@ export const setInsuranceSetup = async (
     const [row] = await tx<
       { insurance_state: InsuranceState }[]
     >`SELECT insurance_state FROM facilities WHERE id = ${input.facilityId} FOR UPDATE`;
+
     if (row.insurance_state === 'active') {
       throw new SetupRefusal(
         'billing_active',
         'Insurance billing is active. Only Geneus can change it, so obligations are never left behind',
       );
     }
+
     if (row.insurance_state === input.to) {
       return row.insurance_state;
     }
+
     await tx`UPDATE facilities SET insurance_state = ${input.to} WHERE id = ${input.facilityId}`;
+
     // Leaving setup withdraws an open activation request: there is nothing left to activate.
     if (input.to === 'off') {
       await tx`UPDATE insurance_activation_requests SET status = 'withdrawn', decided_by = ${input.staffId}, decided_on = now() WHERE facility_id = ${input.facilityId} AND status = 'requested'`;
     }
+
     await recordSwitch(tx, input.facilityId, row.insurance_state, input.to, {
       staffId: input.staffId,
       deviceId: input.deviceId,
     });
+
     return input.to;
   });
 
@@ -252,15 +281,19 @@ export const applyInsuranceState = async (tx: Tx, input: InsuranceSwitch) => {
   if (!input.operator.trim() || !input.governanceReference.trim()) {
     throw new Error('A named operator and an approval reference are required');
   }
+
   if (input.timeZone) {
     FacilityTimeZone.parse(input.timeZone);
   }
+
   const [row] = await tx<
     { time_zone: string | null; insurance_state: InsuranceState }[]
   >`SELECT time_zone, insurance_state FROM facilities WHERE id = ${input.facilityId} FOR UPDATE`;
+
   if (!row) {
     throw new Error('Facility not found');
   }
+
   if (input.state !== 'off') {
     if (row.time_zone && input.timeZone && row.time_zone !== input.timeZone) {
       throw new SetupRefusal(
@@ -268,12 +301,14 @@ export const applyInsuranceState = async (tx: Tx, input: InsuranceSwitch) => {
         `The facility already records ${row.time_zone}. A hospital administrator corrects a time zone in Facility settings`,
       );
     }
+
     if (!row.time_zone && !input.timeZone) {
       throw new SetupRefusal(
         'time_zone_required',
         'The facility time zone is not recorded. A hospital administrator records it in Facility settings',
       );
     }
+
     if (!row.time_zone) {
       await recordFacilityTimeZone(tx, {
         facilityId: input.facilityId,
@@ -282,8 +317,10 @@ export const applyInsuranceState = async (tx: Tx, input: InsuranceSwitch) => {
       });
     }
   }
+
   if (input.state === 'active' && row.insurance_state !== 'active') {
     const missing = billingBlockers(await insuranceSetupStatus(tx, input.facilityId));
+
     if (missing.length) {
       throw new SetupRefusal(
         'not_ready',
@@ -292,16 +329,20 @@ export const applyInsuranceState = async (tx: Tx, input: InsuranceSwitch) => {
       );
     }
   }
+
   if (row.insurance_state !== input.state) {
     await tx`UPDATE facilities SET insurance_state = ${input.state} WHERE id = ${input.facilityId}`;
   }
+
   // Effective dates: billing applies to charges raised from activation until deactivation, never before or after.
   if (input.state === 'active' && row.insurance_state !== 'active') {
     await openBillingPeriod(tx, input.facilityId, input.operator.trim());
   }
+
   if (input.state !== 'active' && row.insurance_state === 'active') {
     await closeBillingPeriod(tx, input.facilityId, input.operator.trim());
   }
+
   await recordSwitch(tx, input.facilityId, row.insurance_state, input.state, {
     operator: input.operator.trim(),
     governanceReference: input.governanceReference.trim(),
@@ -314,6 +355,7 @@ export const setInsuranceState = async (
   input: InsuranceSwitch,
 ): Promise<InsuranceSetupStatus> => {
   await sql.begin((tx) => applyInsuranceState(tx, input));
+
   return insuranceSetupStatus(sql, input.facilityId);
 };
 
@@ -325,6 +367,7 @@ export const requestActivation = async (
   const [row] = await tx<
     { insurance_state: InsuranceState }[]
   >`SELECT insurance_state FROM facilities WHERE id = ${input.facilityId} FOR UPDATE`;
+
   if (row.insurance_state !== 'setup') {
     throw new SetupRefusal(
       'not_in_setup',
@@ -333,20 +376,25 @@ export const requestActivation = async (
         : 'Start insurance setup first',
     );
   }
+
   const [open] =
     await tx`SELECT 1 FROM insurance_activation_requests WHERE facility_id = ${input.facilityId} AND status = 'requested'`;
+
   if (open) {
     throw new SetupRefusal(
       'already_requested',
       'Activation was already requested. Geneus will review it',
     );
   }
+
   const missing = billingBlockers(await insuranceSetupStatus(tx, input.facilityId));
+
   if (missing.length) {
     throw new SetupRefusal('not_ready', 'Complete every item needed before billing first', {
       missing: missing.map((m) => m.kind),
     });
   }
+
   const id = `insurance_activation:${randomUUID()}`;
   await tx`INSERT INTO insurance_activation_requests (id, facility_id, note, requested_by, requested_from) VALUES (${id}, ${input.facilityId}, ${input.note ?? null}, ${input.staffId}, ${input.deviceId})`;
   await recordAuditEvent(tx, {
@@ -358,6 +406,7 @@ export const requestActivation = async (
     entityId: input.facilityId,
     metadata: { context: 'insurance_activation_requested', requestId: id },
   });
+
   return id;
 };
 
@@ -367,9 +416,11 @@ export const withdrawActivation = async (
 ) => {
   const updated =
     await tx`UPDATE insurance_activation_requests SET status = 'withdrawn', decided_by = ${input.staffId}, decided_on = now() WHERE facility_id = ${input.facilityId} AND status = 'requested' RETURNING id`;
+
   if (!updated.length) {
     throw new SetupRefusal('no_open_request', 'There is no open activation request');
   }
+
   await recordAuditEvent(tx, {
     facilityId: input.facilityId,
     deviceId: input.deviceId,
@@ -398,15 +449,18 @@ export const decideActivation = async (
   const [request] = await tx<
     Row[]
   >`SELECT * FROM insurance_activation_requests WHERE id = ${input.requestId} FOR UPDATE`;
+
   if (!request) {
     throw new SetupRefusal('not_found', 'No such request');
   }
+
   if (request.status !== 'requested') {
     throw new SetupRefusal(
       'already_decided',
       `This request was already ${request.status as string}`,
     );
   }
+
   if (input.decision === 'approve') {
     await applyInsuranceState(tx, {
       facilityId: request.facility_id as string,
@@ -415,10 +469,13 @@ export const decideActivation = async (
       governanceReference: `${input.requestId}: ${input.note}`,
     });
   }
+
   await tx`UPDATE insurance_activation_requests SET status = ${input.decision === 'approve' ? 'approved' : 'rejected'}, decided_by = ${`operator:${input.operator.id}`}, decided_on = now(), decision_note = ${input.note} WHERE id = ${input.requestId}`;
+
   const [device] = await tx<
     { id: string }[]
   >`SELECT id FROM devices WHERE facility_id = ${request.facility_id as string} AND id = ${request.requested_from as string}`;
+
   if (device) {
     await recordAuditEvent(tx, {
       facilityId: request.facility_id as string,
@@ -437,5 +494,6 @@ export const decideActivation = async (
       },
     });
   }
+
   return request.facility_id as string;
 };

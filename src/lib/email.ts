@@ -27,6 +27,7 @@ export type EmailMessage = {
 /** `Geneus <no-reply@example.org>` with a new display name: quotes and angle brackets are removed from the name. */
 export const withDisplayName = (from: string, name: string) => {
   const address = /<([^>]+)>/.exec(from)?.[1] ?? from.trim();
+
   return `"${name.replace(/["<>\\\r\n]/g, '').slice(0, 100)}" <${address}>`;
 };
 
@@ -58,6 +59,7 @@ export const createMailer = (
   log: Log,
 ): Mailer => {
   const { resendApiKey, emailFrom } = config;
+
   if (resendApiKey && emailFrom) {
     return {
       configured: true,
@@ -86,11 +88,14 @@ export const createMailer = (
         }).catch((cause: unknown) => {
           throw new EmailNotSent(cause instanceof Error ? cause.message : 'network error');
         });
+
         // Resend's error body names the problem (a bad key, an unverified domain); it carries no message content.
         if (!response.ok) {
           throw new EmailNotSent(`Resend answered ${response.status}: ${await response.text()}`);
         }
+
         const accepted = (await readJsonBody(response)) as { id?: unknown } | undefined;
+
         return typeof accepted?.id === 'string' ? { providerMessageId: accepted.id } : {};
       },
     };
@@ -102,6 +107,7 @@ export const createMailer = (
       if (config.isProduction) {
         throw new EmailNotSent('RESEND_API_KEY and EMAIL_FROM are not set');
       }
+
       log.warn(
         {
           to: message.to,
@@ -118,5 +124,6 @@ export const createMailer = (
 /** `amaka@example.org` → `a•••@example.org`: enough to recognise, not enough to harvest. */
 export const maskEmail = (email: string): string => {
   const [local = '', domain = ''] = email.split('@');
+
   return `${local.slice(0, 1)}•••@${domain}`;
 };

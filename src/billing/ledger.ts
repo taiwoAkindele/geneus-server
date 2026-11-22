@@ -16,8 +16,10 @@ export const availableOnCharge = async (
   chargeId: string,
 ): Promise<number> => {
   const [charge] = await chargesById(tx, facilityId, [chargeId]);
+
   if (!charge) {
     throw new Error('Charge not found');
   }
+
   return (await chargePositions(tx, facilityId, [charge])).get(chargeId)!.balanceMinor;
 };

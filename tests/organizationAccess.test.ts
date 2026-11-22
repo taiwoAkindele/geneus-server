@@ -20,6 +20,7 @@ test('facility creation requires active administrator membership and write acces
     permission: 'read_write',
     active: true,
   });
+
   assert.equal(isFacilityAdministrator(staff), true);
   assert.equal(isFacilityAdministrator({ ...staff, active: false }), false);
   assert.equal(isFacilityAdministrator({ ...staff, permission: 'read_only' }), false);

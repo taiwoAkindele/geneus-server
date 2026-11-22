@@ -15,10 +15,13 @@ export const ensureStandardCatalogue = async (tx: Sql | Tx, facilityId: string):
   const [device] = await tx<
     { id: string }[]
   >`SELECT id FROM devices WHERE facility_id = ${facilityId} ORDER BY enrolled_on, id LIMIT 1`;
+
   if (!device) {
     return;
   }
+
   const now = new Date().toISOString();
+
   const envelope = {
     facilityId,
     deviceId: device.id,
@@ -26,6 +29,7 @@ export const ensureStandardCatalogue = async (tx: Sql | Tx, facilityId: string):
     createdOn: now,
     schemaVersion: 5,
   };
+
   // Only what comes from the server's lists decides whether a row is out of date.
   const content = (r: StandardTest | StandardTemplate) =>
     JSON.stringify(
@@ -33,6 +37,7 @@ export const ensureStandardCatalogue = async (tx: Sql | Tx, facilityId: string):
         ? [r.name, r.specimen, r.classification, r.aliases, r.concept]
         : [r.name, r.tests, canonicalParts(r.parts)],
     );
+
   const sync = async <T extends StandardTest | StandardTemplate>(
     type: T['type'],
     wanted: T[],
@@ -40,13 +45,16 @@ export const ensureStandardCatalogue = async (tx: Sql | Tx, facilityId: string):
   ) => {
     for (const record of wanted) {
       const current = existing.find((row) => row.id === record.id);
+
       if (!current) {
         await insertRecord(tx, type, record);
         continue;
       }
+
       if (content(current) === content(record)) {
         continue;
       }
+
       const changes = toRow(tx, type, {
         ...record,
         createdOn: current.createdOn,
@@ -54,10 +62,12 @@ export const ensureStandardCatalogue = async (tx: Sql | Tx, facilityId: string):
         updatedBy: 'system',
         updatedOn: now,
       });
+
       const table: string = TABLE_FOR[type];
       await tx`UPDATE ${tx(table)} SET ${tx(changes)} WHERE id = ${record.id} AND facility_id = ${facilityId}`;
     }
   };
+
   await sync(
     'standard_test',
     STANDARD_TESTS.map((test) =>
@@ -75,6 +85,7 @@ export const ensureStandardCatalogue = async (tx: Sql | Tx, facilityId: string):
     ),
     await recordsInFacility(tx, facilityId, 'standard_test'),
   );
+
   await sync(
     'standard_template',
     STANDARD_TEMPLATES.map((template) =>
@@ -101,9 +112,11 @@ const refresh = (sql: Sql, facilityId: string) =>
 /** At start-up, every facility receives the current standard lists. Each facility is its own transaction. */
 export const ensureAllStandardCatalogues = async (sql: Sql): Promise<number> => {
   const facilities = await sql<{ id: string }[]>`SELECT id FROM facilities ORDER BY id`;
+
   for (const { id } of facilities) {
     await refresh(sql, id);
   }
+
   return facilities.length;
 };
 
@@ -115,6 +128,7 @@ export const ensureStandardCatalogueOnce = async (sql: Sql, facilityId: string):
   const [counts] = await sql<
     { tests: number; templates: number }[]
   >`SELECT (SELECT count(*)::int FROM standard_tests WHERE facility_id = ${facilityId}) AS tests, (SELECT count(*)::int FROM standard_templates WHERE facility_id = ${facilityId}) AS templates`;
+
   if (counts.tests < STANDARD_TESTS.length || counts.templates < STANDARD_TEMPLATES.length) {
     await refresh(sql, facilityId);
   }

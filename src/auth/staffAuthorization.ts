@@ -26,6 +26,7 @@ export const findStaffInFacility = async (
   const [row] = await sql<StaffRecord[]>`
     SELECT id, role, additional_roles AS "additionalRoles", additional_permissions AS "additionalPermissions", permission, active
     FROM staff WHERE facility_id = ${facilityId} AND id = ${staffId}`;
+
   return row;
 };
 
@@ -37,12 +38,15 @@ export const staffDenial = (
   if (!staff) {
     return { kind: 'not_member', staffId };
   }
+
   if (!staff.active) {
     return { kind: 'deactivated', staffId };
   }
+
   if (!staffPermissions(staff).includes(permission)) {
     return { kind: 'not_granted', staffId, permission };
   }
+
   return undefined;
 };
 
@@ -70,5 +74,6 @@ export const authorizeStaff = async (
 ): Promise<{ staff: StaffRecord } | { denial: StaffDenial }> => {
   const staff = await findStaffInFacility(sql, facilityId, staffId);
   const denial = staffDenial(staff, staffId, permission);
+
   return denial ? { denial } : { staff: staff as StaffRecord };
 };

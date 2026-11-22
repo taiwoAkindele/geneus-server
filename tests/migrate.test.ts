@@ -22,6 +22,7 @@ describe('migrate', () => {
   it('records every file it applied, in order', async () => {
     const rows = await db.sql<{ version: number; name: string }[]>`
       SELECT version, name FROM schema_migrations ORDER BY version`;
+
     const files = await loadMigrations();
 
     assert.deepEqual(
@@ -48,6 +49,7 @@ describe('migrate', () => {
     for (const table of Object.values(TABLE_FOR)) {
       assert.ok(tables.has(table), `missing table ${table}`);
     }
+
     for (const serverOnly of [
       'device_credentials',
       'applied_mutations',

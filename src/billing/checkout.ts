@@ -23,6 +23,7 @@ import { nextReceiptNumber } from './receipts.ts';
 import { reserveSource } from './sourceCapacity.ts';
 
 export const CHECKOUT_REFERENCE = /^geneus-co-[a-f0-9-]{36}$/;
+
 const CHECKOUT_DURATION_MS = 30 * 60_000;
 const MAX_AMOUNT_MINOR = 2_147_483_647;
 
@@ -119,6 +120,7 @@ export const acceptCheckoutWebhook = async (
     provider,
     openPaystackSecret(session.encrypted_secret, config.billingEncryptionKey, session.facility_id),
   );
+
   const authenticated = provider.webhookReference(raw, signature, credentials);
 
   if (!authenticated.ok || authenticated.checkoutReference !== reference) {
@@ -139,6 +141,7 @@ const publicState = (session: CheckoutSession): CheckoutState => {
     session.mode === 'test' &&
     session.held_minor !== null &&
     session.held_minor >= session.amount_minor;
+
   if (session.status === 'paid' && testNotApplied) {
     status = 'failed';
   } else if (session.status === 'pending' && Date.parse(session.expires_on) <= Date.now()) {
@@ -201,6 +204,7 @@ export const startCheckout = async (
   >`
     SELECT id, bill_id, encounter_id, appointment_id FROM charges
     WHERE facility_id = ${link.facilityId} AND patient_id = ${link.patientId} AND currency = ${bill.currency}`;
+
   const chargeIds = charges
     .filter(
       (charge) =>
@@ -214,6 +218,7 @@ export const startCheckout = async (
         }) === link.subject,
     )
     .map((charge) => charge.id);
+
   const reference = `geneus-co-${randomUUID()}`;
   const expiresOn = new Date(Date.now() + CHECKOUT_DURATION_MS).toISOString();
 
@@ -228,6 +233,7 @@ export const startCheckout = async (
 
   const callback = new URL(returnUrl);
   callback.searchParams.set('checkout', reference);
+
   const started = await checkout.start(
     connection.credentials,
     {
@@ -287,6 +293,7 @@ export const confirmCheckout = async (
     provider,
     openPaystackSecret(session.encrypted_secret, config.billingEncryptionKey, session.facility_id),
   );
+
   const outcome = await provider.checkout.verify(credentials, reference, http);
 
   // A different amount is still money received (a bank transfer through the checkout can be more or less than
@@ -303,6 +310,7 @@ export const confirmCheckout = async (
 
   return sql.begin(async (tx) => {
     await tx`SELECT id FROM facilities WHERE id = ${session.facility_id} FOR UPDATE`;
+
     const [current] = await tx<
       CheckoutSession[]
     >`SELECT * FROM checkout_sessions WHERE reference = ${reference} FOR UPDATE`;
@@ -314,6 +322,7 @@ export const confirmCheckout = async (
     if (outcome.status !== 'paid') {
       // An earlier failed attempt can later succeed; only a verified payment is final.
       await tx`UPDATE checkout_sessions SET status = ${outcome.status}, checked_on = now() WHERE reference = ${reference}`;
+
       return publicState({ ...current, status: outcome.status });
     }
 
@@ -325,6 +334,7 @@ export const confirmCheckout = async (
     }
 
     const now = new Date().toISOString();
+
     const envelope = {
       facilityId: current.facility_id,
       deviceId: device.id,
@@ -332,6 +342,7 @@ export const confirmCheckout = async (
       createdBy: 'system',
       createdOn: now,
     };
+
     const source = IncomingTransfer.parse({
       ...envelope,
       id: `incoming_transfer:${reference}`,
@@ -350,11 +361,13 @@ export const confirmCheckout = async (
     await insertRecord(tx, 'incoming_transfer', source);
 
     let heldMinor = outcome.amountMinor;
+
     // Test money settles a bill only while the hospital is still connected in test mode, so the whole flow can be
     // tried before going live. Once it is live, a late sandbox payment never marks a real bill paid.
     const [connected] = await tx<
       { mode: 'test' | 'live' }[]
     >`SELECT mode FROM billing_connections WHERE facility_id = ${current.facility_id}`;
+
     const settles = current.mode === 'live' || connected?.mode === 'test';
 
     if (settles) {
@@ -363,6 +376,7 @@ export const confirmCheckout = async (
         SELECT * FROM charges WHERE facility_id = ${current.facility_id}
           AND patient_id = ${current.patient_id} AND currency = ${current.currency}
           AND id = ANY(${current.charge_ids}) ORDER BY id FOR UPDATE`;
+
       const charges = rows
         .map((row) => fromRow<Charge>('charge', row))
         .filter((charge) => billKey(charge) === current.bill_key)
@@ -370,6 +384,7 @@ export const confirmCheckout = async (
           (left, right) =>
             left.createdOn.localeCompare(right.createdOn) || left.id.localeCompare(right.id),
         );
+
       const positions = await chargePositions(tx, current.facility_id, charges);
       const allocations: { chargeId: string; amountMinor: number }[] = [];
 
@@ -389,7 +404,9 @@ export const confirmCheckout = async (
         await reserveSource(tx, current.facility_id, source.id, appliedMinor, current.currency, {
           allowTest: current.mode === 'test',
         });
+
         const receiptNumber = await nextReceiptNumber(tx, current.facility_id);
+
         const payment = Payment.parse({
           ...envelope,
           id: `payment:${reference}`,

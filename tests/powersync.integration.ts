@@ -39,9 +39,11 @@ type Facility = FacilityRegistrationResult;
 
 const json = async <T>(response: Response, parse: (input: unknown) => T): Promise<T> => {
   const body = await response.json();
+
   if (!response.ok) {
     throw new Error(`${response.status}: ${JSON.stringify(body)}`);
   }
+
   return parse(body);
 };
 
@@ -56,6 +58,7 @@ const serverIsUp = async (): Promise<boolean> =>
 describe('PowerSync stack', { timeout: 120_000 }, () => {
   it('gates workforce downloads by negotiated tokens and keeps evidence/private refusals out of every general replica', async () => {
     const f = await setupWorkforce(sql);
+
     try {
       const privateRefusal = put(
         {
@@ -65,7 +68,9 @@ describe('PowerSync stack', { timeout: 120_000 }, () => {
         },
         { expectedPreviousId: null },
       );
+
       await f.send([privateRefusal]);
+
       const modern = await json(
         await fetch(`${SERVER_URL}/sync/token`, {
           method: 'POST',
@@ -77,22 +82,27 @@ describe('PowerSync stack', { timeout: 120_000 }, () => {
         }),
         SyncTokenResponse.parse,
       );
+
       const legacy = await tokenFor(f.facility);
+
       const ready = await waitForRow(
         POWERSYNC_URL,
         modern.token,
         (r) => r.table === 'audit_events' && r.data.entityId === privateRefusal.id,
       );
+
       assert.ok(
         ready.found,
         'Public audit metadata reaches the modern replica after the private refusal is committed',
       );
+
       assert.ok(ready.last.rows.some((r) => r.table === 'locations' && r.id === f.location.id));
       assert.ok(
         ready.last.rows.some(
           (r) => r.table === 'authority_snapshots' && r.data.staffId === f.worker.id,
         ),
       );
+
       assert.equal(
         ready.last.rows.some((r) =>
           [
@@ -105,12 +115,14 @@ describe('PowerSync stack', { timeout: 120_000 }, () => {
         ),
         false,
       );
+
       assert.equal(
         ready.last.rows.some(
           (r) => r.table === 'sync_rejections' && r.data.entityId === privateRefusal.id,
         ),
         false,
       );
+
       const old = await readFirstCheckpoint(POWERSYNC_URL, legacy.token);
       assert.equal(old.status, 200);
       assert.ok(old.rows.some((r) => r.table === 'patients' && r.id === f.patientId));
@@ -126,6 +138,7 @@ describe('PowerSync stack', { timeout: 120_000 }, () => {
         ),
         false,
       );
+
       assert.equal(
         old.rows.find((r) => r.table === 'units' && r.id === f.unit.id)?.data.kind,
         undefined,
@@ -134,6 +147,7 @@ describe('PowerSync stack', { timeout: 120_000 }, () => {
       await f.app.close();
     }
   });
+
   const sql = createSql(config.postgresUrl);
   let server: ChildProcess | undefined;
   let a: Facility;
@@ -144,6 +158,7 @@ describe('PowerSync stack', { timeout: 120_000 }, () => {
   const register = async (): Promise<Facility> => {
     const code = `SYNC-${randomBytes(2).toString('hex').toUpperCase()}`;
     const invite = await createInvite(sql, `Stack test ${code}`, 1);
+
     return json(
       await fetch(`${SERVER_URL}/facilities`, {
         method: 'POST',
@@ -202,6 +217,7 @@ describe('PowerSync stack', { timeout: 120_000 }, () => {
     overrides: Record<string, unknown> = {},
   ): UploadMutation => {
     const id = `${facility.facility.id}-${sequence}-K2`;
+
     return {
       clientId: Math.floor(Math.random() * 1_000_000),
       op: 'put',
@@ -234,11 +250,14 @@ describe('PowerSync stack', { timeout: 120_000 }, () => {
         env: { ...process.env, PORT: new URL(SERVER_URL).port || '8080' },
         stdio: 'ignore',
       });
+
       for (let attempt = 0; attempt < 30 && !(await serverIsUp()); attempt++) {
         await new Promise((resolve) => setTimeout(resolve, 500));
       }
+
       assert.ok(await serverIsUp(), `geneus-server did not come up at ${SERVER_URL}`);
     }
+
     assert.ok(
       await fetch(`${POWERSYNC_URL}/probes/liveness`).then(
         (response) => response.ok,
@@ -268,12 +287,14 @@ describe('PowerSync stack', { timeout: 120_000 }, () => {
       found,
       `facility ${a.facility.id} never arrived; got ${JSON.stringify(last.rows.map((row) => `${row.table}/${row.id}`))}`,
     );
+
     assert.ok(last.rows.every(belongsTo(a)), 'a row from another facility was delivered');
     assert.ok(last.buckets.length > 0);
     assert.ok(
       last.buckets.every((bucket) => bucket.includes(`["${a.facility.id}"]`)),
       `buckets not partitioned by facility: ${last.buckets[0]}`,
     );
+
     assert.ok(last.rows.some((row) => row.table === 'staff' && row.id === a.admin.id));
     assert.ok(last.rows.some((row) => row.table === 'devices' && row.id === a.device.deviceId));
   });
@@ -288,10 +309,12 @@ describe('PowerSync stack', { timeout: 120_000 }, () => {
       forA.rows.some((row) => row.id === b.facility.id || row.data.facilityId === b.facility.id),
       false,
     );
+
     assert.equal(
       forB.rows.some((row) => row.id === a.facility.id || row.data.facilityId === a.facility.id),
       false,
     );
+
     assert.ok(forB.rows.some((row) => row.table === 'facilities' && row.id === b.facility.id));
   });
 
@@ -305,6 +328,7 @@ describe('PowerSync stack', { timeout: 120_000 }, () => {
       tokenA.token,
       (row) => row.table === 'patients' && row.id === patient.id,
     );
+
     const forB = await readFirstCheckpoint(POWERSYNC_URL, tokenB.token);
 
     assert.ok(found, 'the uploaded patient never reached the stream');
@@ -321,6 +345,7 @@ describe('PowerSync stack', { timeout: 120_000 }, () => {
       tokenA.token,
       (row) => row.table === 'patients',
     );
+
     assert.ok(found);
 
     assert.ok('facilityId' in found.data && 'createdOn' in found.data && 'patientId' in found.data);
@@ -334,11 +359,13 @@ describe('PowerSync stack', { timeout: 120_000 }, () => {
     const response = await uploadAs(a, forged);
 
     assert.equal(response.rejected[0]?.category, 'identity');
+
     const { found } = await waitForRow(
       POWERSYNC_URL,
       tokenA.token,
       (row) => row.table === 'sync_rejections' && row.data.entityId === forged.id,
     );
+
     assert.ok(found, 'the rejection never synced back to the device');
     assert.equal(found.data.category, 'identity');
     const forB = await readFirstCheckpoint(POWERSYNC_URL, tokenB.token);

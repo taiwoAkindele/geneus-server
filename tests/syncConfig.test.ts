@@ -31,6 +31,7 @@ describe('sync-config.yaml', () => {
 `),
         `${table} is not an auto-subscribed stream`,
       );
+
       assert.ok(
         new RegExp(
           `FROM ${table}\\n\\s+WHERE facility_id = auth.parameter\\('facility_id'\\)`,
@@ -38,8 +39,10 @@ describe('sync-config.yaml', () => {
         `${table} is not filtered to the token's facility`,
       );
     }
+
     assert.equal((config.match(/auto_subscribe: true/g) ?? []).length, syncedTypes().length + 9);
     assert.ok(config.includes('  sync_rejections_legacy:'));
+
     for (const type of ['audit_events', 'sync_rejections']) {
       assert.ok(config.includes(`  ${type}_ward_care:`));
       assert.ok(
@@ -55,6 +58,7 @@ describe('sync-config.yaml', () => {
     for (const type of syncedTypes()) {
       const stream = config.slice(config.indexOf(`  ${TABLE_FOR[type]}:`));
       const select = stream.slice(stream.indexOf('SELECT'), stream.indexOf('FROM'));
+
       for (const field of Object.keys(SCHEMA_BY_TYPE[type].shape).filter(
         (field) => field !== 'type',
       )) {
@@ -66,9 +70,11 @@ describe('sync-config.yaml', () => {
         );
       }
     }
+
     for (const type of RESTRICTED_FACILITY_DOCUMENT_TYPES) {
       assert.equal(config.includes(`FROM ${TABLE_FOR[type]}\n`), false);
     }
+
     assert.ok(config.includes("AND (visibility IS NULL OR visibility = 'facility')"));
     assert.ok(config.includes('AND is_current = true'));
     assert.ok(config.includes("AND auth.parameter('facility_contract') = 1"));
@@ -91,6 +97,7 @@ describe('sync-config.yaml', () => {
       let depth = 0;
       let wrapped = filter.startsWith('(');
       let count = 1;
+
       for (let i = 0; i < filter.length; i++) {
         if (filter[i] === '(') {
           depth++;
@@ -98,8 +105,10 @@ describe('sync-config.yaml', () => {
           wrapped = false;
         }
       }
+
       const body = wrapped ? filter.slice(1, -1) : filter;
       depth = 0;
+
       for (let i = 0; i < body.length; i++) {
         if (body[i] === '(') {
           depth++;
@@ -109,12 +118,16 @@ describe('sync-config.yaml', () => {
           count++;
         }
       }
+
       return count;
     };
+
     let stream = '';
     const queries: { stream: string; branches: number }[] = [];
+
     for (const line of buildSyncConfig().split('\n')) {
       const name = line.match(/^  ([a-z_]+):$/)?.[1];
+
       if (name) {
         stream = name;
       } else if (line === '      - |') {
@@ -123,11 +136,14 @@ describe('sync-config.yaml', () => {
         queries[queries.length - 1].branches *= disjuncts(line.trim().replace(/^(WHERE|AND) /, ''));
       }
     }
+
     assert.ok(queries.length > 0);
     const totals = new Map<string, number>();
+
     for (const { stream, branches } of queries) {
       totals.set(stream, (totals.get(stream) ?? 0) + branches);
     }
+
     for (const [stream, branches] of totals) {
       assert.ok(
         branches <= 100,

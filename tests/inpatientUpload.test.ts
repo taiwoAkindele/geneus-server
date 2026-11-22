@@ -27,6 +27,7 @@ describe('inpatient upload and real PostgreSQL concurrency', () => {
   let doctor: Staff;
   let cashier: Staff;
   let sequence = 0;
+
   const put = (
     table: UploadMutation['table'],
     id: string,
@@ -39,6 +40,7 @@ describe('inpatient upload and real PostgreSQL concurrency', () => {
     id,
     data: { ...envelopeFor(facility), createdBy: (actor ?? doctor).id, id, type: table, ...data },
   });
+
   const send = (...mutations: UploadMutation[]) =>
     upload(app, facility.device.credential, {
       transactionId: 1,
@@ -49,8 +51,10 @@ describe('inpatient upload and real PostgreSQL concurrency', () => {
       policyVersion: POLICY_VERSION,
       mutations,
     });
+
   const event = (record: InpatientEvent, actor?: Staff) =>
     put('inpatient_event', record.id, record, actor);
+
   const next = (
     previous: InpatientEvent,
     action: InpatientEvent['action'],
@@ -64,6 +68,7 @@ describe('inpatient upload and real PostgreSQL concurrency', () => {
     action,
     ...extra,
   });
+
   const newCase = async () => {
     const suffix = String(++sequence).padStart(6, '0');
     const patientId = `${facility.facility.id}-${suffix}-K2`;
@@ -121,6 +126,7 @@ describe('inpatient upload and real PostgreSQL concurrency', () => {
       ).rejected,
       [],
     );
+
     const confirm: InpatientEvent = {
       ...envelopeFor(facility),
       schemaVersion: 5,
@@ -135,8 +141,10 @@ describe('inpatient upload and real PostgreSQL concurrency', () => {
       receivingUnitId: 'unit:ward',
       actorRole: 'doctor',
     };
+
     return confirm;
   };
+
   const newBed = async () => {
     const id = `bed:${++sequence}`;
     await insertRecord(db.sql, 'location', {
@@ -149,8 +157,10 @@ describe('inpatient upload and real PostgreSQL concurrency', () => {
       active: true,
       revision: 1,
     });
+
     return id;
   };
+
   before(async () => {
     db = await scratchDatabase();
     app = testApp(db.sql);
@@ -165,6 +175,7 @@ describe('inpatient upload and real PostgreSQL concurrency', () => {
       name: 'Ward team',
       active: true,
     });
+
     await insertRecord(db.sql, 'location', {
       ...envelopeFor(facility),
       id: 'ward:a',
@@ -175,10 +186,12 @@ describe('inpatient upload and real PostgreSQL concurrency', () => {
       revision: 1,
     });
   });
+
   after(async () => {
     if (app) {
       await app.close();
     }
+
     if (db) {
       await db.drop();
     }
@@ -196,6 +209,7 @@ describe('inpatient upload and real PostgreSQL concurrency', () => {
         .rejected,
       [],
     );
+
     assert.deepEqual(
       (
         await send(
@@ -208,8 +222,10 @@ describe('inpatient upload and real PostgreSQL concurrency', () => {
       ).rejected,
       [],
     );
+
     const [counts] =
       await db.sql`SELECT (SELECT count(*) FROM inpatient_events WHERE admission_id=${confirm.id}) AS events, (SELECT count(*) FROM encounter_entries WHERE encounter_id=${confirm.encounterId}) AS entries`;
+
     // The admission workflow adds no entries to the signed visit: only the 7 recorded in order before it.
     assert.equal(Number(counts.events), 5);
     assert.equal(Number(counts.entries), 7);
@@ -217,32 +233,40 @@ describe('inpatient upload and real PostgreSQL concurrency', () => {
       db.sql`UPDATE inpatient_events SET note='rewrite' WHERE id=${confirm.id}`,
       /never changed/,
     );
+
     await assert.rejects(
       db.sql`DELETE FROM inpatient_events WHERE id=${confirm.id}`,
       /never changed/,
     );
+
     await assert.rejects(
       db.sql`DELETE FROM bed_ready_events WHERE id='clean:complete'`,
       /never changed/,
     );
   });
+
   it('serializes two simultaneous reservations of the same bed; the losing change remains recoverable', async () => {
     const a = await newCase();
     const b = await newCase();
     const bedId = await newBed();
     assert.deepEqual((await send(event(a), event(b))).rejected, []);
+
     const reservations = [
       next(a, 'reserve', { wardId: 'ward:a', bedId }),
       next(b, 'reserve', { wardId: 'ward:a', bedId }),
     ];
+
     const results = await Promise.all(reservations.map((record) => send(event(record))));
     assert.equal(results.flatMap((response) => response.rejected).length, 1);
     const [count] = await db.sql`SELECT count(*) AS n FROM inpatient_events WHERE bed_id=${bedId}`;
     assert.equal(Number(count.n), 1);
+
     const [rejection] =
       await db.sql`SELECT refused_record FROM sync_rejections WHERE entity_id = ANY(${reservations.map((record) => record.id)})`;
+
     assert.ok(rejection.refused_record.bedId);
   });
+
   it('rejects competing successors instead of selecting by the device clock', async () => {
     const confirm = await newCase();
     assert.deepEqual((await send(event(confirm))).rejected, []);
@@ -251,6 +275,7 @@ describe('inpatient upload and real PostgreSQL concurrency', () => {
     const results = await Promise.all([send(event(a)), send(event(b))]);
     assert.equal(results.flatMap((response) => response.rejected).length, 1);
   });
+
   it('keeps ready-for-discharge beds occupied and vacated beds unavailable until cleaned', async () => {
     const a = await newCase();
     const b = await newCase();
@@ -262,16 +287,19 @@ describe('inpatient upload and real PostgreSQL concurrency', () => {
       (await send(...[a, b, reserve, arrive, ready].map((record) => event(record)))).rejected,
       [],
     );
+
     assert.equal(
       (await send(event(next(b, 'reserve', { wardId: 'ward:a', bedId })))).rejected.length,
       1,
     );
+
     const departure = next(ready, 'discharge');
     assert.deepEqual((await send(event(departure))).rejected, []);
     assert.equal(
       (await send(event(next(b, 'reserve', { wardId: 'ward:a', bedId })))).rejected.length,
       1,
     );
+
     assert.deepEqual(
       (
         await send(
@@ -284,11 +312,13 @@ describe('inpatient upload and real PostgreSQL concurrency', () => {
       ).rejected,
       [],
     );
+
     assert.deepEqual(
       (await send(event(next(b, 'reserve', { wardId: 'ward:a', bedId })))).rejected,
       [],
     );
   });
+
   it('refuses cashiers, false role attribution, wrong visit/patient links and invalid arrival', async () => {
     const confirm = await newCase();
     const cashierEvent = { ...confirm, createdBy: cashier.id, actorRole: cashier.role };
@@ -297,6 +327,7 @@ describe('inpatient upload and real PostgreSQL concurrency', () => {
       (await send(event({ ...confirm, actorRole: 'nurse' }))).rejected[0]?.category,
       'authorization',
     );
+
     assert.equal((await send(event({ ...confirm, encounterId: 'missing' }))).rejected.length, 1);
     assert.deepEqual((await send(event(confirm))).rejected, []);
     assert.equal(
@@ -305,27 +336,33 @@ describe('inpatient upload and real PostgreSQL concurrency', () => {
       1,
     );
   });
+
   it('gates new uploads and download claims while preserving older client token requests', async () => {
     const confirm = await newCase();
+
     const refused = await app.inject({
       method: 'POST',
       url: '/sync/upload',
       headers: { authorization: `Bearer ${facility.device.credential}` },
       payload: { transactionId: 1, mutations: [event(confirm)] },
     });
+
     assert.equal(refused.statusCode, 400);
+
     const old = await app.inject({
       method: 'POST',
       url: '/sync/token',
       headers: { authorization: `Bearer ${facility.device.credential}` },
       payload: {},
     });
+
     assert.equal(old.statusCode, 200);
     assert.equal(
       JSON.parse(Buffer.from(old.json().token.split('.')[1], 'base64url').toString())
         .inpatient_workflow,
       undefined,
     );
+
     const modern = await app.inject({
       method: 'POST',
       url: '/sync/token',
@@ -337,6 +374,7 @@ describe('inpatient upload and real PostgreSQL concurrency', () => {
         policyVersion: 11,
       },
     });
+
     assert.equal(modern.statusCode, 200);
     assert.equal(modern.json().inpatientWorkflowVersion, 1);
     assert.equal(
@@ -345,6 +383,7 @@ describe('inpatient upload and real PostgreSQL concurrency', () => {
       1,
     );
   });
+
   it('rejects a second active admission across server-confirmed linked patient IDs', async () => {
     const a = await newCase();
     const b = await newCase();
@@ -357,11 +396,13 @@ describe('inpatient upload and real PostgreSQL concurrency', () => {
       outcome: 'linked',
       reason: 'Synthetic same-person confirmation',
     });
+
     assert.deepEqual((await send(event(a))).rejected, []);
     const response = await send(event(b));
     assert.equal(response.rejected.length, 1);
     assert.match(response.rejected[0].reason, /already has an active admission/);
   });
+
   it('transfers occupancy, protects occupied and unclean locations, and allows retirement after cleaning', async () => {
     const confirm = await newCase();
     const a = await newBed();
@@ -373,6 +414,7 @@ describe('inpatient upload and real PostgreSQL concurrency', () => {
       (await send(...[confirm, reserve, arrive, transfer].map((record) => event(record)))).rejected,
       [],
     );
+
     const retire = (): UploadMutation => ({
       clientId: clientId(),
       op: 'patch',
@@ -386,6 +428,7 @@ describe('inpatient upload and real PostgreSQL concurrency', () => {
         updatedOn: new Date().toISOString(),
       },
     });
+
     assert.equal((await send(retire())).rejected.length, 1);
     assert.equal(
       (
@@ -399,6 +442,7 @@ describe('inpatient upload and real PostgreSQL concurrency', () => {
       ).rejected.length,
       1,
     );
+
     assert.deepEqual(
       (
         await send(
@@ -411,6 +455,7 @@ describe('inpatient upload and real PostgreSQL concurrency', () => {
       ).rejected,
       [],
     );
+
     assert.deepEqual((await send(retire())).rejected, []);
     const other = await newCase();
     assert.deepEqual((await send(event(other))).rejected, []);
@@ -419,11 +464,13 @@ describe('inpatient upload and real PostgreSQL concurrency', () => {
       1,
     );
   });
+
   it('supports an explicit admission duty grant through the migrated staff permission constraint', async () => {
     const coordinator = await addStaff(db.sql, facility, {
       role: 'records_officer',
       additionalPermissions: ['admission:manage'],
     });
+
     const confirm = await newCase();
     assert.deepEqual(
       (await send(event({ ...confirm, createdBy: coordinator.id, actorRole: coordinator.role })))

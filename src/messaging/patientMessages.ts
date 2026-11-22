@@ -26,6 +26,7 @@ import { patientContactNow } from './patientChoice.ts';
  * link's hash is kept.
  */
 export const MAX_ATTEMPTS = 3;
+
 /** Minutes to wait after attempt n before the next one. */
 const BACKOFF_MINUTES = [0, 2, 10];
 
@@ -34,6 +35,7 @@ export type SmsSender = {
   configured: boolean;
   send: (to: string, text: string) => Promise<{ providerMessageId?: string }>;
 };
+
 export type MessagingDeps = {
   sql: Sql;
   mailer: Mailer;
@@ -45,13 +47,26 @@ export type MessagingDeps = {
 /** 08031234567, +234 803 123 4567 or 2348031234567 → 2348031234567. Undefined when it can't be a phone number. */
 export const smsNumber = (input: string): string | undefined => {
   const digits = input.trim().replace(/[\s\-().]/g, '');
-  const candidate = /^\+\d+$/.test(digits)
-    ? digits.slice(1)
-    : /^0\d{10}$/.test(digits)
-      ? `234${digits.slice(1)}`
-      : /^234\d{10}$/.test(digits)
-        ? digits
-        : undefined;
+
+  const internationalFor = () => {
+    if (/^\+\d+$/.test(digits)) {
+      return digits.slice(1);
+    }
+
+    // A local Nigerian number (0803…) gets the country code.
+    if (/^0\d{10}$/.test(digits)) {
+      return `234${digits.slice(1)}`;
+    }
+
+    if (/^234\d{10}$/.test(digits)) {
+      return digits;
+    }
+
+    return undefined;
+  };
+
+  const candidate = internationalFor();
+
   return candidate && /^[1-9]\d{7,14}$/.test(candidate) ? candidate : undefined;
 };
 
@@ -65,18 +80,23 @@ const unavailableReason = (
   if (channel === 'sms' && !patient.phone) {
     return 'No phone number on file';
   }
+
   if (channel === 'sms' && !smsNumber(patient.phone!)) {
     return "The phone number on file can't receive SMS";
   }
+
   if (channel === 'email' && !contact?.email) {
     return 'No email address on file';
   }
+
   if (!availableChannels(contact, patient.phone).includes(channel)) {
     return `The patient stopped ${channel === 'sms' ? 'SMS' : 'email'}`;
   }
+
   if (channel === 'sms' && !sms?.configured) {
     return "SMS sending isn't set up yet";
   }
+
   return undefined;
 };
 
@@ -102,6 +122,7 @@ export const sendDocumentToPatient = async (
   },
 ): Promise<SendToPatientResponse> => {
   const doc = await documentOf(deps.sql, input.facilityId, input.kind, input.subject);
+
   if (!doc) {
     throw Object.assign(
       new Error(
@@ -112,17 +133,22 @@ export const sendDocumentToPatient = async (
       { statusCode: 409 },
     );
   }
+
   const patient = (await findRecord<Patient>(deps.sql, 'patient', doc.patient.patientId))!;
   const contact = await patientContactNow(deps.sql, input.facilityId, patient.patientId);
   const reference = 'lines' in doc ? doc.reference : doc.number;
   const messages: SendToPatientResponse['messages'] = [];
+
   for (const channel of input.channels) {
     const reason = unavailableReason(channel, patient, contact, deps.sms);
+
     if (reason) {
       messages.push({ channel, status: 'refused', reason });
       continue;
     }
+
     const to = channel === 'sms' ? maskPhone(patient.phone!) : maskEmail(contact!.email!);
+
     const record: PatientMessage = {
       id: `patient_message:${randomUUID()}`,
       type: 'patient_message',
@@ -141,10 +167,12 @@ export const sendDocumentToPatient = async (
       automatic: input.automatic,
       attempts: 0,
     };
+
     await insertRecord(deps.sql, 'patient_message', record);
     await attemptPatientMessage(deps, record.id);
     messages.push({ channel, to, status: 'queued', messageId: record.id });
   }
+
   return { messages };
 };
 
@@ -167,30 +195,38 @@ export const attemptPatientMessage = async (deps: MessagingDeps, id: string): Pr
     UPDATE patient_messages SET attempts = attempts + 1, updated_on = now(), updated_by = 'system'
     WHERE id = ${id} AND status = 'queued' AND attempts < ${MAX_ATTEMPTS}
     RETURNING facility_id, kind, subject, channel, patient_id, created_by, attempts`;
+
   if (!claimed) {
     return;
   }
+
   const finish = async (status: 'sent' | 'queued' | 'failed', reason?: string) => {
     await deps.sql`UPDATE patient_messages SET status = ${status}, reason = ${reason ?? null}, updated_on = now(), updated_by = 'system',
       sent_on = ${status === 'sent' ? new Date().toISOString() : null} WHERE id = ${id}`;
   };
+
   const giveUp = (reason: string) =>
     finish(
       claimed.attempts >= MAX_ATTEMPTS ? 'failed' : 'queued',
       claimed.attempts >= MAX_ATTEMPTS ? reason : `${reason}. Trying again shortly`,
     );
+
   try {
     const doc = await documentOf(deps.sql, claimed.facility_id, claimed.kind, claimed.subject);
     const patient = await findRecord<Patient>(deps.sql, 'patient', claimed.patient_id);
+
     if (!doc || !patient) {
       return finish('failed', 'The bill or receipt is no longer available');
     }
+
     const contact = await patientContactNow(deps.sql, claimed.facility_id, claimed.patient_id);
     // The patient may have stopped this channel, or changed their details, since the message was queued.
     const reason = unavailableReason(claimed.channel, patient, contact, deps.sms);
+
     if (reason) {
       return finish('failed', reason);
     }
+
     const { token } = await createDocumentLink(deps.sql, {
       facilityId: claimed.facility_id,
       kind: claimed.kind,
@@ -198,12 +234,16 @@ export const attemptPatientMessage = async (deps: MessagingDeps, id: string): Pr
       patientId: claimed.patient_id,
       createdBy: claimed.created_by,
     });
+
     const url = `${deps.appUrl.replace(/\/+$/, '')}${patientPagePath(claimed.kind, token)}`;
     const message = 'lines' in doc ? billMessage(doc, url) : receiptMessage(doc, url);
+
     if (claimed.channel === 'email') {
       const pdf = 'lines' in doc ? await invoicePdf(doc, url) : await receiptPdf(doc);
+
       const filename =
         'lines' in doc ? `Invoice-${doc.reference}.pdf` : `Receipt-${doc.number}.pdf`;
+
       await deps.mailer.send({
         to: contact!.email!,
         subject: message.subject,
@@ -222,6 +262,7 @@ export const attemptPatientMessage = async (deps: MessagingDeps, id: string): Pr
     } else {
       await deps.sms!.send(smsNumber(patient.phone!)!, message.sms);
     }
+
     await finish('sent');
   } catch (cause) {
     const provider = cause as { providerStatus?: number; providerReason?: string };
@@ -236,14 +277,21 @@ export const attemptPatientMessage = async (deps: MessagingDeps, id: string): Pr
       },
       'patient message not sent',
     );
+
     // Best effort inside the failure path: recording that we gave up must not mask the original error.
-    await giveUp(
-      cause instanceof EmailNotSent
-        ? "The email service didn't accept the message"
-        : claimed.channel === 'sms'
-          ? "The SMS service didn't accept the message"
-          : "The message couldn't be sent",
-    ).catch(() => undefined);
+    const giveUpReason = () => {
+      if (cause instanceof EmailNotSent) {
+        return "The email service didn't accept the message";
+      }
+
+      if (claimed.channel === 'sms') {
+        return "The SMS service didn't accept the message";
+      }
+
+      return "The message couldn't be sent";
+    };
+
+    await giveUp(giveUpReason()).catch(() => undefined);
   }
 };
 
@@ -254,13 +302,16 @@ export const retryPatientMessages = async (deps: MessagingDeps, limit = 20): Pro
   >`SELECT id FROM patient_messages WHERE status = 'queued' AND attempts < ${MAX_ATTEMPTS}
     AND coalesce(updated_on, created_on) < now() - make_interval(mins => (${BACKOFF_MINUTES}::int[])[least(attempts + 1, ${BACKOFF_MINUTES.length})] + 1)
     ORDER BY created_on LIMIT ${limit}`;
+
   for (const { id } of due) {
     await attemptPatientMessage(deps, id);
   }
+
   return due.length;
 };
 
 export type PatientMessaging = { stop: () => Promise<void> };
+
 /** Every minute in the server process: sends queued receipts, then retries messages. A pass never overlaps the previous one. */
 export const startPatientMessaging = (
   deps: MessagingDeps & {
@@ -269,10 +320,12 @@ export const startPatientMessaging = (
   intervalMs = 60_000,
 ): PatientMessaging => {
   let running: Promise<void> | undefined;
+
   const pass = () => {
     if (running) {
       return;
     }
+
     running = sendQueuedReceipts(deps)
       .then(() => retryPatientMessages(deps))
       .then(
@@ -283,7 +336,9 @@ export const startPatientMessaging = (
         running = undefined;
       });
   };
+
   const timer = setInterval(pass, intervalMs);
+
   return {
     stop: async () => {
       clearInterval(timer);
@@ -307,6 +362,7 @@ export const sendQueuedReceipts = async (deps: MessagingDeps, limit = 20): Promi
       AND p.id = q.payment_id AND p.facility_id = q.facility_id
     RETURNING q.payment_id, q.facility_id, p.created_by, p.device_id`,
   );
+
   for (const r of due) {
     await sendDocumentToPatient(deps, {
       facilityId: r.facility_id,
@@ -323,5 +379,6 @@ export const sendQueuedReceipts = async (deps: MessagingDeps, limit = 20): Promi
       ),
     );
   }
+
   return due.length;
 };

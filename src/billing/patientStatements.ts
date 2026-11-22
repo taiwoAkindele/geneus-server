@@ -32,20 +32,26 @@ export const buildPatientStatement = async (
 ): Promise<PatientStatement> => {
   const patient = await findRecord<Patient>(tx, 'patient', patientId);
   const facility = await findRecord<Facility>(tx, 'facility', facilityId);
+
   if (!patient || patient.facilityId !== facilityId || !facility) {
     throw Object.assign(new Error('Patient account not found in this hospital'), {
       statusCode: 404,
     });
   }
+
   const [migration] = await tx`SELECT applied_on FROM schema_migrations WHERE version=42`;
+
   const beforeMigration =
     migration && Date.parse(cutoff) < new Date(migration.applied_on).getTime();
+
   const records = await loadCoverageRecords(tx, facilityId, [patientId]);
+
   for (const key of ['covers', 'checks', 'elections', 'allocations', 'schedules'] as const) {
     records[key] = records[key].filter(
       (r) => Date.parse(r.createdOn) <= Date.parse(cutoff),
     ) as never;
   }
+
   const [
     chargeRows,
     paymentRows,
@@ -67,6 +73,7 @@ export const buildPatientStatement = async (
     tx`SELECT * FROM encounter_entries WHERE facility_id=${facilityId} AND patient_id=${patientId} AND step='dispense'`,
     tx`SELECT * FROM insurance_claims WHERE facility_id=${facilityId} AND patient_id=${patientId} AND currency=${currency} AND created_on<=${cutoff} ORDER BY revision DESC`,
   ]);
+
   if (beforeMigration && claimRows.length) {
     throw Object.assign(
       new Error(
@@ -75,8 +82,10 @@ export const buildPatientStatement = async (
       { statusCode: 409 },
     );
   }
+
   const charges = chargeRows.map((r) => fromRow<Charge>('charge', r));
   const entries = entryRows.map((r) => fromRow<EncounterEntry>('encounter_entry', r));
+
   const estimates = new Map(
     charges.map((charge) => [
       charge.id,
@@ -92,14 +101,18 @@ export const buildPatientStatement = async (
       }),
     ]),
   );
+
   const latest = [
     ...new Map([...claimRows].reverse().map((c) => [String(c.claim_number), c])).values(),
   ];
+
   const claims: StatementClaim[] = [];
+
   for (const c of latest) {
     const revisions = claimRows
       .filter((r) => r.claim_number === c.claim_number)
       .map((r) => r.id as string);
+
     const [lines, paidRows, writeRows, decisions, events] = await Promise.all([
       tx`SELECT l.charge_id,d.payer_share_minor FROM insurance_claim_lines l JOIN coverage_allocation_details d ON d.facility_id=l.facility_id AND d.allocation_id=l.allocation_id WHERE l.facility_id=${facilityId} AND l.claim_id=${c.id} AND l.statement_recorded_on<=${cutoff}`,
       tx`SELECT COALESCE(SUM(a.amount_minor),0) AS n FROM insurance_remittance_allocations a JOIN insurance_remittances r ON r.id=a.remittance_id WHERE a.facility_id=${facilityId} AND a.claim_id=ANY(${revisions}) AND a.recorded_on<=${cutoff} AND r.recorded_on<=${cutoff} AND NOT EXISTS(SELECT 1 FROM insurance_remittance_reversals v WHERE v.remittance_id=r.id AND v.reversed_on<=${cutoff})`,
@@ -107,6 +120,7 @@ export const buildPatientStatement = async (
       tx`SELECT * FROM insurance_claim_decisions WHERE facility_id=${facilityId} AND claim_id=${c.id} AND recorded_on<=${cutoff} ORDER BY recorded_on DESC,id DESC`,
       tx`SELECT state FROM insurance_claim_events WHERE facility_id=${facilityId} AND claim_id=${c.id} AND at<=${cutoff} ORDER BY at DESC,id DESC LIMIT 1`,
     ]);
+
     const decision = decisions[0];
     const expected = lines.reduce((n, l) => n + Number(l.payer_share_minor), 0);
     const state = events[0]?.state ?? 'draft';
@@ -133,6 +147,7 @@ export const buildPatientStatement = async (
       }),
     });
   }
+
   return patientStatement({
     patientId,
     patientName: patient.fullName,

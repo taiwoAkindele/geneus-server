@@ -27,15 +27,19 @@ describe('patient contact details', () => {
   let f: FacilityRegistrationResult;
   let desk: Staff;
   let cashier: Staff;
+
   const VERSIONS = {
     facilityContractVersion: 1,
     schemaVersion: 5,
     policyVersion: POLICY_VERSION,
   } as const;
+
   const patient = (n: string) => `${f.facility.id}-${n}-K2`;
   let seq = 0;
+
   const contact = (by: Staff, extra: Record<string, unknown>): UploadMutation => {
     const id = String(extra.id ?? `contact:${++seq}`);
+
     return {
       clientId: clientId(),
       op: 'put',
@@ -56,8 +60,10 @@ describe('patient contact details', () => {
       },
     };
   };
+
   const send = async (m: UploadMutation) =>
     upload(app, f.device.credential, { ...VERSIONS, transactionId: 1, mutations: [m] } as never);
+
   const reason = async (m: UploadMutation) => (await send(m)).rejected[0]?.reason;
 
   before(async () => {
@@ -67,6 +73,7 @@ describe('patient contact details', () => {
     desk = await addStaff(db.sql, f, { role: 'records_officer' });
     cashier = await addStaff(db.sql, f, { role: 'cashier' });
     const admin = { ...envelopeFor(f), schemaVersion: 5 };
+
     for (const n of ['000001', '000002']) {
       await insertRecord(db.sql, 'patient', {
         ...admin,
@@ -80,10 +87,12 @@ describe('patient contact details', () => {
       });
     }
   });
+
   after(async () => {
     if (app) {
       await app.close();
     }
+
     if (db) {
       await db.drop();
     }
@@ -92,12 +101,15 @@ describe('patient contact details', () => {
   it('front desk records an email; it is kept tidy and the record can never be edited', async () => {
     const result = await send(contact(desk, { id: 'contact:first', email: ' Ada@Example.ORG ' }));
     assert.deepEqual(result.rejected, []);
+
     const [row] =
       await db.sql`SELECT email, sms_stopped, source FROM patient_contacts WHERE id = 'contact:first'`;
+
     assert.deepEqual({ ...row }, { email: 'ada@example.org', sms_stopped: false, source: 'staff' });
     await assert.rejects(
       db.sql`UPDATE patient_contacts SET email = 'x@example.org' WHERE id = 'contact:first'`,
     );
+
     await assert.rejects(db.sql`DELETE FROM patient_contacts WHERE id = 'contact:first'`);
   });
 
@@ -106,6 +118,7 @@ describe('patient contact details', () => {
       (await reason(contact(desk, { email: 'other@example.org' })))!,
       /changed on another device/,
     );
+
     assert.deepEqual(
       (
         await send(
@@ -119,10 +132,12 @@ describe('patient contact details', () => {
       ).rejected,
       [],
     );
+
     assert.match(
       (await reason(contact(desk, { replaces: 'contact:first', email: 'ada@example.org' })))!,
       /changed on another device/,
     );
+
     assert.match(
       (await reason(contact(desk, { replaces: 'contact:second', patientId: patient('000002') })))!,
       /this patient's own/,
@@ -134,6 +149,7 @@ describe('patient contact details', () => {
       (await reason(contact(desk, { replaces: 'contact:second', email: 'ada@example.org' })))!,
       /Only the patient can start it again/,
     );
+
     assert.match(
       (await reason(
         contact(desk, { replaces: 'contact:second', email: 'ada@example.org', source: 'patient' }),
@@ -146,6 +162,7 @@ describe('patient contact details', () => {
     const result = await send(
       contact(cashier, { replaces: 'contact:second', email: 'ada@example.org', smsStopped: true }),
     );
+
     assert.equal(result.rejected.length, 1);
     assert.equal(result.rejected[0]!.category, 'authorization');
   });

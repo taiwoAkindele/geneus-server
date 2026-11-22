@@ -40,6 +40,7 @@ export const registerFacilityRoutes = (
    */
   app.post('/email-verifications', async (request, reply) => {
     const parsed = RegistrationEmailRequest.safeParse(request.body);
+
     if (!parsed.success) {
       return reply.code(400).send({
         error: 'invalid_request',
@@ -47,7 +48,9 @@ export const registerFacilityRoutes = (
         issues: parsed.error.issues,
       } satisfies ApiErrorBody);
     }
+
     const rejection = rejectionFor(await findInvite(sql, parsed.data.inviteToken));
+
     if (rejection) {
       return reply.code(404).send(inviteError(rejection));
     }
@@ -57,8 +60,10 @@ export const registerFacilityRoutes = (
       subject: registrationSubject(parsed.data.inviteToken),
       email: parsed.data.email,
     });
+
     await mailer.send({ to: parsed.data.email, ...verificationEmail(code, 'registration') });
     const response: EmailSent = { sentTo: maskEmail(parsed.data.email), expiresOn };
+
     return reply.code(202).send(response);
   });
 
@@ -66,9 +71,11 @@ export const registerFacilityRoutes = (
   app.get<{ Params: { token: string } }>('/invites/:token', async (request, reply) => {
     const invite = await findInvite(sql, request.params.token);
     const rejection = rejectionFor(invite);
+
     if (rejection || !invite) {
       return reply.code(404).send(inviteError(rejection ?? 'unknown'));
     }
+
     return { label: invite.label, expiresOn: invite.expiresOn };
   });
 
@@ -78,6 +85,7 @@ export const registerFacilityRoutes = (
    */
   app.post('/facilities', async (request, reply) => {
     const parsed = FacilityRegistration.safeParse(request.body);
+
     if (!parsed.success) {
       return reply.code(400).send({
         error: 'invalid_registration',
@@ -87,6 +95,7 @@ export const registerFacilityRoutes = (
     }
 
     const outcome = await registerFacility(sql, parsed.data, config.powerSyncPublicUrl);
+
     if (!outcome.ok) {
       switch (outcome.error) {
         case 'invalid_invite':
@@ -113,6 +122,7 @@ export const registerFacilityRoutes = (
       { facility: outcome.result.facility.id, device: outcome.result.device.deviceId },
       'facility registered',
     );
+
     return reply.code(201).send(outcome.result);
   });
 };

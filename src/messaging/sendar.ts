@@ -54,8 +54,10 @@ export const createSendarSender = (
     }).catch((cause: unknown) => {
       throw new SmsNotSent(undefined, cause instanceof Error ? cause.message : 'network error');
     });
+
     // Sendar's own words, whatever field it puts them in (or the raw body), for the log. Its replies carry no key.
     const raw = await response.text().catch(() => '');
+
     const reply = ((): SendarReply | undefined => {
       try {
         return JSON.parse(raw) as SendarReply;
@@ -63,19 +65,25 @@ export const createSendarSender = (
         return undefined;
       }
     })();
+
     const said = [reply?.message, reply?.detail].find((v): v is string => typeof v === 'string');
     const why = (said ?? raw).replace(/\s+/g, ' ').slice(0, 300) || undefined;
+
     if (!response.ok) {
       throw new SmsNotSent(response.status, why);
     }
+
     const entry = reply?.data?.[0];
+
     const refused =
       reply?.status === false ||
       reply?.status === 'error' ||
       (typeof entry?.status === 'string' && /fail|reject|invalid/i.test(entry.status));
+
     if (refused) {
       throw new SmsNotSent(response.status, why ?? String(entry?.status ?? 'refused'));
     }
+
     return entry?.message_id !== undefined ? { providerMessageId: String(entry.message_id) } : {};
   },
 });

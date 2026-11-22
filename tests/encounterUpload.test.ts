@@ -103,6 +103,7 @@ describe('encounters and Patient ID clashes on upload', () => {
       { category: string; reason: string; refused_record: SyncRejection['refusedRecord'] | null }[]
     >`
       SELECT category, reason, refused_record FROM sync_rejections WHERE entity_id = ${entityId} ORDER BY created_on DESC LIMIT 1`;
+
     return row;
   };
 
@@ -115,28 +116,35 @@ describe('encounters and Patient ID clashes on upload', () => {
       addStaff(db.sql, a, { role: 'doctor' }),
       addStaff(db.sql, a, { role: 'records_officer' }),
     ]);
+
     const code = await issueEnrollmentCode(db.sql, a.facility.id, a.admin.id, a.device.deviceId);
+
     const enrolled = await enrollDevice(
       db.sql,
       { code: code.code, deviceId: 'device-encounter-second' },
       'http://sync',
     );
+
     if (!enrolled.ok) {
       throw new Error(enrolled.error);
     }
+
     second = { deviceId: enrolled.device.id, credential: enrolled.credential.credential };
 
     consultation = 'unit:consultation';
     injectionRoom = 'unit:injection';
+
     const units = [consultation, injectionRoom].map((id) =>
       put('unit', id, { ...envelope(a.admin), unitId: id, name: id }),
     );
+
     const setup = await send(
       a.device.credential,
       ...units,
       patientPut('000001', 'Amaka Okoro'),
       patientPut('000002', 'Bisi Adeyemi'),
     );
+
     assert.deepEqual(setup.rejected, []);
   });
 
@@ -156,8 +164,10 @@ describe('encounters and Patient ID clashes on upload', () => {
       );
 
       assert.deepEqual(response.rejected, []);
+
       const [row] = await db.sql<{ values: Record<string, unknown>; actor_role: string }[]>`
         SELECT "values", actor_role FROM encounter_entries WHERE id = 'encounter_entry:1-vitals'`;
+
       assert.deepEqual(row, { values: { temperatureC: 38.9 }, actor_role: 'nurse' });
     });
 
@@ -213,6 +223,7 @@ describe('encounters and Patient ID clashes on upload', () => {
         db.sql`UPDATE encounter_entries SET "values" = '{}' WHERE id = 'encounter_entry:1-vitals'`,
         /never changed/,
       );
+
       await assert.rejects(
         db.sql`DELETE FROM encounters WHERE id = 'encounter:1'`,
         /never changed/,
@@ -311,6 +322,7 @@ describe('encounters and Patient ID clashes on upload', () => {
         { results: [{ test: 'Malaria RDT', result: 'Positive' }] },
         { deviceId: second.deviceId },
       );
+
       const lateAssessment = entryPut(
         'encounter_entry:3-late-vitals',
         'encounter:3',
@@ -320,6 +332,7 @@ describe('encounters and Patient ID clashes on upload', () => {
         { pulseBpm: 80 },
         { deviceId: second.deviceId },
       );
+
       const amendment = entryPut(
         'encounter_entry:3-amend',
         'encounter:3',
@@ -329,6 +342,7 @@ describe('encounters and Patient ID clashes on upload', () => {
         { note: 'Uncomplicated malaria' },
         { amends: 'encounter_entry:3-diagnosis', deviceId: second.deviceId },
       );
+
       const response = await send(second.credential, late, lateAssessment, amendment);
 
       assert.equal(response.applied, 2);
@@ -359,12 +373,14 @@ describe('encounters and Patient ID clashes on upload', () => {
         (await findRecord<Patient>(db.sql, 'patient', clashing()))?.fullName,
         'First Device Patient',
       );
+
       const queued = await rejectionFor(clashing());
       assert.equal(queued?.refused_record?.fullName, 'Second Device Patient');
     });
 
     it("holds the device's later records for that patient instead of attaching them to the other one", async () => {
       const encounter = encounterPut('encounter:held', clashing(), nurse, second.deviceId);
+
       const edit: UploadMutation = {
         clientId: clientId(),
         op: 'patch',
@@ -380,11 +396,14 @@ describe('encounters and Patient ID clashes on upload', () => {
         response.rejected.map((rejection) => rejection.category),
         ['conflict', 'conflict'],
       );
+
       assert.match(response.rejected[0]?.reason ?? '', /^held:/);
       assert.equal(await findRecord(db.sql, 'encounter', encounter.id), undefined);
       assert.equal((await findRecord<Patient>(db.sql, 'patient', clashing()))?.phone, undefined);
+
       const [ledger] = await db.sql<{ outcome: string }[]>`
         SELECT outcome FROM applied_mutations WHERE device_id = ${second.deviceId} AND client_id = ${edit.clientId}`;
+
       assert.equal(ledger.outcome, 'rejected', 'a held patch applied nothing');
     });
 

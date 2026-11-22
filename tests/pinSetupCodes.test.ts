@@ -51,6 +51,7 @@ describe('PIN setup codes', () => {
     const rows = await db.sql<
       Record<string, unknown>[]
     >`SELECT * FROM pin_setup_codes WHERE staff_id = ${staffId} ORDER BY created_on`;
+
     return rows.map((row) => fromRow<PinSetupCode>('pin_setup_code', row));
   };
 
@@ -95,6 +96,7 @@ describe('PIN setup codes', () => {
       hashPinSetupCode(issued.code.toLowerCase(), stored.codeSalt, stored.codeIterations),
       stored.codeHash,
     );
+
     assert.equal(stored.createdBy, a.admin.id);
   });
 
@@ -155,6 +157,7 @@ describe('PIN setup codes', () => {
   it('refuses a device inserting a code of its own', async () => {
     const [code] = await codesFor(nurse.id);
     assert.ok(code);
+
     const response = await upload(app, a.device.credential, {
       transactionId: null,
       mutations: [

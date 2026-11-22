@@ -43,14 +43,17 @@ describe('insurance completion: audit fixes and settlement', () => {
   let nurse: Staff;
   const tokens = new Map<string, string>();
   const TZ = 'Africa/Lagos';
+
   const VERSIONS = {
     insuranceWorkflowVersion: 1,
     facilityContractVersion: 1,
     schemaVersion: 5,
     policyVersion: POLICY_VERSION,
   } as const;
+
   const day = (offset: number) =>
     serviceDateOf(new Date(Date.now() + offset * 86_400_000).toISOString(), TZ)!;
+
   const patient = (n: string) => `${f.facility.id}-${n}-K2`;
   const balance = (chargeId: string) => availableOnCharge(db.sql as never, f.facility.id, chargeId);
   const PAYER = 'payer:synthetic-s';
@@ -62,16 +65,20 @@ describe('insurance completion: audit fixes and settlement', () => {
       headers: asDevice(f.device.credential),
       payload: { staffId },
     });
+
     assert.equal(code.statusCode, 202, code.body);
+
     const verified = await app.inject({
       method: 'POST',
       url: '/workforce/access/verify',
       headers: asDevice(f.device.credential),
       payload: { staffId, code: lastCodeSentTo(email) },
     });
+
     assert.equal(verified.statusCode, 200, verified.body);
     tokens.set(staffId, verified.json().token);
   };
+
   const call = (path: string, payload: unknown, staffId: string) =>
     app.inject({
       method: 'POST',
@@ -82,6 +89,7 @@ describe('insurance completion: audit fixes and settlement', () => {
         'x-workforce-access': tokens.get(staffId) ?? '',
       },
     });
+
   const put = (
     table: UploadMutation['table'],
     record: Record<string, unknown>,
@@ -92,9 +100,12 @@ describe('insurance completion: audit fixes and settlement', () => {
     id: String(record.id),
     data: record,
   });
+
   const send = (mutations: UploadMutation[]) =>
     upload(app, f.device.credential, { ...VERSIONS, transactionId: 1, mutations } as never);
+
   const envelope = (by: Staff) => ({ ...envelopeFor(f), createdBy: by.id, schemaVersion: 5 });
+
   const ready = async () => {
     const r = await app.inject({
       method: 'POST',
@@ -102,8 +113,10 @@ describe('insurance completion: audit fixes and settlement', () => {
       headers: asDevice(f.device.credential),
       payload: { ...VERSIONS, clinicalWorkflowVersion: 1, pendingMutationCount: 0 },
     });
+
     assert.equal(r.statusCode, 200, r.body);
   };
+
   const key = () => randomUUID();
 
   /** One insured visit: verified cover, a clinician's entries, a consultation charge on the visit, confirmed. */
@@ -129,6 +142,7 @@ describe('insurance completion: audit fixes and settlement', () => {
       sex: 'female',
       ageYears: 30,
     });
+
     const coverId = `cover:${n}`;
     assert.equal(
       (
@@ -160,6 +174,7 @@ describe('insurance completion: audit fixes and settlement', () => {
       ).rejected.length,
       0,
     );
+
     const encounterId = `encounter:${n}`;
     await insertRecord(db.sql, 'encounter', {
       ...envelope(doctor),
@@ -169,6 +184,7 @@ describe('insurance completion: audit fixes and settlement', () => {
       openedOn: new Date().toISOString(),
       setting: 'facility',
     });
+
     for (const [i, e] of (
       opts.entries ?? [
         {
@@ -194,6 +210,7 @@ describe('insurance completion: audit fixes and settlement', () => {
         values: e.values,
       });
     }
+
     const chargeId = `charge:${n}`;
     await insertRecord(db.sql, 'charge', {
       ...envelope(desk),
@@ -208,16 +225,20 @@ describe('insurance completion: audit fixes and settlement', () => {
       currency: 'NGN',
       encounterId,
     });
+
     if (opts.confirm !== false) {
       const confirmed = await call(
         '/insurance/allocations/confirm',
         { chargeIds: [chargeId], requestKey: key(), basis: 'exception', reason: 'Synthetic visit' },
         officer.id,
       );
+
       assert.equal(confirmed.json().outcomes[0].outcome, 'confirmed', confirmed.body);
     }
+
     return { patientId, chargeId, encounterId, coverId };
   };
+
   type Claim = {
     id: string;
     claimNumber: string;
@@ -238,32 +259,40 @@ describe('insurance completion: audit fixes and settlement', () => {
     };
     decisions: { decision: string }[];
   };
+
   const claimFor = async (chargeId: string, includeSuperseded = false): Promise<Claim> => {
     await call('/insurance/claims/generate', {}, officer.id);
+
     const claims = (await call('/insurance/claims/list', { includeSuperseded }, officer.id)).json()
       .claims as Claim[];
+
     return claims.find(
       (c) =>
         c.lines.some((l) => l.chargeId === chargeId) &&
         !('supersededBy' in c && (c as { supersededBy?: string }).supersededBy),
     )!;
   };
+
   const codes = (c: Claim) =>
     c.issues
       .filter((i) => i.blocking)
       .map((i) => i.code)
       .sort();
+
   /** Ready, exported and submitted: the payer has it. */
   const submitted = async (chargeId: string) => {
     const claim = await claimFor(chargeId);
     const r = await call('/insurance/claims/ready', { claimIds: [claim.id] }, officer.id);
     assert.equal(r.json().outcomes[0].outcome, 'ready', JSON.stringify(r.json()));
+
     const exported = await call(
       '/insurance/claims/export',
       { claimIds: [claim.id], draft: false, format: 'csv', requestKey: key() },
       officer.id,
     );
+
     assert.equal(exported.statusCode, 200, exported.body);
+
     const sent = await call(
       '/insurance/claims/submit',
       {
@@ -276,15 +305,19 @@ describe('insurance completion: audit fixes and settlement', () => {
       },
       officer.id,
     );
+
     assert.equal(sent.statusCode, 200, sent.body);
+
     return claimFor(chargeId);
   };
+
   const decide = (claimId: string, body: Record<string, unknown>, by = officer.id) =>
     call(
       '/insurance/claims/decisions/record',
       { claimId, decidedOn: day(0), requestKey: key(), ...body },
       by,
     );
+
   const remit = (body: Record<string, unknown>, by = officer.id) =>
     call(
       '/insurance/remittances/record',
@@ -309,13 +342,16 @@ describe('insurance completion: audit fixes and settlement', () => {
     doctor = await addStaff(db.sql, f, { role: 'doctor' });
     chew = await addStaff(db.sql, f, { role: 'chew' });
     nurse = await addStaff(db.sql, f, { role: 'nurse' });
+
     for (const [s, email] of [
       [officer, 'officer@example.org'],
       [cashier, 'cashier@example.org'],
     ] as const) {
       await db.sql`INSERT INTO staff_contacts (facility_id, staff_id, email, verified_on) VALUES (${f.facility.id}, ${s.id}, ${email}, now())`;
     }
+
     const admin = { ...envelopeFor(f), schemaVersion: 5 };
+
     for (const [id, category, amountMinor] of [
       ['fee:consult', 'consultation', 5_000],
       ['fee:proc', 'procedure', 20_000],
@@ -332,6 +368,7 @@ describe('insurance completion: audit fixes and settlement', () => {
         chargeWhen: 'when_ordered',
       });
     }
+
     await login(officer.id, 'officer@example.org');
     await login(cashier.id, 'cashier@example.org');
     await login(f.admin.id, 'admin@example.org');
@@ -342,6 +379,7 @@ describe('insurance completion: audit fixes and settlement', () => {
       governanceReference: 'synthetic:setup',
       timeZone: TZ,
     });
+
     assert.equal(
       (
         await call(
@@ -352,6 +390,7 @@ describe('insurance completion: audit fixes and settlement', () => {
       ).statusCode,
       200,
     );
+
     const terms = {
       payerId: PAYER,
       effectiveFrom: '2020-01-01',
@@ -378,9 +417,11 @@ describe('insurance completion: audit fixes and settlement', () => {
         },
       ],
     };
+
     const draft = await call('/insurance/contracts/draft', { terms }, officer.id);
     assert.equal(draft.statusCode, 200, draft.body);
     await ready();
+
     const activated = await call(
       '/insurance/contracts/activate',
       {
@@ -390,6 +431,7 @@ describe('insurance completion: audit fixes and settlement', () => {
       },
       f.admin.id,
     );
+
     assert.equal(activated.statusCode, 200, activated.body);
     assert.equal(
       (
@@ -410,6 +452,7 @@ describe('insurance completion: audit fixes and settlement', () => {
       ).statusCode,
       200,
     );
+
     await setInsuranceState(db.sql, {
       facilityId: f.facility.id,
       state: 'active',
@@ -417,10 +460,12 @@ describe('insurance completion: audit fixes and settlement', () => {
       governanceReference: 'synthetic:activation',
     });
   });
+
   after(async () => {
     if (app) {
       await app.close();
     }
+
     if (db) {
       await db.drop();
     }
@@ -439,15 +484,19 @@ describe('insurance completion: audit fixes and settlement', () => {
       'diagnosis_catalogue_entries',
       'diagnosis_catalogue_imports',
     ];
+
     const config = buildSyncConfig();
+
     for (const table of secret) {
       assert.ok(!config.includes(table), table);
     }
+
     const published = (
       await db.sql<
         { tablename: string }[]
       >`SELECT tablename FROM pg_publication_tables WHERE pubname = 'powersync'`
     ).map((r) => r.tablename);
+
     for (const table of secret) {
       assert.ok(!published.includes(table), table);
     }
@@ -461,6 +510,7 @@ describe('insurance completion: audit fixes and settlement', () => {
           { by: doctor, step: 'diagnosis', values: { diagnosis: 'Fever' } },
         ].slice(0, 1),
       });
+
       let claim = await claimFor(v.chargeId);
       assert.equal(claim.lines[0].fulfillment.kind, 'missing');
       assert.ok(codes(claim).includes('fulfillment_missing'));
@@ -474,15 +524,18 @@ describe('insurance completion: audit fixes and settlement', () => {
         actorRole: 'chew',
         values: { complaints: ['Fever for two days'] },
       });
+
       claim = await claimFor(v.chargeId);
       assert.equal(claim.lines[0].fulfillment.kind, 'visit', 'CHEWs consult in primary care');
     });
+
     it('a payer that accepts codes as entered needs no catalogue; the code is labelled format-checked, never verified', async () => {
       const v = await visit('100002');
       const claim = await claimFor(v.chargeId);
       assert.deepEqual(codes(claim), []);
       assert.equal(claim.diagnoses[0].verification, 'format_checked');
     });
+
     it("a malformed code blocks the claim; a payer requiring verified codes needs the hospital's licensed list", async () => {
       const v = await visit('100003', {
         entries: [
@@ -498,6 +551,7 @@ describe('insurance completion: audit fixes and settlement', () => {
           },
         ],
       });
+
       assert.deepEqual(codes(await claimFor(v.chargeId)), ['diagnosis_code_format']);
     });
   });
@@ -519,6 +573,7 @@ describe('insurance completion: audit fixes and settlement', () => {
           },
         ],
       });
+
       assert.equal(
         (
           await send([
@@ -536,6 +591,7 @@ describe('insurance completion: audit fixes and settlement', () => {
         ).rejected.length,
         0,
       );
+
       const auth = (body: Record<string, unknown>) =>
         call(
           '/insurance/authorizations/save',
@@ -551,15 +607,18 @@ describe('insurance completion: audit fixes and settlement', () => {
           },
           officer.id,
         );
+
       assert.equal(
         (await auth({ status: 'emergency_exception' })).statusCode,
         400,
         'an emergency exception says why care could not wait',
       );
+
       const emergency = await auth({
         status: 'emergency_exception',
         note: 'Synthetic: acute abdomen, payer line closed',
       });
+
       assert.equal(emergency.statusCode, 200, emergency.body);
       assert.deepEqual(codes(await claimFor(v.chargeId)), ['authorization_emergency_followup']);
       assert.equal(
@@ -574,6 +633,7 @@ describe('insurance completion: audit fixes and settlement', () => {
         400,
         'a quantity names an authorized service',
       );
+
       assert.equal(
         (
           await auth({
@@ -586,6 +646,7 @@ describe('insurance completion: audit fixes and settlement', () => {
         ).statusCode,
         200,
       );
+
       assert.deepEqual(codes(await claimFor(v.chargeId)), []);
     });
   });
@@ -593,6 +654,7 @@ describe('insurance completion: audit fixes and settlement', () => {
   describe('making the patient liable (H3)', () => {
     it('needs a documented ground, never an unrecorded rule or missing configuration, and a separate approval for what the payer owes', async () => {
       const v = await visit('100005', { confirm: false });
+
       const selfPay = (liability: Record<string, unknown> | undefined, by = officer.id) =>
         call(
           '/insurance/allocations/confirm',
@@ -606,6 +668,7 @@ describe('insurance completion: audit fixes and settlement', () => {
           },
           by,
         );
+
       assert.equal((await selfPay(undefined)).statusCode, 400, 'a reason alone is not a ground');
       assert.equal(
         (
@@ -614,6 +677,7 @@ describe('insurance completion: audit fixes and settlement', () => {
         'contract_does_not_allow_self_pay',
         'an unrecorded contract rule never permits it',
       );
+
       assert.equal(
         (
           await selfPay({ ground: 'contract_clause', contractClause: 'Synthetic clause 7.2' })
@@ -621,6 +685,7 @@ describe('insurance completion: audit fixes and settlement', () => {
         'liability_approval_required',
         'the officer cannot move what the payer owes',
       );
+
       assert.equal(
         (
           await selfPay(
@@ -630,19 +695,25 @@ describe('insurance completion: audit fixes and settlement', () => {
         ).statusCode,
         403,
       );
+
       const approved = await selfPay(
         { ground: 'contract_clause', contractClause: 'Synthetic clause 7.2' },
         f.admin.id,
       );
+
       assert.equal(approved.json().outcomes[0].outcome, 'confirmed', approved.body);
+
       const [row] =
         await db.sql`SELECT d.inputs FROM coverage_allocation_details d JOIN coverage_allocations a ON a.id = d.allocation_id WHERE a.charge_id = ${v.chargeId}`;
+
       assert.equal(row.inputs.liability.contractClause, 'Synthetic clause 7.2');
       assert.equal(row.inputs.approvedBy, f.admin.id, 'who approved it is kept with the snapshot');
     });
+
     it('a charge on a current claim is never moved; the claim is revised first', async () => {
       const v = await visit('100006');
       await claimFor(v.chargeId);
+
       const moved = await call(
         '/insurance/allocations/confirm',
         {
@@ -655,10 +726,13 @@ describe('insurance completion: audit fixes and settlement', () => {
         },
         f.admin.id,
       );
+
       assert.equal(moved.json().outcomes[0].reason, 'on_current_claim');
     });
+
     it('missing hospital configuration is never a ground; a recorded not-eligible check is', async () => {
       const v = await visit('100007', { feeItemId: 'fee:other', price: 2_000, confirm: false });
+
       const moved = await call(
         '/insurance/allocations/confirm',
         {
@@ -671,6 +745,7 @@ describe('insurance completion: audit fixes and settlement', () => {
         },
         f.admin.id,
       );
+
       assert.equal(moved.json().outcomes[0].reason, 'missing_configuration_is_not_a_ground');
       const n = await visit('100008', { confirm: false });
       assert.equal(
@@ -692,6 +767,7 @@ describe('insurance completion: audit fixes and settlement', () => {
         ).rejected.length,
         0,
       );
+
       const ne = await call(
         '/insurance/allocations/confirm',
         {
@@ -704,6 +780,7 @@ describe('insurance completion: audit fixes and settlement', () => {
         },
         officer.id,
       );
+
       assert.equal(ne.json().outcomes[0].outcome, 'confirmed', ne.body);
     });
   });
@@ -719,29 +796,35 @@ describe('insurance completion: audit fixes and settlement', () => {
         3_600,
         'the payer share: tariff 4,000 less the 10% co-pay',
       );
+
       assert.equal((await decide(claim.id, { decision: 'approved' })).statusCode, 200);
+
       const paid = await remit({
         reference: 'SYN-PAY-F',
         amountMinor: 3_600,
         allocations: [{ claimId: claim.id, amountMinor: 3_600 }],
       });
+
       assert.equal(paid.statusCode, 200, paid.body);
       const after = await claimFor(v.chargeId);
       assert.deepEqual(
         [after.settlement.status, after.settlement.outstandingMinor, after.settlement.paidMinor],
         ['settled', 0, 3_600],
       );
+
       assert.equal(
         await balance(v.chargeId),
         patientOwes,
         "payer money never enters the patient's account",
       );
+
       assert.equal(
         (await db.sql`SELECT COUNT(*)::int AS n FROM payments WHERE patient_id = ${v.patientId}`)[0]
           .n,
         0,
       );
     });
+
     it('Scenario G: a partial approval records the deduction; nothing becomes patient debt; a write-off needs its own permission', async () => {
       const v = await visit('200002');
       const patientOwes = await balance(v.chargeId);
@@ -757,18 +840,21 @@ describe('insurance completion: audit fixes and settlement', () => {
         'not_partial',
         'approving everything is not partial',
       );
+
       assert.equal(
         (await decide(claim.id, { decision: 'partially_approved', approvedMinor: 3_000 }))
           .statusCode,
         400,
         "the payer's reason is required",
       );
+
       const decided = await decide(claim.id, {
         decision: 'partially_approved',
         approvedMinor: 3_000,
         reasonCode: 'TARIFF',
         reason: 'Synthetic: tariff variance',
       });
+
       assert.equal(decided.statusCode, 200, decided.body);
       assert.equal(
         (
@@ -780,16 +866,19 @@ describe('insurance completion: audit fixes and settlement', () => {
         ).statusCode,
         200,
       );
+
       let s = (await claimFor(v.chargeId)).settlement;
       assert.deepEqual(
         [s.status, s.deductedMinor, s.paidMinor, s.outstandingMinor, s.payerOwesMinor],
         ['partially_paid', 600, 3_000, 600, 0],
       );
+
       assert.equal(
         await balance(v.chargeId),
         patientOwes,
         "the deduction is not the patient's debt",
       );
+
       const dispute = await call(
         '/insurance/disputes/open',
         {
@@ -800,6 +889,7 @@ describe('insurance completion: audit fixes and settlement', () => {
         },
         officer.id,
       );
+
       assert.equal(dispute.statusCode, 200, dispute.body);
       assert.equal((await claimFor(v.chargeId)).settlement.status, 'disputed');
       assert.equal(
@@ -813,6 +903,7 @@ describe('insurance completion: audit fixes and settlement', () => {
         'above_outstanding',
         'a disputed amount is not written off',
       );
+
       assert.equal(
         (
           await call(
@@ -828,6 +919,7 @@ describe('insurance completion: audit fixes and settlement', () => {
         ).statusCode,
         200,
       );
+
       assert.equal(
         (
           await call(
@@ -839,6 +931,7 @@ describe('insurance completion: audit fixes and settlement', () => {
         403,
         'the officer does not write off',
       );
+
       assert.equal(
         (
           await call(
@@ -854,10 +947,12 @@ describe('insurance completion: audit fixes and settlement', () => {
         ).statusCode,
         200,
       );
+
       s = (await claimFor(v.chargeId)).settlement;
       assert.deepEqual([s.status, s.writtenOffMinor, s.outstandingMinor], ['settled', 600, 0]);
       assert.equal(await balance(v.chargeId), patientOwes);
     });
+
     it('Scenario H: one payment pays several claims, once; a duplicate or over-allocation is refused; a reversal undoes it whole', async () => {
       const [a, b] = [await visit('200003'), await visit('200004')];
       const [ca, cb] = [await submitted(a.chargeId), await submitted(b.chargeId)];
@@ -875,6 +970,7 @@ describe('insurance completion: audit fixes and settlement', () => {
         400,
         'never more than received',
       );
+
       assert.equal(
         (
           await remit({
@@ -885,6 +981,7 @@ describe('insurance completion: audit fixes and settlement', () => {
         ).json().error,
         'above_outstanding',
       );
+
       const paid = await remit({
         reference: 'SYN-PAY-H',
         amountMinor: 8_000,
@@ -893,17 +990,20 @@ describe('insurance completion: audit fixes and settlement', () => {
           { claimId: cb.id, amountMinor: 3_600 },
         ],
       });
+
       assert.equal(paid.statusCode, 200, paid.body);
       assert.equal(
         paid.json().unallocatedMinor,
         800,
         'what is not matched stays visibly unallocated',
       );
+
       assert.equal(
         (await remit({ reference: ' syn-pay-h ', amountMinor: 8_000 })).json().error,
         'duplicate_remittance',
         'the same payment is never recorded twice',
       );
+
       assert.equal(
         (
           await call(
@@ -919,6 +1019,7 @@ describe('insurance completion: audit fixes and settlement', () => {
         'above_outstanding',
         'a settled claim takes no more',
       );
+
       assert.deepEqual(
         [
           (await claimFor(a.chargeId)).settlement.status,
@@ -926,6 +1027,7 @@ describe('insurance completion: audit fixes and settlement', () => {
         ],
         ['settled', 'settled'],
       );
+
       assert.equal(
         (
           await call(
@@ -940,11 +1042,13 @@ describe('insurance completion: audit fixes and settlement', () => {
         ).statusCode,
         200,
       );
+
       assert.equal(
         (await claimFor(a.chargeId)).settlement.outstandingMinor,
         3_600,
         'a reversed payment no longer counts',
       );
+
       assert.equal(
         (
           await remit({
@@ -959,19 +1063,23 @@ describe('insurance completion: audit fixes and settlement', () => {
         200,
         'recorded again correctly',
       );
+
       const listed = (await call('/insurance/remittances/list', {}, officer.id)).json()
         .remittances as { reference: string; reversed?: unknown }[];
+
       assert.equal(
         listed.filter((r) => r.reference === 'SYN-PAY-H').length,
         2,
         'both the reversed and the corrected payment stay on record',
       );
+
       assert.equal((await call('/insurance/remittances/list', {}, cashier.id)).statusCode, 403);
       await assert.rejects(
         db.sql`DELETE FROM insurance_remittances`,
         'payer money records are permanent',
       );
     });
+
     it('Scenario I: a denied claim is corrected and resubmitted; earlier revisions, submissions and decisions stay', async () => {
       const v = await visit('200005');
       const patientOwes = await balance(v.chargeId);
@@ -986,6 +1094,7 @@ describe('insurance completion: audit fixes and settlement', () => {
         ).statusCode,
         200,
       );
+
       const denied = await claimFor(v.chargeId);
       assert.equal(denied.settlement.status, 'denied');
       assert.equal(
@@ -993,21 +1102,26 @@ describe('insurance completion: audit fixes and settlement', () => {
         patientOwes,
         'a rejected claim never becomes patient debt',
       );
+
       const revised = await call(
         `/insurance/claims/${encodeURIComponent(claim.id)}/revise`,
         { reason: 'Synthetic: add the missing note', requestKey: key() },
         officer.id,
       );
+
       assert.equal(revised.statusCode, 200, revised.body);
       const resent = await submitted(v.chargeId);
       assert.equal(resent.revision, 2);
+
       const submissions = (await call('/insurance/claims/submissions/list', {}, officer.id)).json()
         .submissions as { claimIds: string[]; resubmission: boolean; exportIds: string[] }[];
+
       assert.equal(submissions.find((s) => s.claimIds.includes(resent.id))?.resubmission, true);
       assert.ok(
         submissions.find((s) => s.claimIds.includes(claim.id))?.exportIds.length,
         'the exact files sent are on record',
       );
+
       assert.equal((await decide(resent.id, { decision: 'approved' })).statusCode, 200);
       assert.equal(
         (
@@ -1019,18 +1133,23 @@ describe('insurance completion: audit fixes and settlement', () => {
         ).statusCode,
         200,
       );
+
       assert.equal((await claimFor(v.chargeId)).settlement.status, 'settled');
+
       const all = (
         await call('/insurance/claims/list', { includeSuperseded: true }, officer.id)
       ).json().claims as Claim[];
+
       const first = all.find((c) => c.id === claim.id)!;
       assert.deepEqual(
         first.decisions.map((d) => d.decision),
         ['denied'],
         'the earlier decision is kept with its revision',
       );
+
       assert.equal((await decide(claim.id, { decision: 'approved' })).json().error, 'superseded');
     });
+
     it('reports outstanding balances per payer, every figure apart', async () => {
       const report = (await call('/insurance/outstanding', {}, f.admin.id)).json();
       const totals = report.totals[`${PAYER}|NGN`];
@@ -1053,11 +1172,14 @@ describe('insurance completion: audit fixes and settlement', () => {
             ),
         ),
       );
+
       assert.equal((await call('/insurance/outstanding', {}, cashier.id)).statusCode, 403);
     });
+
     it('proposes remittance matches without recording anything', async () => {
       const v = await visit('200006');
       const claim = await submitted(v.chargeId);
+
       const matched = await call(
         '/insurance/remittances/match',
         {
@@ -1070,11 +1192,13 @@ describe('insurance completion: audit fixes and settlement', () => {
         },
         officer.id,
       );
+
       assert.equal(matched.statusCode, 200, matched.body);
       assert.deepEqual(
         matched.json().matches.map((m: { confidence: string }) => m.confidence),
         ['exact', 'uncertain', 'none'],
       );
+
       assert.equal((await claimFor(v.chargeId)).settlement.paidMinor, 0);
     });
   });

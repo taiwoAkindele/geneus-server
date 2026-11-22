@@ -19,11 +19,13 @@ import {
   testApp,
   upload,
 } from './postgres.ts';
+
 export const versions = {
   facilityContractVersion: 1,
   schemaVersion: 4,
   policyVersion: 10,
 } as const;
+
 export const put = (
   record: Record<string, unknown>,
   precondition?: {
@@ -38,6 +40,7 @@ export const put = (
   data: record,
   ...precondition,
 });
+
 export const setupWorkforce = async (sql: Sql) => {
   const facility = await registerScratchFacility(sql);
   const app = testApp(sql);
@@ -47,6 +50,7 @@ export const setupWorkforce = async (sql: Sql) => {
   const begins = new Date(now - 3600000).toISOString();
   const ends = new Date(now + 3 * 86400000).toISOString();
   const uid = randomUUID();
+
   const unit = {
     ...env,
     type: 'unit',
@@ -57,6 +61,7 @@ export const setupWorkforce = async (sql: Sql) => {
     revision: 1,
     active: true,
   };
+
   const location = {
     ...env,
     type: 'location',
@@ -68,6 +73,7 @@ export const setupWorkforce = async (sql: Sql) => {
     revision: 1,
     active: true,
   };
+
   const definition = {
     ...env,
     type: 'service_definition',
@@ -79,6 +85,7 @@ export const setupWorkforce = async (sql: Sql) => {
     orderable: false,
     revision: 1,
   };
+
   const offering = {
     ...env,
     type: 'service_offering',
@@ -95,12 +102,16 @@ export const setupWorkforce = async (sql: Sql) => {
     resourceReadiness: 'unassessed',
     revision: 1,
   };
+
   const send = (mutations: UploadMutation[]) =>
     upload(app, facility.device.credential, { ...versions, transactionId: clientId(), mutations });
+
   const configured = await send([put(offering), put(location), put(definition), put(unit)]);
+
   if (configured.rejected.length) {
     throw new Error(`Fixture configuration refused: ${JSON.stringify(configured.rejected)}`);
   }
+
   const bootstrap = {
     ...env,
     type: 'clinical_authority_bootstrap',
@@ -117,7 +128,9 @@ export const setupWorkforce = async (sql: Sql) => {
     authorizedBy: 'synthetic:operator',
     reason: 'Audited synthetic clinical reviewer',
   };
+
   await applyGovernanceRecord(sql, signer, bootstrap, 'synthetic-test-operator');
+
   const profile = {
     ...env,
     type: 'practitioner_profile',
@@ -132,10 +145,13 @@ export const setupWorkforce = async (sql: Sql) => {
     active: true,
     revision: 1,
   };
+
   const profiled = await send([put(profile)]);
+
   if (profiled.rejected.length) {
     throw new Error('Fixture professional profile was refused');
   }
+
   const credential = {
     ...env,
     type: 'credential',
@@ -152,6 +168,7 @@ export const setupWorkforce = async (sql: Sql) => {
     checkedBy: facility.admin.id,
     checkedOn: env.createdOn,
   };
+
   const decision = {
     ...env,
     type: 'capability_decision',
@@ -170,13 +187,16 @@ export const setupWorkforce = async (sql: Sql) => {
     credentialRevisionIds: [credential.id],
     reason: 'Independent synthetic approval',
   };
+
   const approved = await send([
     put(decision, { expectedPreviousId: null }),
     put(credential, { expectedPreviousId: null }),
   ]);
+
   if (approved.rejected.length) {
     throw new Error(`Fixture approval refused: ${JSON.stringify(approved.rejected)}`);
   }
+
   const assignment = {
     ...env,
     type: 'staff_assignment',
@@ -193,6 +213,7 @@ export const setupWorkforce = async (sql: Sql) => {
     status: 'active',
     temporaryCover: false,
   };
+
   const session = {
     ...env,
     type: 'service_session',
@@ -211,13 +232,16 @@ export const setupWorkforce = async (sql: Sql) => {
     rosterShiftIds: [],
     maxAppointments: 5,
   };
+
   const scheduled = await send([
     put(session, { expectedPreviousId: null }),
     put(assignment, { expectedPreviousId: null }),
   ]);
+
   if (scheduled.rejected.length) {
     throw new Error(`Fixture scheduling refused: ${JSON.stringify(scheduled.rejected)}`);
   }
+
   const patientId = `${facility.facility.code}-000001-A1`;
   await insertRecord(
     sql,
@@ -233,6 +257,7 @@ export const setupWorkforce = async (sql: Sql) => {
       ageYears: 30,
     }),
   );
+
   const booking = () =>
     Appointment.parse({
       ...env,
@@ -251,6 +276,7 @@ export const setupWorkforce = async (sql: Sql) => {
         locations: [{ locationId: location.id, units: 1 }],
       },
     });
+
   const enable = async () => {
     const handshake = await app.inject({
       method: 'POST',
@@ -258,10 +284,13 @@ export const setupWorkforce = async (sql: Sql) => {
       headers: asDevice(facility.device.credential),
       payload: { ...versions, pendingMutationCount: 0 },
     });
+
     if (handshake.statusCode !== 200) {
       throw new Error('Fixture handshake failed');
     }
+
     const effective = Date.now();
+
     const command = {
       facilityId: facility.facility.id,
       deviceId: facility.device.deviceId,
@@ -277,9 +306,12 @@ export const setupWorkforce = async (sql: Sql) => {
         governanceReference: 'synthetic:reviewed-cutover',
       },
     };
+
     await setWorkforcePolicy(sql, signer, command, effective);
+
     return command;
   };
+
   return {
     facility,
     app,
@@ -301,6 +333,7 @@ export const setupWorkforce = async (sql: Sql) => {
     now,
   };
 };
+
 export const envelopeForOther = (
   facility: FacilityRegistrationResult,
   record: Record<string, unknown>,

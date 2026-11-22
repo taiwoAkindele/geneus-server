@@ -42,6 +42,7 @@ describe('care services on bookings and visits', () => {
   let other: FacilityRegistrationResult;
   let nurse: Staff;
   let patientId: string;
+
   const CURRENT = {
     careServiceVersion: 1,
     facilityContractVersion: 1,
@@ -49,6 +50,7 @@ describe('care services on bookings and visits', () => {
     policyVersion: POLICY_VERSION,
     clinicalWorkflowVersion: 1,
   } as const;
+
   const put = (
     table: UploadMutation['table'],
     id: string,
@@ -67,8 +69,10 @@ describe('care services on bookings and visits', () => {
       ...fields,
     },
   });
+
   const send = (...mutations: UploadMutation[]) =>
     upload(app, f.device.credential, { ...CURRENT, transactionId: null, mutations });
+
   const seed = async (facility: FacilityRegistrationResult, suffix: string) => {
     const env = { ...envelopeFor(facility), schemaVersion: 4 };
     await insertRecord(
@@ -84,6 +88,7 @@ describe('care services on bookings and visits', () => {
         revision: 1,
       }),
     );
+
     await insertRecord(
       db.sql,
       'location',
@@ -96,6 +101,7 @@ describe('care services on bookings and visits', () => {
         revision: 1,
       }),
     );
+
     const offering = async (key: string, patch: Record<string, unknown>, investigation = false) => {
       await insertRecord(
         db.sql,
@@ -115,6 +121,7 @@ describe('care services on bookings and visits', () => {
             : {}),
         }),
       );
+
       await insertRecord(
         db.sql,
         'service_offering',
@@ -134,6 +141,7 @@ describe('care services on bookings and visits', () => {
         }),
       );
     };
+
     await offering('opd', { visitTypes: ['general', 'follow_up'] });
     await offering('inpatient', { visitTypes: [] });
     await offering('retired', { visitTypes: ['general'], configuration: 'retired' });
@@ -164,10 +172,12 @@ describe('care services on bookings and visits', () => {
       [],
     );
   });
+
   after(async () => {
     if (app) {
       await app.close();
     }
+
     if (db) {
       await db.drop();
     }
@@ -188,6 +198,7 @@ describe('care services on bookings and visits', () => {
         visitType: 'follow_up',
       }),
     );
+
     assert.deepEqual(result.rejected, []);
     const saved = (await findRecord<Appointment>(db.sql, 'appointment', 'booking:opd'))!;
     assert.equal(saved.offeringId, 'offering:opd:a');
@@ -211,18 +222,22 @@ describe('care services on bookings and visits', () => {
     const refused = async (id: string, fields: Record<string, unknown>) =>
       (await send(put('appointment', id, { patientId, reason: 'x', ...fields }))).rejected[0]
         ?.reason ?? '';
+
     assert.match(
       await refused('booking:lab', { offeringId: 'offering:hb:a' }),
       /care service of this hospital/,
     );
+
     assert.match(
       await refused('booking:ward', { offeringId: 'offering:inpatient:a' }),
       /does not take booked/,
     );
+
     assert.match(
       await refused('booking:other', { offeringId: 'offering:opd:b' }),
       /care service of this hospital/,
     );
+
     assert.match(
       await refused('booking:kind', { offeringId: 'offering:opd:a', visitType: 'antenatal' }),
       /does not record this kind/,
@@ -243,6 +258,7 @@ describe('care services on bookings and visits', () => {
       ).rejected,
       [],
     );
+
     assert.deepEqual(
       (
         await send(
@@ -257,6 +273,7 @@ describe('care services on bookings and visits', () => {
       ).rejected,
       [],
     );
+
     assert.equal(
       (await findRecord<Encounter>(db.sql, 'encounter', 'encounter:booked'))!.offeringId,
       'offering:opd:a',
@@ -275,6 +292,7 @@ describe('care services on bookings and visits', () => {
         offeringId: 'offering:inpatient:a',
       },
     });
+
     assert.equal(result.rejected.length, 1);
     assert.equal(
       (await findRecord<Appointment>(db.sql, 'appointment', 'booking:opd'))!.offeringId,
@@ -302,6 +320,7 @@ describe('care services on bookings and visits', () => {
         ],
       },
     });
+
     assert.equal(response.statusCode, 400);
     assert.equal(await findRecord(db.sql, 'appointment', 'booking:old'), undefined);
   });
@@ -313,12 +332,16 @@ describe('care services on bookings and visits', () => {
       headers: asDevice(f.device.credential),
       payload: { ...CURRENT, pendingMutationCount: 0 },
     });
+
     assert.equal(token.statusCode, 200, token.body);
     assert.equal(token.json().careServiceVersion, 1);
+
     const claims = JSON.parse(
       Buffer.from(token.json().token.split('.')[1], 'base64url').toString(),
     );
+
     assert.equal(claims.care_service, 1);
+
     const plain = await app.inject({
       method: 'POST',
       url: '/sync/token',
@@ -331,19 +354,24 @@ describe('care services on bookings and visits', () => {
         pendingMutationCount: 0,
       },
     });
+
     assert.equal(
       JSON.parse(Buffer.from(plain.json().token.split('.')[1], 'base64url').toString())
         .care_service,
       undefined,
     );
+
     const config = buildSyncConfig();
+
     const offeringQueries = config
       .split('\n  service_offerings:\n')[1]
       .split(/\n {2}[a-z_]+:\n/)[0];
+
     assert.ok(
       offeringQueries.includes('visit_types AS "visitTypes"') &&
         offeringQueries.includes("auth.parameter('care_service') = 1"),
     );
+
     assert.ok(
       offeringQueries.includes("auth.parameter('care_service') IS NULL"),
       'older clients still receive offerings, without visit kinds',
@@ -363,6 +391,7 @@ describe('care services on bookings and visits', () => {
             : {}),
         },
       });
+
     const details = {
       name: 'Sunrise Hospital Annex',
       level: 'general_hospital',
@@ -373,6 +402,7 @@ describe('care services on bookings and visits', () => {
       address: '12 Sample Road, Ikeja',
       phone: '+234 800 000 0000',
     };
+
     it('lets a PIN-verified administrator correct the details, never the code', async () => {
       assert.equal((await save(details)).statusCode, 403, 'a device alone is not a person');
       assert.equal((await save({ ...details, code: 'OTHER' }, f.admin.id)).statusCode, 400);
@@ -387,15 +417,18 @@ describe('care services on bookings and visits', () => {
           await db.sql`SELECT 1 FROM audit_events WHERE facility_id = ${f.facility.id} AND metadata->>'context' = 'facility_details'`
         ).length,
       );
+
       assert.deepEqual(
         (await save(details, f.admin.id)).json().changed,
         [],
         'saving unchanged details changes nothing',
       );
     });
+
     it('refuses anyone but an administrator', async () => {
       assert.equal((await save({ ...details, name: 'Not allowed' }, nurse.id)).statusCode, 403);
     });
+
     it('acts for the person signed in on the enrolled device without a PIN step, never for someone outside the facility', async () => {
       const as = (staffId: string) =>
         app.inject({
@@ -404,11 +437,13 @@ describe('care services on bookings and visits', () => {
           payload: { ...details, phone: '+234 800 111 2222' },
           headers: { ...asDevice(f.device.credential), 'x-actor-staff-id': staffId },
         });
+
       assert.equal((await as(f.admin.id)).statusCode, 200);
       assert.equal(
         (await findRecord<Facility>(db.sql, 'facility', f.facility.id))!.phone,
         '+234 800 111 2222',
       );
+
       assert.equal((await as(nurse.id)).statusCode, 403, 'the nurse’s own role still applies');
       assert.equal(
         (await as(other.admin.id)).statusCode,

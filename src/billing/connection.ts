@@ -45,6 +45,7 @@ export const providerConnection = async (
     encryptedSecret: row.encrypted_secret,
   };
 };
+
 export type ProviderConnection = Awaited<ReturnType<typeof providerConnection>>;
 
 /** Whether patients can pay this hospital online: a connected provider that offers a checkout. */
@@ -61,6 +62,7 @@ export const checkoutAvailable = async (
   const [row] = await sql<
     { provider: string }[]
   >`SELECT provider FROM billing_connections WHERE facility_id = ${facilityId}`;
+
   const provider = row ? paymentProvider(row.provider) : undefined;
 
   return Boolean(provider?.checkout && provider.descriptor.currencies.includes(currency));

@@ -27,6 +27,7 @@ test('organization facility creation reuses verified identity, isolates records 
   t.after(() => app.close());
   const a = await registerScratchFacility(db.sql);
   const nurse = await addStaff(db.sql, a, { role: 'nurse' });
+
   const post = (path: string, values: Record<string, unknown> = {}, staffId = a.admin.id) =>
     app.inject({
       method: 'POST',
@@ -34,6 +35,7 @@ test('organization facility creation reuses verified identity, isolates records 
       headers: asDevice(a.device.credential),
       payload: { actorStaffId: staffId, ...values },
     });
+
   const patientId = `${a.facility.id}-000001-K2`;
   await insertRecord(
     db.sql,
@@ -49,6 +51,7 @@ test('organization facility creation reuses verified identity, isolates records 
       ageYears: 30,
     }),
   );
+
   const defaults = await post('/organization/facilities/defaults');
   assert.equal(defaults.statusCode, 200, defaults.body);
   assert.equal(defaults.json().organization, null);
@@ -57,6 +60,7 @@ test('organization facility creation reuses verified identity, isolates records 
     defaults.json().administrator.verifiedEmail,
     await findStaffEmail(db.sql, a.facility.id, a.admin.id),
   );
+
   const input = {
     code: scratchFacilityCode(),
     name: 'Synthetic second facility',
@@ -67,11 +71,13 @@ test('organization facility creation reuses verified identity, isolates records 
     requestId: randomUUID(),
     ...proof(),
   };
+
   const created = await post('/organization/facilities', {
     ...input,
     adminEmail: 'not-the-admin@example.org',
     adminFullName: 'Ignored caller name',
   });
+
   assert.equal(created.statusCode, 201, created.body);
   const result = created.json();
   assert.equal(result.facility.name, input.name);
@@ -82,13 +88,17 @@ test('organization facility creation reuses verified identity, isolates records 
     (await findRecord<Staff>(db.sql, 'staff', a.admin.id))?.personId,
     result.admin.personId,
   );
+
   assert.equal(
     await findStaffEmail(db.sql, result.facility.id, result.admin.id),
     await findStaffEmail(db.sql, a.facility.id, a.admin.id),
   );
+
   assert.ok('identity' in (await verifyCredential(db.sql, result.device.credential)));
+
   const [separate] =
     await db.sql`SELECT (SELECT count(*) FROM patients WHERE facility_id=${input.code})::int AS patients,(SELECT count(*) FROM staff WHERE facility_id=${input.code})::int AS staff`;
+
   assert.deepEqual(separate, { patients: 0, staff: 1 });
   assert.equal((await findRecord<Staff>(db.sql, 'staff', nurse.id))?.facilityId, a.facility.id);
   const replay = await post('/organization/facilities', input);
@@ -97,8 +107,10 @@ test('organization facility creation reuses verified identity, isolates records 
   const changed = await post('/organization/facilities', { ...input, name: 'Changed retry' });
   assert.equal(changed.statusCode, 409);
   assert.equal(changed.json().error, 'request_changed');
+
   const [counts] =
     await db.sql`SELECT (SELECT count(*) FROM organizations)::int AS organizations,(SELECT count(*) FROM organization_facility_creations)::int AS creations`;
+
   assert.deepEqual(counts, { organizations: 1, creations: 1 });
   const directory = (await post('/organization/facilities/list')).json();
   assert.equal(directory.organization.id, result.organization.id);
@@ -114,6 +126,7 @@ test('organization facility creation reuses verified identity, isolates records 
       .accessible,
     false,
   );
+
   const opening = { facilityId: input.code, ...proof() };
   const opened = await post('/organization/facilities/open', opening);
   assert.equal(opened.statusCode, 200, opened.body);
@@ -128,6 +141,7 @@ test('organization facility creation reuses verified identity, isolates records 
       .statusCode,
     403,
   );
+
   const unrelated = await registerScratchFacility(db.sql);
   assert.equal(
     (await post('/organization/facilities/open', { facilityId: unrelated.facility.id, ...proof() }))
@@ -140,13 +154,16 @@ test('organization facility creation reuses verified identity, isolates records 
     staffId: nurse.id,
     toFacilityId: input.code,
   });
+
   assert.equal(request.statusCode, 201, request.body);
+
   const accepted = await app.inject({
     method: 'POST',
     url: `/organization/staff-requests/${encodeURIComponent(request.json().id)}/accept`,
     headers: asDevice(result.device.credential),
     payload: { actorStaffId: result.admin.id, role: 'nurse', permission: 'read_only' },
   });
+
   assert.equal(accepted.statusCode, 201, accepted.body);
   const nurseNewDevice = { facilityId: input.code, ...proof() };
   const deniedEnrollment = await post('/organization/facilities/open', nurseNewDevice, nurse.id);
@@ -156,11 +173,13 @@ test('organization facility creation reuses verified identity, isolates records 
     (await db.sql`SELECT id FROM devices WHERE id=${nurseNewDevice.deviceId}`).length,
     0,
   );
+
   const nurseOnEnrolledDevice = await post(
     '/organization/facilities/open',
     { facilityId: input.code, deviceId: result.device.deviceId },
     nurse.id,
   );
+
   assert.equal(nurseOnEnrolledDevice.statusCode, 200, nurseOnEnrolledDevice.body);
   assert.equal(nurseOnEnrolledDevice.json().staffId, accepted.json().staffId);
   assert.equal(nurseOnEnrolledDevice.json().device, undefined);
@@ -177,6 +196,7 @@ test('missing verified admin email refuses additional facility creation without 
   t.after(() => app.close());
   const a = await registerScratchFacility(db.sql);
   await db.sql`DELETE FROM staff_contacts WHERE facility_id=${a.facility.id}`;
+
   const response = await app.inject({
     method: 'POST',
     url: '/organization/facilities',
@@ -193,6 +213,7 @@ test('missing verified admin email refuses additional facility creation without 
       ...proof(),
     },
   });
+
   assert.equal(response.statusCode, 403);
   assert.equal(response.json().error, 'verified_email_required');
   assert.equal((await db.sql`SELECT id FROM organizations`).length, 0);

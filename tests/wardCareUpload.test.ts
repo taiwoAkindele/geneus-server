@@ -35,6 +35,7 @@ describe('continuing inpatient care upload and PostgreSQL invariants', () => {
   let cashier: Staff;
   let pharmacist: Staff;
   let sequence = 0;
+
   const put = (
     table: UploadMutation['table'],
     id: string,
@@ -47,6 +48,7 @@ describe('continuing inpatient care upload and PostgreSQL invariants', () => {
     id,
     data: { ...envelopeFor(facility), createdBy: actor.id, id, type: table, ...data },
   });
+
   const send = (...mutations: UploadMutation[]) =>
     upload(app, facility.device.credential, {
       pharmacyWorkflowVersion: 1,
@@ -59,6 +61,7 @@ describe('continuing inpatient care upload and PostgreSQL invariants', () => {
       transactionId: 1,
       mutations,
     });
+
   before(async () => {
     db = await scratchDatabase();
     app = testApp(db.sql);
@@ -72,6 +75,7 @@ describe('continuing inpatient care upload and PostgreSQL invariants', () => {
       unitId: 'WARD',
       name: 'Ward team',
     });
+
     await insertRecord(db.sql, 'location', {
       ...envelopeFor(facility),
       id: 'ward:one',
@@ -82,14 +86,17 @@ describe('continuing inpatient care upload and PostgreSQL invariants', () => {
       revision: 1,
     });
   });
+
   after(async () => {
     if (app) {
       await app.close();
     }
+
     if (db) {
       await db.drop();
     }
   });
+
   const newStay = async () => {
     const n = ++sequence;
     const patientId = `${facility.facility.id}-${String(n).padStart(6, '0')}-K2`;
@@ -108,6 +115,7 @@ describe('continuing inpatient care upload and PostgreSQL invariants', () => {
       sex: 'female',
       ageYears: 30,
     });
+
     await insertRecord(db.sql, 'encounter', {
       ...base,
       id: sourceId,
@@ -115,6 +123,7 @@ describe('continuing inpatient care upload and PostgreSQL invariants', () => {
       patientId,
       openedOn: base.createdOn,
     });
+
     await insertRecord(db.sql, 'encounter_entry', {
       ...base,
       id: requestId,
@@ -125,6 +134,7 @@ describe('continuing inpatient care upload and PostgreSQL invariants', () => {
       step: 'admission',
       values: { ward: 'Ward 1', note: 'Recorded admission reason' },
     });
+
     const confirm: InpatientEvent = {
       ...base,
       schemaVersion: 5,
@@ -138,6 +148,7 @@ describe('continuing inpatient care upload and PostgreSQL invariants', () => {
       receivingUnitId: 'unit:ward',
       actorRole: 'doctor',
     };
+
     await insertRecord(db.sql, 'inpatient_event', confirm);
     await insertRecord(db.sql, 'location', {
       ...base,
@@ -149,6 +160,7 @@ describe('continuing inpatient care upload and PostgreSQL invariants', () => {
       active: true,
       revision: 1,
     });
+
     const reserved = {
       ...confirm,
       id: `${admissionId}:reserve`,
@@ -157,20 +169,25 @@ describe('continuing inpatient care upload and PostgreSQL invariants', () => {
       wardId: 'ward:one',
       bedId: `bed:${n}`,
     };
+
     await insertRecord(db.sql, 'inpatient_event', reserved);
+
     const arrived = {
       ...reserved,
       id: `${admissionId}:arrive`,
       previousId: reserved.id,
       action: 'arrive' as const,
     };
+
     await insertRecord(db.sql, 'inpatient_event', arrived);
+
     const session = put('encounter', sessionId, {
       patientId,
       openedOn: new Date().toISOString(),
       workflowVersion: 1,
       inpatientContext: { admissionId, purpose: 'review' },
     });
+
     const entry = (id: string, step: string, values: Record<string, unknown>, actor = doctor) =>
       put(
         'encounter_entry',
@@ -186,6 +203,7 @@ describe('continuing inpatient care upload and PostgreSQL invariants', () => {
         },
         actor,
       );
+
     const event = (
       id: string,
       values: Record<string, unknown>,
@@ -205,9 +223,11 @@ describe('continuing inpatient care upload and PostgreSQL invariants', () => {
         },
         actor,
       );
+
     const noteId = `note:${n}`;
     const rxId = `rx:${n}`;
     const orderId = `order:${n}`;
+
     return {
       n,
       base,
@@ -226,11 +246,13 @@ describe('continuing inpatient care upload and PostgreSQL invariants', () => {
       orderId,
     };
   };
+
   it('lets a pharmacist supply signed discharge medicines after departure without creating another visit', async () => {
     pharmacist = await addStaff(db.sql, facility, { role: 'pharmacy_staff' });
     const c = await newStay();
     c.session.data.inpatientContext = { admissionId: c.admissionId, purpose: 'discharge' };
     assert.deepEqual((await send(c.session)).rejected, []);
+
     const summaryMutation = c.event(`summary:pharmacy:${c.n}`, {
       kind: 'discharge',
       admissionReason: 'Recorded reason',
@@ -251,11 +273,13 @@ describe('continuing inpatient care upload and PostgreSQL invariants', () => {
       patientIdentifier: c.patientId,
       admittedOn: c.confirm.createdOn,
     });
+
     assert.deepEqual(
       (await send(summaryMutation, c.event(`complete:pharmacy:${c.n}`, { kind: 'complete' })))
         .rejected,
       [],
     );
+
     const summary = WardCareEvent.parse(summaryMutation.data);
     assert.deepEqual(
       (
@@ -271,6 +295,7 @@ describe('continuing inpatient care upload and PostgreSQL invariants', () => {
       ).rejected,
       [],
     );
+
     const feeId = `fee:take-home:${c.n}`;
     await insertRecord(db.sql, 'fee_item', {
       ...c.base,
@@ -283,6 +308,7 @@ describe('continuing inpatient care upload and PostgreSQL invariants', () => {
       chargeWhen: 'when_ordered',
       active: true,
     });
+
     const record = EncounterEntry.parse({
       ...c.base,
       createdBy: pharmacist.id,
@@ -315,6 +341,7 @@ describe('continuing inpatient care upload and PostgreSQL invariants', () => {
         },
       },
     });
+
     record.values.lines = dispensingSummary(summary, [], record);
     assert.deepEqual(
       (
@@ -328,16 +355,20 @@ describe('continuing inpatient care upload and PostgreSQL invariants', () => {
       ).rejected,
       [],
     );
+
     const [charge] =
       await db.sql`SELECT amount_minor FROM charges WHERE id=${pharmacyChargeId(record.id)}`;
+
     assert.equal(Number(charge.amount_minor), 500);
     assert.equal(
       (await db.sql`SELECT id FROM encounters WHERE patient_id=${c.patientId}`).length,
       2,
     );
   });
+
   const withOrder = async () => {
     const c = await newStay();
+
     const order = c.event(c.orderId, {
       kind: 'medication',
       orderId: c.orderId,
@@ -345,6 +376,7 @@ describe('continuing inpatient care upload and PostgreSQL invariants', () => {
       sourceEntryId: c.rxId,
       lineId: 'line:one',
     });
+
     assert.deepEqual(
       (
         await send(
@@ -366,8 +398,10 @@ describe('continuing inpatient care upload and PostgreSQL invariants', () => {
       ).rejected,
       [],
     );
+
     return { ...c, order };
   };
+
   it('preserves the signed source and rejects wrong-patient, outpatient-disposition and cashier writes', async () => {
     const c = await newStay();
     assert.deepEqual(
@@ -379,6 +413,7 @@ describe('continuing inpatient care upload and PostgreSQL invariants', () => {
       ).rejected,
       [],
     );
+
     assert.equal(
       (
         await send(
@@ -390,12 +425,15 @@ describe('continuing inpatient care upload and PostgreSQL invariants', () => {
       ).rejected.length,
       1,
     );
+
     assert.equal(
       (await send(c.event('bad:cashier', { kind: 'complete' }, {}, cashier))).rejected.length,
       1,
     );
+
     const [row] =
       await db.sql`SELECT count(*)::int AS n FROM encounter_entries WHERE encounter_id=${c.sourceId}`;
+
     assert.equal(row.n, 1);
     await assert.rejects(
       insertRecord(db.sql, 'encounter', {
@@ -409,8 +447,10 @@ describe('continuing inpatient care upload and PostgreSQL invariants', () => {
       /foreign key|violates/i,
     );
   });
+
   it('serializes competing order changes instead of choosing a device timestamp', async () => {
     const c = await withOrder();
+
     const change = (suffix: string) =>
       c.event(c.orderId + suffix, {
         kind: 'medication',
@@ -420,24 +460,29 @@ describe('continuing inpatient care upload and PostgreSQL invariants', () => {
         sourceEntryId: c.rxId,
         lineId: 'line:one',
       });
+
     const outcomes = await Promise.all([send(change(':a')), send(change(':b'))]);
     assert.equal(
       outcomes.reduce((n, result) => n + result.rejected.length, 0),
       1,
     );
+
     await assert.rejects(
       db.sql`UPDATE ward_care_events SET late_reason='rewrite' WHERE id=${c.orderId}`,
       /never changed/,
     );
   });
+
   it('deduplicates actual doses, preserves corrections and refuses administration after an order stops', async () => {
     const c = await withOrder();
     const at = new Date().toISOString();
+
     const first = c.event(
       `dose:${c.n}`,
       { kind: 'administration', orderEventId: c.orderId, dose: 'Actual dose', outcome: 'given' },
       { occurredOn: at },
     );
+
     assert.deepEqual((await send(first)).rejected, []);
     assert.deepEqual((await send(first)).rejected, []);
     assert.equal(
@@ -457,6 +502,7 @@ describe('continuing inpatient care upload and PostgreSQL invariants', () => {
       ).rejected.length,
       1,
     );
+
     const correction = await send(
       c.event(
         `dose:${c.n}:correction`,
@@ -471,7 +517,9 @@ describe('continuing inpatient care upload and PostgreSQL invariants', () => {
         { occurredOn: at },
       ),
     );
+
     assert.deepEqual(correction.rejected, []);
+
     const stop = await send(
       c.event(c.orderId + ':stop', {
         kind: 'medication',
@@ -482,7 +530,9 @@ describe('continuing inpatient care upload and PostgreSQL invariants', () => {
         lineId: 'line:one',
       }),
     );
+
     assert.deepEqual(stop.rejected, []);
+
     const stoppedDose = await send(
       c.event(`dose:${c.n}:stopped`, {
         kind: 'administration',
@@ -491,8 +541,10 @@ describe('continuing inpatient care upload and PostgreSQL invariants', () => {
         outcome: 'given',
       }),
     );
+
     assert.equal(stoppedDose.rejected.length, 1);
   });
+
   it('keeps completion distinct from departure and accepts a pending result after departure', async () => {
     const c = await newStay();
     const orderId = `test:${c.n}`;
@@ -512,12 +564,14 @@ describe('continuing inpatient care upload and PostgreSQL invariants', () => {
       ).rejected,
       [],
     );
+
     const ready = put('inpatient_event', `${c.admissionId}:ready`, {
       ...c.arrived,
       id: `${c.admissionId}:ready`,
       previousId: c.arrived.id,
       action: 'ready_for_discharge',
     });
+
     assert.equal((await send(ready)).rejected.length, 1);
     assert.deepEqual(
       (
@@ -533,6 +587,7 @@ describe('continuing inpatient care upload and PostgreSQL invariants', () => {
       ).rejected,
       [],
     );
+
     assert.deepEqual(
       (
         await send(
@@ -545,12 +600,14 @@ describe('continuing inpatient care upload and PostgreSQL invariants', () => {
       ).rejected,
       [],
     );
+
     assert.equal(
       (await send(c.entry(`late-note:${c.n}`, 'complaint', { note: 'Unreviewed late work' })))
         .rejected.length,
       1,
     );
   });
+
   it('gates new clients and returns the negotiated ward capability', async () => {
     const response = await app.inject({
       method: 'POST',
@@ -565,13 +622,17 @@ describe('continuing inpatient care upload and PostgreSQL invariants', () => {
         policyVersion: POLICY_VERSION,
       },
     });
+
     assert.equal(response.statusCode, 200);
     assert.equal(response.json().wardCareVersion, 1);
+
     const payload = JSON.parse(
       Buffer.from(response.json().token.split('.')[1], 'base64url').toString(),
     );
+
     assert.equal(payload.ward_care, 1);
     const c = await newStay();
+
     const unnegotiated = await app.inject({
       method: 'POST',
       url: '/sync/upload',
@@ -586,8 +647,10 @@ describe('continuing inpatient care upload and PostgreSQL invariants', () => {
         policyVersion: POLICY_VERSION,
       },
     });
+
     assert.equal(unnegotiated.statusCode, 400);
   });
+
   it('reuses an admission prescription by reference without rewriting its original line', async () => {
     const c = await newStay();
     const sourceId = `rx:admission-${c.n}`;
@@ -605,6 +668,7 @@ describe('continuing inpatient care upload and PostgreSQL invariants', () => {
         prescription: [{ drug: 'Original medicine', dose: 'Original instructions' }],
       },
     });
+
     assert.deepEqual(
       (
         await send(
@@ -621,6 +685,7 @@ describe('continuing inpatient care upload and PostgreSQL invariants', () => {
       ).rejected,
       [],
     );
+
     const [source] = await db.sql`SELECT "values" FROM encounter_entries WHERE id=${sourceId}`;
     assert.equal(source.values.prescription[0].lineId, undefined);
   });

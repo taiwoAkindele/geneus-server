@@ -40,6 +40,7 @@ describe('server-owned result templates', () => {
   let db: ScratchDatabase;
   let app: FastifyInstance;
   let facility: FacilityRegistrationResult;
+
   const post = (path: string, body: Record<string, unknown>, actorStaffId = facility.admin.id) =>
     app.inject({
       method: 'POST',
@@ -47,17 +48,21 @@ describe('server-owned result templates', () => {
       headers: asDevice(facility.device.credential),
       payload: { actorStaffId, ...body },
     });
+
   const templates = () => recordsInFacility(db.sql, facility.facility.id, 'result_template');
+
   const testId = async (name: string) =>
     (await recordsInFacility(db.sql, facility.facility.id, 'service_definition')).find(
       (d) => d.name === name,
     )!.id;
+
   const draft = (
     name: string,
     parts: unknown[],
     serviceDefinitionIds: string[] = [],
     status = 'active',
   ) => ({ name, status, parts, serviceDefinitionIds });
+
   const choice = {
     key: 'result',
     label: 'Result',
@@ -70,11 +75,14 @@ describe('server-owned result templates', () => {
     db = await scratchDatabase();
     app = testApp(db.sql);
     facility = await registerScratchFacility(db.sql);
+
     const tests = await post('/investigations/standard-tests/adopt', {
       keys: ['fbc', 'hiv-rapid', 'hbsag', 'widal'],
     });
+
     assert.equal(tests.statusCode, 200, tests.body);
   });
+
   after(async () => {
     await app?.close();
     await db?.drop();
@@ -84,17 +92,21 @@ describe('server-owned result templates', () => {
     const list = await post('/result-templates/standard', {});
     assert.equal(list.statusCode, 200, list.body);
     assert.ok(list.json().templates.every((t: { added: boolean }) => !t.added));
+
     const adopted = await post('/result-templates/standard/adopt', {
       keys: ['fbc', 'rapid-reactive', 'imaging'],
     });
+
     assert.deepEqual(adopted.json(), {
       added: ['Full blood count', 'Rapid test: Reactive / Non-reactive', 'Imaging report'],
       skipped: [],
     });
+
     const saved = await templates();
     assert.deepEqual(saved.find((t) => t.standardKey === 'fbc')?.serviceDefinitionIds, [
       await testId('Full blood count'),
     ]);
+
     assert.deepEqual(
       saved.find((t) => t.standardKey === 'rapid-reactive')?.serviceDefinitionIds.sort(),
       [
@@ -102,14 +114,18 @@ describe('server-owned result templates', () => {
         await testId('Hepatitis B surface antigen'),
       ].sort(),
     );
+
     assert.deepEqual(saved.find((t) => t.standardKey === 'imaging')?.serviceDefinitionIds, []);
+
     const [history] =
       await db.sql`SELECT count(*)::int AS n FROM result_template_versions WHERE facility_id = ${facility.facility.id}`;
+
     assert.equal(history.n, 3);
     assert.deepEqual((await post('/result-templates/standard/adopt', { keys: ['fbc'] })).json(), {
       added: [],
       skipped: ['Full blood count'],
     });
+
     assert.equal(
       (await post('/result-templates/standard/adopt', { keys: ['not-a-template'] })).statusCode,
       400,
@@ -118,15 +134,19 @@ describe('server-owned result templates', () => {
 
   it('saves each edit as a new revision, refuses a stale edit, and keeps a test on one template', async () => {
     const widal = await testId('Widal test');
+
     const created = await post('/result-templates', {
       template: draft('Febrile antigens', [choice], [widal]),
     });
+
     assert.equal(created.statusCode, 200, created.body);
     const { id } = created.json();
+
     const edited = await post(`/result-templates/${id}`, {
       expectedRevision: 1,
       template: draft('Febrile antigens (Widal)', [choice], [widal]),
     });
+
     assert.deepEqual(edited.json(), { id, revision: 2 });
     assert.equal(
       (
@@ -137,17 +157,23 @@ describe('server-owned result templates', () => {
       ).statusCode,
       409,
     );
+
     const clash = await post('/result-templates', {
       template: draft('Another Widal', [choice], [widal]),
     });
+
     assert.equal(clash.statusCode, 409);
     assert.match(clash.json().message, /already uses the template/);
+
     const draftWithTests = await post('/result-templates', {
       template: draft('Draft', [choice], [widal], 'draft'),
     });
+
     assert.equal(draftWithTests.statusCode, 400);
+
     const [kept] =
       await db.sql`SELECT snapshot->>'name' AS name FROM result_template_versions WHERE source_id = ${id} AND revision = 1`;
+
     assert.equal(kept.name, 'Febrile antigens');
   });
 
@@ -156,11 +182,13 @@ describe('server-owned result templates', () => {
       role: 'laboratory_staff',
       permission: 'read_write',
     });
+
     const manager = await addStaff(db.sql, facility, {
       role: 'laboratory_staff',
       permission: 'read_write',
       additionalPermissions: ['result_template:manage'],
     });
+
     assert.equal(
       (
         await post(
@@ -171,6 +199,7 @@ describe('server-owned result templates', () => {
       ).statusCode,
       403,
     );
+
     assert.equal(
       (
         await post(
@@ -187,7 +216,9 @@ describe('server-owned result templates', () => {
     const list = await post('/answer-lists', {
       list: { name: 'Reactivity', answers: ['Non-reactive', 'Reactive'] },
     });
+
     const listId = list.json().id;
+
     const part = await post('/result-parts', {
       part: {
         part: {
@@ -199,7 +230,9 @@ describe('server-owned result templates', () => {
         },
       },
     });
+
     assert.equal(part.statusCode, 200, part.body);
+
     const glucose = await post('/result-parts', {
       part: {
         part: {
@@ -212,6 +245,7 @@ describe('server-owned result templates', () => {
         },
       },
     });
+
     const made = await post('/result-templates', {
       template: draft('Screen', [
         {
@@ -224,6 +258,7 @@ describe('server-owned result templates', () => {
         { key: 'sugar', label: 'ignored', kind: 'text', libraryPartId: glucose.json().id },
       ]),
     });
+
     assert.equal(made.statusCode, 200, made.body);
     const saved = (await findRecord<ResultTemplate>(db.sql, 'result_template', made.json().id))!;
     assert.deepEqual(
@@ -233,6 +268,7 @@ describe('server-owned result templates', () => {
         ['sugar', 'Glucose', 'number', false],
       ],
     );
+
     await post(`/result-parts/${glucose.json().id}`, {
       expectedRevision: 1,
       part: {
@@ -246,10 +282,12 @@ describe('server-owned result templates', () => {
         },
       },
     });
+
     await post(`/answer-lists/${listId}`, {
       expectedRevision: 1,
       list: { name: 'Reactivity', answers: ['Non-reactive', 'Reactive', 'Indeterminate'] },
     });
+
     const after = (await findRecord<ResultTemplate>(db.sql, 'result_template', made.json().id))!;
     assert.equal(after.revision, 3);
     assert.deepEqual((after.parts[0] as Extract<ResultPart, { kind: 'choice' }>).answers, [
@@ -257,6 +295,7 @@ describe('server-owned result templates', () => {
       'Reactive',
       'Indeterminate',
     ]);
+
     assert.equal((after.parts[1] as NumberPart).ranges[0].low, 4);
   });
 
@@ -268,6 +307,7 @@ describe('server-owned result templates', () => {
         headers: asDevice(facility.device.credential),
         payload,
       });
+
     assert.equal(
       (
         await token({
@@ -280,6 +320,7 @@ describe('server-owned result templates', () => {
       ).statusCode,
       409,
     );
+
     const modern = await token(templateVersions);
     assert.equal(modern.statusCode, 200, modern.body);
     assert.equal(modern.json().resultTemplateWorkflowVersion, 1);
@@ -294,6 +335,7 @@ describe('server-owned result templates', () => {
     const env = envelopeFor(facility);
     const patientId = `${facility.facility.code}-000001-K2`;
     const encounterId = 'encounter:fbc';
+
     const patient = Patient.parse({
       ...env,
       id: patientId,
@@ -304,12 +346,15 @@ describe('server-owned result templates', () => {
       sex: 'female',
       dateOfBirth: '1992-05-10',
     });
+
     const definition = (
       await recordsInFacility(db.sql, facility.facility.id, 'service_definition')
     ).find((d) => d.name === 'Full blood count')!;
+
     const offering = (
       await recordsInFacility(db.sql, facility.facility.id, 'service_offering')
     ).find((o) => o.serviceDefinitionId === definition.id)!;
+
     const item = {
       id: 'order_item:fbc',
       name: offering.name,
@@ -319,6 +364,7 @@ describe('server-owned result templates', () => {
       definitionRevision: definition.revision,
       priority: 'routine',
     };
+
     const entry = (
       id: string,
       step: string,
@@ -336,6 +382,7 @@ describe('server-owned result templates', () => {
       values,
       ...extra,
     });
+
     const send = (all: Record<string, unknown>[]) =>
       upload(app, facility.device.credential, {
         ...templateVersions,
@@ -348,6 +395,7 @@ describe('server-owned result templates', () => {
           data: record,
         })),
       });
+
     const opened = await send([
       patient,
       {
@@ -366,12 +414,15 @@ describe('server-owned result templates', () => {
         orderEntryId: 'entry:order',
       }),
     ]);
+
     assert.deepEqual(opened.rejected, []);
 
     const template = (await templates()).find((t) => t.standardKey === 'fbc')!;
     const facts = labPatientFacts(patient, env.createdOn);
+
     const number = (key: string, value: number, flag?: string) => {
       const part = template.parts.find((p) => p.key === key) as NumberPart;
+
       return {
         kind: 'number' as const,
         key,
@@ -382,6 +433,7 @@ describe('server-owned result templates', () => {
         ...(flag ? { flag: flag as 'low' } : {}),
       };
     };
+
     const report = (values: LabReport['items'][number]['values']): LabReport => ({
       patient: facts,
       items: [
@@ -393,6 +445,7 @@ describe('server-owned result templates', () => {
         },
       ],
     });
+
     const results = (r: LabReport) => ({
       results: r.items.map((i) => ({
         test: i.test,
@@ -400,6 +453,7 @@ describe('server-owned result templates', () => {
         result: labItemSummary(i, template.parts),
       })),
     });
+
     const good = report([
       number('haemoglobin', 10.8, 'low'),
       number('pcv', 33),
@@ -416,14 +470,17 @@ describe('server-owned result templates', () => {
       number('wbc', 7.2),
       number('platelets', 98),
     ]);
+
     const refused = await send([
       entry('entry:wrong', 'lab_results', results(wrongRange), { labReport: wrongRange }),
     ]);
+
     assert.match(refused.rejected[0]?.reason ?? '', /normal range shown does not match/);
 
     const accepted = await send([
       entry('entry:results', 'lab_results', results(good), { labReport: good }),
     ]);
+
     assert.deepEqual(accepted.rejected, []);
     const stored = (await findRecord<EncounterEntry>(db.sql, 'encounter_entry', 'entry:results'))!;
     assert.equal(stored.labReport?.items[0].values[0].kind, 'number');
@@ -434,6 +491,7 @@ describe('server-owned result templates', () => {
       number('wbc', 7.2),
       number('platelets', 98, 'low'),
     ]);
+
     const amendment = await send([
       entry(
         'entry:correction',
@@ -442,6 +500,7 @@ describe('server-owned result templates', () => {
         { amends: 'entry:results', labReport: corrected },
       ),
     ]);
+
     assert.deepEqual(amendment.rejected, []);
   });
 });

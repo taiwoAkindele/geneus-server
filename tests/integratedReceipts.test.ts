@@ -19,6 +19,7 @@ describe('one verified receipt across patient and payer recognition', () => {
   let f: Awaited<ReturnType<typeof registerScratchFacility>>;
   let app: ReturnType<typeof testApp>;
   let patientId: string;
+
   const receipt = async (id: string) =>
     insertRecord(db.sql, 'incoming_transfer', {
       ...envelopeFor(f),
@@ -31,6 +32,7 @@ describe('one verified receipt across patient and payer recognition', () => {
       currency: 'NGN',
       receivedOn: new Date().toISOString(),
     });
+
   const remit = (id: string, amountMinor: number) =>
     RemittanceInput.parse({
       payerId: 'payer:test',
@@ -43,6 +45,7 @@ describe('one verified receipt across patient and payer recognition', () => {
       allocations: [],
       requestKey: 'request:' + id,
     });
+
   const payment = async (tx: Tx, id: string, sourceId: string, amountMinor: number) => {
     await tx`SELECT id FROM facilities WHERE id=${f.facility.id} FOR UPDATE`;
     await reserveSource(tx as never, f.facility.id, sourceId, amountMinor, 'NGN');
@@ -59,6 +62,7 @@ describe('one verified receipt across patient and payer recognition', () => {
       allocations: [{ chargeId: 'charge:test', amountMinor }],
     });
   };
+
   before(async () => {
     db = await scratchDatabase();
     f = await registerScratchFacility(db.sql);
@@ -73,6 +77,7 @@ describe('one verified receipt across patient and payer recognition', () => {
       kind: 'hmo',
       active: true,
     });
+
     await insertRecord(db.sql, 'patient', {
       ...envelopeFor(f),
       id: patientId,
@@ -83,6 +88,7 @@ describe('one verified receipt across patient and payer recognition', () => {
       sex: 'female',
       ageYears: 30,
     });
+
     await insertRecord(db.sql, 'fee_item', {
       ...envelopeFor(f),
       id: 'fee:test',
@@ -93,6 +99,7 @@ describe('one verified receipt across patient and payer recognition', () => {
       currency: 'NGN',
       chargeWhen: 'when_ordered',
     });
+
     await insertRecord(db.sql, 'charge', {
       ...envelopeFor(f),
       id: 'charge:test',
@@ -106,10 +113,12 @@ describe('one verified receipt across patient and payer recognition', () => {
       currency: 'NGN',
     });
   });
+
   after(async () => {
     await app?.close();
     await db?.drop();
   });
+
   it('shares capacity, reserves unallocated remittance money, and releases only reversed recognition', async () => {
     await receipt('receipt:shared');
     await db.sql.begin((tx) => payment(tx, 'payment:one', 'receipt:shared', 6000));
@@ -119,12 +128,15 @@ describe('one verified receipt across patient and payer recognition', () => {
       ),
       /insufficient/,
     );
+
     const r = await db.sql.begin((tx) =>
       recordRemittance(tx as never, f.facility.id, f.admin.id, remit('receipt:shared', 4000)),
     );
+
     const capacity = await db.sql.begin((tx) =>
       sourceCapacity(tx as never, f.facility.id, 'receipt:shared'),
     );
+
     assert.equal(capacity.availableMinor, 0);
     assert.equal(capacity.patientMinor, 6000);
     assert.equal(capacity.payerMinor, 4000);
@@ -135,16 +147,19 @@ describe('one verified receipt across patient and payer recognition', () => {
         requestKey: 'reverse:synthetic',
       }),
     );
+
     assert.equal(
       (await db.sql.begin((tx) => sourceCapacity(tx as never, f.facility.id, 'receipt:shared')))
         .availableMinor,
       4000,
     );
   });
+
   it('allows a legitimate self-pay refund with insurance off but never replenishes the incoming receipt', async () => {
     await db.sql`UPDATE facilities SET integrated_billing_version=1 WHERE id=${f.facility.id}`;
     const proof = await staffSessionFor(app, f.device.credential, f.admin.id);
     assert.ok(proof);
+
     const response = await app.inject({
       method: 'POST',
       url: '/billing/refunds',
@@ -163,6 +178,7 @@ describe('one verified receipt across patient and payer recognition', () => {
         reason: 'Return an existing patient credit',
       },
     });
+
     assert.equal(response.statusCode, 201, response.body);
     assert.equal(
       (await db.sql.begin((tx) => sourceCapacity(tx as never, f.facility.id, 'receipt:shared')))
@@ -170,14 +186,17 @@ describe('one verified receipt across patient and payer recognition', () => {
       4000,
     );
   });
+
   it('serializes a patient collection racing an insurer recognition of the same receipt', async () => {
     await receipt('receipt:race');
+
     const outcomes = await Promise.allSettled([
       db.sql.begin((tx) => payment(tx, 'payment:race', 'receipt:race', 6000)),
       db.sql.begin((tx) =>
         recordRemittance(tx as never, f.facility.id, f.admin.id, remit('receipt:race', 6000)),
       ),
     ]);
+
     assert.equal(outcomes.filter((o) => o.status === 'fulfilled').length, 1);
     assert.equal(
       (await db.sql.begin((tx) => sourceCapacity(tx as never, f.facility.id, 'receipt:race')))
@@ -185,8 +204,10 @@ describe('one verified receipt across patient and payer recognition', () => {
       4000,
     );
   });
+
   it('reserves exact legacy references across both workflows and recognizes a reversal without requiring a rewritten source link', async () => {
     await receipt('receipt:legacy');
+
     const original = {
       ...envelopeFor(f),
       id: 'payment:legacy',
@@ -199,11 +220,14 @@ describe('one verified receipt across patient and payer recognition', () => {
       currency: 'NGN',
       allocations: [{ chargeId: 'charge:test', amountMinor: 4000 }],
     };
+
     await insertRecord(db.sql, 'payment', original);
     await db.sql`INSERT INTO insurance_remittances(id,facility_id,payer_id,received_on,reference,amount_minor,currency,method,recorded_by) VALUES('remittance:legacy',${f.facility.id},'payer:test','2026-11-18','receipt:legacy',3000,'NGN','transfer',${f.admin.id})`;
+
     const before = await db.sql.begin((tx) =>
       sourceCapacity(tx as never, f.facility.id, 'receipt:legacy'),
     );
+
     assert.equal(before.patientMinor, 4000);
     assert.equal(before.payerMinor, 3000);
     assert.equal(before.availableMinor, 3000);
@@ -213,6 +237,7 @@ describe('one verified receipt across patient and payer recognition', () => {
       ),
       /insufficient/,
     );
+
     await insertRecord(db.sql, 'payment', {
       ...original,
       id: 'payment:legacy-reversal',
@@ -221,6 +246,7 @@ describe('one verified receipt across patient and payer recognition', () => {
       reverses: original.id,
       reason: 'Correct a legacy recognition; source is retained on the original',
     });
+
     assert.equal(
       (await db.sql.begin((tx) => sourceCapacity(tx as never, f.facility.id, 'receipt:legacy')))
         .availableMinor,

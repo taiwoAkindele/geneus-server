@@ -36,6 +36,7 @@ export const loadCoverageRecords = async (
   patientIds: readonly string[],
 ): Promise<CoverageRecords & { payers: Payer[] }> => {
   const ids = [...new Set(patientIds)];
+
   const [covers, checks, elections, allocations, schedules, payers] = await Promise.all([
     sql<
       Row[]
@@ -52,6 +53,7 @@ export const loadCoverageRecords = async (
     sql<Row[]>`SELECT * FROM cover_schedules WHERE facility_id = ${facilityId}`,
     sql<Row[]>`SELECT * FROM payers WHERE facility_id = ${facilityId}`,
   ]);
+
   return {
     covers: covers.map((r) => fromRow<PatientCover>('patient_cover', r)),
     checks: checks.map((r) => fromRow<CoverCheck>('cover_check', r)),
@@ -67,9 +69,11 @@ export const facilityTimeZone = async (
   facilityId: string,
 ): Promise<string | undefined> =>
   (await findRecord<Facility>(sql, 'facility', facilityId))?.timeZone;
+
 /** The zone in force when a moment happened: a correction never re-dates what was raised before it. */
 export const facilityZoneAt = async (sql: Sql | Tx, facilityId: string) => {
   const facility = await findRecord<Facility>(sql, 'facility', facilityId);
+
   return (at: string) => timeZoneAt(facility, at);
 };
 
@@ -92,9 +96,11 @@ const moneyFor = async (
       { receivedMinor: 0, waivedByPaymentMinor: 0, reducedMinor: 0, refundedMinor: 0 },
     ]),
   );
+
   if (!chargeIds.length) {
     return money;
   }
+
   const [payments, adjustments, refunds] = await Promise.all([
     sql<
       Row[]
@@ -106,13 +112,17 @@ const moneyFor = async (
       Row[]
     >`SELECT * FROM refunds WHERE facility_id = ${facilityId} AND EXISTS (SELECT 1 FROM jsonb_array_elements(allocations) a WHERE a->>'chargeId' = ANY(${chargeIds as string[]}))`,
   ]);
+
   for (const payment of payments.map((r) => fromRow<Payment>('payment', r))) {
     for (const allocation of payment.allocations) {
       const entry = money.get(allocation.chargeId);
+
       if (!entry) {
         continue;
       }
+
       const amount = allocation.amountMinor * (payment.reverses ? -1 : 1);
+
       if (payment.method === 'waiver') {
         entry.waivedByPaymentMinor += amount;
       } else {
@@ -120,17 +130,21 @@ const moneyFor = async (
       }
     }
   }
+
   for (const adjustment of adjustments) {
     money.get(adjustment.charge_id)!.reducedMinor += adjustment.amount_minor;
   }
+
   for (const refund of refunds.map((r) => fromRow<Refund>('refund', r))) {
     for (const allocation of refund.allocations) {
       const entry = money.get(allocation.chargeId);
+
       if (entry) {
         entry.refundedMinor += allocation.amountMinor;
       }
     }
   }
+
   return money;
 };
 
@@ -157,9 +171,11 @@ export const chargePositions = async (
   charges: readonly Charge[],
 ): Promise<Map<string, ChargePosition>> => {
   const positions = new Map<string, ChargePosition>();
+
   if (!charges.length) {
     return positions;
   }
+
   const [records, timeZone, money, state] = await Promise.all([
     loadCoverageRecords(
       sql,
@@ -174,12 +190,16 @@ export const chargePositions = async (
     ),
     billingPeriods(sql, facilityId),
   ]);
+
   // Cover changes a balance only for charges raised while billing was active; confirmed splits always stand.
   const periods = state;
+
   const dispenseIds = charges
     .map((c) => c.dispenseEntryId)
     .filter((id): id is string => Boolean(id));
+
   const entries = new Map<string, EncounterEntry>();
+
   if (dispenseIds.length) {
     for (const row of await sql<
       Row[]
@@ -188,6 +208,7 @@ export const chargePositions = async (
       entries.set(entry.id, entry);
     }
   }
+
   for (const charge of charges) {
     const estimate = estimateCoverage({
       charge,
@@ -199,6 +220,7 @@ export const chargePositions = async (
         charge.dispenseEntryId ? entries.get(charge.dispenseEntryId) : undefined,
       ),
     });
+
     const responsibility = patientResponsibility(charge, estimate);
     const m = money.get(charge.id)!;
     positions.set(charge.id, {
@@ -216,6 +238,7 @@ export const chargePositions = async (
         m.refundedMinor,
     });
   }
+
   return positions;
 };
 
@@ -226,6 +249,7 @@ export const chargesById = async (
   lock = false,
 ): Promise<Charge[]> => {
   const sorted = [...new Set(ids)].sort();
+
   const rows = lock
     ? await sql<
         Row[]
@@ -233,5 +257,6 @@ export const chargesById = async (
     : await sql<
         Row[]
       >`SELECT * FROM charges WHERE facility_id = ${facilityId} AND id = ANY(${sorted}) ORDER BY id`;
+
   return rows.map((r) => fromRow<Charge>('charge', r));
 };

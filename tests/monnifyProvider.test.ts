@@ -27,9 +27,12 @@ const keys = {
   secretKey: 'FictionalSecretKey0001',
   contractCode: '1234567890',
 };
+
 type Call = { url: string; method: string; auth: string; body?: Record<string, unknown> };
+
 const fake = (routes: Record<string, (call: Call) => { status?: number; body: unknown }>) => {
   const calls: Call[] = [];
+
   const http: typeof fetch = async (url, init) => {
     const call = {
       url: String(url),
@@ -37,16 +40,21 @@ const fake = (routes: Record<string, (call: Call) => { status?: number; body: un
       auth: String((init?.headers as Record<string, string>)?.authorization ?? ''),
       body: init?.body ? JSON.parse(String(init.body)) : undefined,
     };
+
     calls.push(call);
     const path = new URL(call.url).pathname;
     const route = Object.entries(routes).find(([prefix]) => path.startsWith(prefix));
+
     const reply = route
       ? route[1](call)
       : { status: 404, body: { requestSuccessful: false, responseMessage: 'Not found' } };
+
     return new Response(JSON.stringify(reply.body), { status: reply.status ?? 200 });
   };
+
   return { http, calls };
 };
+
 const login = () => ({
   body: {
     requestSuccessful: true,
@@ -54,6 +62,7 @@ const login = () => ({
     responseBody: { accessToken: 'token-1', expiresIn: 3600 },
   },
 });
+
 const reserved = (
   accounts = [
     { bankCode: '035', bankName: 'Wema Bank', accountNumber: '5000000001' },
@@ -81,6 +90,7 @@ beforeEach(() => resetMonnifyTokens());
 
 test('checkout verification refuses a successful payment whose currency was omitted', async () => {
   const reference = 'geneus-co-11111111-1111-4111-8111-111111111111';
+
   const { http } = fake({
     '/api/v1/auth/login': login,
     '/api/v2/merchant/transactions/query': () => ({
@@ -102,10 +112,12 @@ test('checkout verification refuses a successful payment whose currency was omit
 test('test keys use the sandbox; sign-in is cached and sent as a bearer token', async () => {
   assert.equal(monnifyMode(keys), 'test');
   assert.equal(monnifyMode({ apiKey: 'MK_PROD_X' }), 'live');
+
   const { http, calls } = fake({
     '/api/v1/auth/login': login,
     '/api/v2/bank-transfer/reserved-accounts/': () => reserved(),
   });
+
   await monnifyGetAccount(keys, 'geneus-TEST', http);
   await monnifyGetAccount(keys, 'geneus-TEST', http);
   assert.equal(calls.filter((c) => c.url.endsWith('/auth/login')).length, 1);
@@ -114,19 +126,23 @@ test('test keys use the sandbox; sign-in is cached and sent as a bearer token', 
     calls[0].auth,
     `Basic ${Buffer.from(`${keys.apiKey}:${keys.secretKey}`).toString('base64')}`,
   );
+
   assert.equal(calls[1].auth, 'Bearer token-1');
 });
+
 test('the hospital gets one account number, at the bank it chose, and its BVN goes only to Monnify', async () => {
   const { http, calls } = fake({
     '/api/v1/auth/login': login,
     '/api/v2/bank-transfer/reserved-accounts': () => reserved(),
   });
+
   const account = await monnifyCreateAccount(
     keys,
     { id: 'TEST', name: 'Fictional Hospital' },
     { bank: '232', email: 'accounts@hospital.test', bvn: '22222222222' },
     http,
   );
+
   assert.deepEqual(account, {
     providerAccountId: 'geneus-TEST',
     accountNumber: '6000000001',
@@ -135,6 +151,7 @@ test('the hospital gets one account number, at the bank it chose, and its BVN go
     active: true,
     currency: 'NGN',
   });
+
   const body = calls.find((c) => c.method === 'POST' && c.url.includes('reserved-accounts'))!.body!;
   assert.equal(body.accountReference, monnifyAccountReference('TEST'));
   assert.equal(body.contractCode, keys.contractCode);
@@ -142,6 +159,7 @@ test('the hospital gets one account number, at the bank it chose, and its BVN go
   assert.deepEqual(body.preferredBanks, ['232']);
   assert.equal(body.bvn, '22222222222');
 });
+
 test('only the listed banks can be chosen, and a bank Monnify can’t serve gets a clear message', async () => {
   const field = monnifyDescriptor.accountFields.find((f) => f.key === 'bank')!;
   assert.equal(field.type, 'select');
@@ -149,11 +167,13 @@ test('only the listed banks can be chosen, and a bank Monnify can’t serve gets
     field.options?.map((o) => o.value),
     ['035', '232'],
   );
+
   assert.equal(
     MonnifyAccountDetails.safeParse({ bank: '058', email: 'a@hospital.test', bvn: '22222222222' })
       .success,
     false,
   );
+
   const { http } = fake({
     '/api/v1/auth/login': login,
     '/api/v2/bank-transfer/reserved-accounts': () => ({
@@ -164,6 +184,7 @@ test('only the listed banks can be chosen, and a bank Monnify can’t serve gets
       },
     }),
   });
+
   await assert.rejects(
     monnifyCreateAccount(
       keys,
@@ -180,6 +201,7 @@ test('only the listed banks can be chosen, and a bank Monnify can’t serve gets
         "The provider couldn't open an account at that bank right now. Choose another bank, or try again later.",
   );
 });
+
 test('a provider outage elsewhere reads as unavailable, not refused', async () => {
   const { http } = fake({
     '/api/v1/auth/login': () => ({
@@ -190,6 +212,7 @@ test('a provider outage elsewhere reads as unavailable, not refused', async () =
       },
     }),
   });
+
   await assert.rejects(
     monnifyCheckAccess(keys, http),
     (e: unknown) =>
@@ -198,6 +221,7 @@ test('a provider outage elsewhere reads as unavailable, not refused', async () =
         'The provider is unavailable right now: Service is currently unavailable, Please try again later.',
   );
 });
+
 test('a refusal carries Monnify’s reason without naming the provider', async () => {
   const { http } = fake({
     '/api/v1/auth/login': () => ({
@@ -209,6 +233,7 @@ test('a refusal carries Monnify’s reason without naming the provider', async (
       },
     }),
   });
+
   await assert.rejects(
     monnifyCheckAccess(keys, http),
     (e: unknown) =>
@@ -216,6 +241,7 @@ test('a refusal carries Monnify’s reason without naming the provider', async (
       e.message === 'The provider refused this operation: Invalid client credentials.',
   );
 });
+
 test('only a PAID reserved-account payment is accepted, with the amount converted exactly', async () => {
   const transaction =
     (over: Record<string, unknown> = {}) =>
@@ -234,6 +260,7 @@ test('only a PAID reserved-account payment is accepted, with the amount converte
         },
       },
     });
+
   let routes = fake({ '/api/v1/auth/login': login, '/api/v2/transactions/': transaction() });
   const verified = await monnifyVerifyTransfer(keys, 'MNFY|20261121|000001', routes.http);
   assert.deepEqual(verified, {
@@ -246,28 +273,33 @@ test('only a PAID reserved-account payment is accepted, with the amount converte
     receivingAccountRef: 'geneus-TEST',
     payerName: 'Fictional Payer',
   });
+
   assert(routes.calls.some((c) => c.url.endsWith('/api/v2/transactions/MNFY%7C20261121%7C000001')));
   routes = fake({
     '/api/v1/auth/login': login,
     '/api/v2/transactions/': transaction({ paymentStatus: 'PENDING' }),
   });
+
   assert.equal(await monnifyVerifyTransfer(keys, 'MNFY|20261121|000001', routes.http), undefined);
   resetMonnifyTokens();
   routes = fake({
     '/api/v1/auth/login': login,
     '/api/v2/transactions/': transaction({ product: { type: 'WEB_SDK' } }),
   });
+
   assert.equal(await monnifyVerifyTransfer(keys, 'MNFY|20261121|000001', routes.http), undefined);
   resetMonnifyTokens();
   routes = fake({
     '/api/v1/auth/login': login,
     '/api/v2/transactions/': transaction({ amountPaid: '12.345' }),
   });
+
   await assert.rejects(
     monnifyVerifyTransfer(keys, 'MNFY|20261121|000001', routes.http),
     ProviderUnexpectedReply,
   );
 });
+
 test('webhooks are authenticated against the exact body, and only prompt a check', () => {
   const raw = JSON.stringify({
     eventType: 'SUCCESSFUL_TRANSACTION',
@@ -277,27 +309,35 @@ test('webhooks are authenticated against the exact body, and only prompt a check
       product: { type: 'RESERVED_ACCOUNT' },
     },
   });
+
   const sign = (body: string, secret = keys.secretKey) =>
     createHmac('sha512', secret).update(body).digest('hex');
+
   assert.deepEqual(monnifyWebhookReference(raw, sign(raw), keys), {
     ok: true,
     reference: 'MNFY|1',
   });
+
   assert.deepEqual(monnifyWebhookReference(`${raw} `, sign(raw), keys), { ok: false });
   assert.deepEqual(monnifyWebhookReference(raw, sign(raw, 'wrong-secret-0000000'), keys), {
     ok: false,
   });
+
   assert.deepEqual(monnifyWebhookReference(raw, undefined, keys), { ok: false });
+
   const other = JSON.stringify({
     eventType: 'SETTLEMENT',
     eventData: { transactionReference: 'x' },
   });
+
   assert.deepEqual(monnifyWebhookReference(other, sign(other), keys), { ok: true });
 });
+
 test('amounts convert to kobo exactly or not at all', () => {
   assert.equal(toMinor('20500'), 2050000);
   assert.equal(toMinor('0.29'), 29);
   assert.equal(toMinor(20500.5), 2050050);
+
   for (const bad of ['-1', '1e3', '12.345', '', 'abc', 0, Number.NaN]) {
     assert.equal(toMinor(bad), undefined);
   }

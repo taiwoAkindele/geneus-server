@@ -18,15 +18,19 @@ export const sealPaystackSecret = (secret: string, master: string, facilityId: s
   const cipher = createCipheriv('aes-256-gcm', Buffer.from(master, 'hex'), iv);
   cipher.setAAD(Buffer.from(facilityId));
   const encrypted = Buffer.concat([cipher.update(secret, 'utf8'), cipher.final()]);
+
   return [iv, cipher.getAuthTag(), encrypted].map((v) => v.toString('base64')).join('.');
 };
+
 export const openPaystackSecret = (sealed: string, master: string, facilityId: string): string => {
   const [iv, tag, encrypted] = sealed.split('.').map((v) => Buffer.from(v, 'base64'));
   const decipher = createDecipheriv('aes-256-gcm', Buffer.from(master, 'hex'), iv);
   decipher.setAAD(Buffer.from(facilityId));
   decipher.setAuthTag(tag);
+
   return Buffer.concat([decipher.update(encrypted), decipher.final()]).toString('utf8');
 };
+
 export const validPaystackSignature = (
   raw: string,
   signature: unknown,
@@ -35,6 +39,7 @@ export const validPaystackSignature = (
   if (typeof signature !== 'string' || !/^[a-f0-9]{128}$/i.test(signature)) {
     return false;
   }
+
   return timingSafeEqual(
     createHmac('sha512', secret).update(raw).digest(),
     Buffer.from(signature, 'hex'),
@@ -42,6 +47,7 @@ export const validPaystackSignature = (
 };
 
 export type PaystackFetch = typeof fetch;
+
 /**
  * One Paystack API call. A refusal keeps Paystack's own reason (filtered, never naming the provider)
  * so staff can act on it; an unreachable or garbled reply is reported as such, not as a server fault.
@@ -53,6 +59,7 @@ export const callPaystack = async (
   body?: unknown,
 ): Promise<unknown> => {
   let response: Response;
+
   try {
     response = await fetcher(`https://api.paystack.co${path}`, {
       method: body === undefined ? 'GET' : 'POST',
@@ -67,11 +74,14 @@ export const callPaystack = async (
   } catch {
     throw new ProviderUnavailable();
   }
+
   const payload = (await readJsonBody(response)) as
     { status?: boolean; message?: unknown; data?: unknown } | undefined;
+
   if (!payload) {
     throw new ProviderUnexpectedReply(`HTTP ${response.status} without JSON`);
   }
+
   if (!response.ok || !payload.status) {
     throw providerFailure(
       typeof payload.message === 'string' ? payload.message : undefined,
@@ -79,6 +89,7 @@ export const callPaystack = async (
       path.split('?')[0],
     );
   }
+
   return payload.data;
 };
 
@@ -90,6 +101,7 @@ export const PaystackAccount = z.object({
   currency: z.string(),
   bank: z.object({ name: z.string() }),
 });
+
 export const PaystackTerminal = z.object({
   code: z.string().regex(/^VT_[A-Za-z0-9]+$/),
   active: z.boolean(),
@@ -103,11 +115,14 @@ export const PaystackTerminal = z.object({
     }),
   ),
 });
+
 export const accountFromTerminal = (value: unknown) => {
   const terminal = PaystackTerminal.parse(value);
+
   const method = terminal.paymentMethods.find(
     (m) => m.type === 'dedicated_nuban' && m.account_number && m.account_name && m.bank,
   );
+
   if (!terminal.active || terminal.currency !== 'NGN' || !method) {
     throw Object.assign(
       new Error(
@@ -116,6 +131,7 @@ export const accountFromTerminal = (value: unknown) => {
       { statusCode: 409 },
     );
   }
+
   return PaystackAccount.parse({
     id: terminal.code,
     active: true,
@@ -125,6 +141,7 @@ export const accountFromTerminal = (value: unknown) => {
     bank: { name: method.bank },
   });
 };
+
 export const VerifiedPaystackTransfer = z.object({
   reference: z.string().min(1),
   status: z.literal('success'),

@@ -75,6 +75,7 @@ export const registerStaffRoutes = (
   /** Only an active facility admin of the device's facility has a recovery email. */
   const findAdmin = async (facilityId: string, staffId: string) => {
     const staff = await findStaffInFacility(sql, facilityId, staffId);
+
     return staff?.active && hasRole(staff, 'facility_admin') ? staff : undefined;
   };
 
@@ -97,23 +98,28 @@ export const registerStaffRoutes = (
         message: 'A facility admin can set only their own recovery email',
       };
     }
+
     const proven = await verifiedRequestStaff(sql, identity, request.headers);
+
     if (proven?.id !== requestedBy) {
       return {
         error: 'staff_session_required',
         message: 'Confirm your PIN to change your recovery email',
       };
     }
+
     return undefined;
   };
 
   app.post<{ Params: { staffId: string } }>('/staff/:staffId/pin-codes', async (request, reply) => {
     const identity = await authenticateDevice(sql, request, reply);
+
     if (!identity) {
       return;
     }
 
     const parsed = PinSetupCodeRequest.safeParse(request.body);
+
     if (!parsed.success) {
       return reply.code(400).send({
         error: 'invalid_request',
@@ -124,9 +130,11 @@ export const registerStaffRoutes = (
 
     // A PIN code makes whoever holds it that person on a device, so the issuer must be proven, not asserted.
     const issuer = await verifiedRequestStaff(sql, identity, request.headers);
+
     if (!issuer) {
       return refuse(reply, 403, 'staff_session_required', 'Confirm your PIN to issue a PIN code');
     }
+
     if (issuer.id !== parsed.data.issuedBy) {
       return refuse(
         reply,
@@ -135,12 +143,15 @@ export const registerStaffRoutes = (
         'A PIN code is issued in the name of the person signed in',
       );
     }
+
     const authorized = await authorizeStaff(sql, identity.facilityId, issuer.id, 'staff:manage');
+
     if ('denial' in authorized) {
       request.log.warn(
         { deviceId: identity.deviceId, denial: authorized.denial },
         'PIN setup code refused',
       );
+
       return reply.code(403).send({
         error: 'forbidden',
         message: describeDenial(authorized.denial),
@@ -148,6 +159,7 @@ export const registerStaffRoutes = (
     }
 
     const target = await findStaffInFacility(sql, identity.facilityId, request.params.staffId);
+
     if (!target?.active) {
       return refuse(
         reply,
@@ -156,6 +168,7 @@ export const registerStaffRoutes = (
         'No active member of staff with that id at this facility',
       );
     }
+
     if (!mayApprovePin(authorized.staff, target)) {
       return refuse(
         reply,
@@ -171,6 +184,7 @@ export const registerStaffRoutes = (
       issuedBy: parsed.data.issuedBy,
       issuedFrom: identity.deviceId,
     });
+
     if (!outcome.ok) {
       if (outcome.error === 'clinical_review_required') {
         return refuse(
@@ -180,6 +194,7 @@ export const registerStaffRoutes = (
           'An authorized clinical reviewer must approve this account reset',
         );
       }
+
       return reply.code(404).send({
         error: 'unknown_staff',
         message: 'No active member of staff with that id at this facility',
@@ -194,10 +209,12 @@ export const registerStaffRoutes = (
       },
       'PIN setup code issued',
     );
+
     const response: PinSetupCodeIssued = {
       code: outcome.code,
       expiresOn: outcome.record.expiresOn,
     };
+
     return reply.code(201).send(response);
   });
 
@@ -210,11 +227,13 @@ export const registerStaffRoutes = (
     '/staff/:staffId/pin-codes/email',
     async (request, reply) => {
       const identity = await authenticateDevice(sql, request, reply);
+
       if (!identity) {
         return;
       }
 
       const admin = await findAdmin(identity.facilityId, request.params.staffId);
+
       if (!admin) {
         return refuse(
           reply,
@@ -223,7 +242,9 @@ export const registerStaffRoutes = (
           'Only a facility admin can get a PIN code by email',
         );
       }
+
       const email = await findStaffEmail(sql, identity.facilityId, admin.id);
+
       if (!email) {
         return refuse(
           reply,
@@ -240,6 +261,7 @@ export const registerStaffRoutes = (
         issuedFrom: identity.deviceId,
         channel: 'email',
       });
+
       if (!outcome.ok) {
         return refuse(
           reply,
@@ -254,7 +276,9 @@ export const registerStaffRoutes = (
         { facilityId: identity.facilityId, staffId: admin.id },
         'PIN setup code emailed',
       );
+
       const response: EmailSent = { sentTo: maskEmail(email), expiresOn: outcome.record.expiresOn };
+
       return reply.code(202).send(response);
     },
   );
@@ -268,11 +292,13 @@ export const registerStaffRoutes = (
     '/staff/:staffId/email/code',
     async (request, reply) => {
       const identity = await authenticateDevice(sql, request, reply);
+
       if (!identity) {
         return;
       }
 
       const parsed = StaffEmailRequest.safeParse(request.body);
+
       if (!parsed.success) {
         return reply.code(400).send({
           error: 'invalid_request',
@@ -280,8 +306,10 @@ export const registerStaffRoutes = (
           issues: parsed.error.issues,
         } satisfies ApiErrorBody);
       }
+
       const { email, requestedBy } = parsed.data;
       const refusal = await ownRecoveryEmailRefusal(request, identity, requestedBy);
+
       if (refusal) {
         return refuse(reply, 403, refusal.error, refusal.message);
       }
@@ -292,16 +320,19 @@ export const registerStaffRoutes = (
 
       const current = await findStaffEmail(sql, identity.facilityId, requestedBy);
       let currentSentTo: string | undefined;
+
       if (current && current !== email) {
         const confirm = await createVerificationCode(sql, {
           purpose: 'staff_email_current',
           subject,
           email: current,
         });
+
         await mailer.send({
           to: current,
           ...verificationEmail(confirm.code, 'staff_email_current'),
         });
+
         currentSentTo = maskEmail(current);
       }
 
@@ -310,6 +341,7 @@ export const registerStaffRoutes = (
         currentSentTo,
         expiresOn: fresh.expiresOn,
       };
+
       return reply.code(202).send(response);
     },
   );
@@ -317,11 +349,13 @@ export const registerStaffRoutes = (
   /** Step two: both codes check out, and the new address replaces the old in one transaction. */
   app.post<{ Params: { staffId: string } }>('/staff/:staffId/email', async (request, reply) => {
     const identity = await authenticateDevice(sql, request, reply);
+
     if (!identity) {
       return;
     }
 
     const parsed = StaffEmailConfirmation.safeParse(request.body);
+
     if (!parsed.success) {
       return reply.code(400).send({
         error: 'invalid_request',
@@ -329,19 +363,23 @@ export const registerStaffRoutes = (
         issues: parsed.error.issues,
       } satisfies ApiErrorBody);
     }
+
     const { email, code, currentCode, requestedBy } = parsed.data;
     const refusal = await ownRecoveryEmailRefusal(request, identity, requestedBy);
+
     if (refusal) {
       return refuse(reply, 403, refusal.error, refusal.message);
     }
 
     const subject = staffEmailSubject(identity.facilityId, requestedBy);
+
     const fresh = await checkVerificationCode(sql, {
       purpose: 'staff_email',
       subject,
       email,
       code,
     });
+
     if (!fresh) {
       return refuse(
         reply,
@@ -353,6 +391,7 @@ export const registerStaffRoutes = (
 
     const current = await findStaffEmail(sql, identity.facilityId, requestedBy);
     let confirmed: string | undefined;
+
     if (current && current !== email) {
       confirmed = currentCode
         ? await checkVerificationCode(sql, {
@@ -362,6 +401,7 @@ export const registerStaffRoutes = (
             code: currentCode,
           })
         : undefined;
+
       if (!confirmed) {
         return refuse(
           reply,
@@ -376,9 +416,11 @@ export const registerStaffRoutes = (
       if (!(await consumeVerification(tx, fresh))) {
         return false;
       }
+
       if (confirmed && !(await consumeVerification(tx, confirmed))) {
         throw new Error('current-address code spent concurrently');
       }
+
       await saveStaffEmail(tx, identity.facilityId, requestedBy, email);
       await recordAuditEvent(tx, {
         facilityId: identity.facilityId,
@@ -389,8 +431,10 @@ export const registerStaffRoutes = (
         entityId: requestedBy,
         metadata: { recoveryEmail: current ? 'replaced' : 'added' },
       });
+
       return true;
     });
+
     if (!saved) {
       return refuse(
         reply,
@@ -404,6 +448,7 @@ export const registerStaffRoutes = (
       { facilityId: identity.facilityId, staffId: requestedBy },
       'recovery email saved',
     );
+
     return reply.code(204).send();
   });
 
@@ -415,19 +460,27 @@ export const registerStaffRoutes = (
    */
   const provenManager = async (request: FastifyRequest, reply: FastifyReply) => {
     const identity = await authenticateDevice(sql, request, reply);
+
     if (!identity) {
       return;
     }
+
     const actor = await verifiedRequestStaff(sql, identity, request.headers);
+
     if (!actor) {
       refuse(reply, 403, 'staff_session_required', 'Confirm your PIN to manage invitations');
+
       return;
     }
+
     const authorized = await authorizeStaff(sql, identity.facilityId, actor.id, 'staff:manage');
+
     if ('denial' in authorized) {
       refuse(reply, 403, 'forbidden', describeDenial(authorized.denial));
+
       return;
     }
+
     return { identity, actor: authorized.staff };
   };
 
@@ -463,9 +516,11 @@ export const registerStaffRoutes = (
     '/staff/:staffId/invitations',
     async (request, reply) => {
       const who = await provenManager(request, reply);
+
       if (!who) {
         return;
       }
+
       // A pasted address often carries spaces or capitals; neither makes it a different address.
       const body = z
         .strictObject({
@@ -474,14 +529,17 @@ export const registerStaffRoutes = (
           allowNewDevice: z.boolean().optional(),
         })
         .safeParse(request.body);
+
       if (!body.success) {
         return refuse(reply, 400, 'invalid_request', 'Enter a valid email address');
       }
+
       const target = await findStaffInFacility(
         sql,
         who.identity.facilityId,
         request.params.staffId,
       );
+
       if (!target?.active) {
         return refuse(
           reply,
@@ -490,6 +548,7 @@ export const registerStaffRoutes = (
           'No active member of staff with that id at this facility',
         );
       }
+
       if (!mayApprovePin(who.actor, target)) {
         return refuse(
           reply,
@@ -498,6 +557,7 @@ export const registerStaffRoutes = (
           'You cannot invite someone with access you do not hold',
         );
       }
+
       // Letting the link enrol a device is enrolling a device: only someone who may do that can allow it.
       if (body.data.allowNewDevice) {
         const enrol = await authorizeStaff(
@@ -506,6 +566,7 @@ export const registerStaffRoutes = (
           who.actor.id,
           'device:enroll',
         );
+
         if ('denial' in enrol) {
           return refuse(
             reply,
@@ -515,8 +576,10 @@ export const registerStaffRoutes = (
           );
         }
       }
+
       const email =
         body.data.email ?? (await findStaffEmail(sql, who.identity.facilityId, target.id));
+
       if (!email) {
         return refuse(
           reply,
@@ -534,13 +597,17 @@ export const registerStaffRoutes = (
         email,
         allowNewDevice: body.data.allowNewDevice === true,
       });
+
       if (!issued.ok) {
         const [status, message] = INVITATION_REFUSALS[issued.error];
+
         if (issued.retryAfterSeconds) {
           reply.header('retry-after', String(issued.retryAfterSeconds));
         }
+
         return refuse(reply, status, issued.error, message);
       }
+
       const invitation = await deliverInvitation(sql, mailer, issued, appUrl);
       // Never the code or the address: the facility, the person and what the provider said.
       request.log.info(
@@ -552,6 +619,7 @@ export const registerStaffRoutes = (
         },
         'staff invitation sent',
       );
+
       return reply.code(201).send({ invitation });
     },
   );
@@ -560,14 +628,17 @@ export const registerStaffRoutes = (
     '/staff/:staffId/invitations/revoke',
     async (request, reply) => {
       const who = await provenManager(request, reply);
+
       if (!who) {
         return;
       }
+
       const target = await findStaffInFacility(
         sql,
         who.identity.facilityId,
         request.params.staffId,
       );
+
       if (!target) {
         return refuse(
           reply,
@@ -576,6 +647,7 @@ export const registerStaffRoutes = (
           'No member of staff with that id at this facility',
         );
       }
+
       if (!mayApprovePin(who.actor, target)) {
         return refuse(
           reply,
@@ -584,12 +656,14 @@ export const registerStaffRoutes = (
           'You cannot manage access for someone with access you do not hold',
         );
       }
+
       const revoked = await revokeStaffInvitation(sql, {
         facilityId: who.identity.facilityId,
         staffId: target.id,
         revokedBy: who.actor.id,
         deviceId: who.identity.deviceId,
       });
+
       if (!revoked) {
         return refuse(
           reply,
@@ -598,6 +672,7 @@ export const registerStaffRoutes = (
           'There is no invitation waiting to be accepted',
         );
       }
+
       return { revoked: true };
     },
   );
@@ -607,14 +682,17 @@ export const registerStaffRoutes = (
     '/staff/:staffId/contact-activation',
     async (request, reply) => {
       const who = await provenManager(request, reply);
+
       if (!who) {
         return;
       }
+
       const target = await findStaffInFacility(
         sql,
         who.identity.facilityId,
         request.params.staffId,
       );
+
       if (!target) {
         return refuse(
           reply,
@@ -623,6 +701,7 @@ export const registerStaffRoutes = (
           'No member of staff with that id at this facility',
         );
       }
+
       return contactActivation(sql, who.identity.facilityId, target.id);
     },
   );
@@ -630,9 +709,11 @@ export const registerStaffRoutes = (
   /** Invitation and activation state for everyone at the facility who has any, for the Staff directory. */
   app.post('/staff/invitations/list', async (request, reply) => {
     const who = await provenManager(request, reply);
+
     if (!who) {
       return;
     }
+
     return { staff: await onboardingSummaries(sql, who.identity.facilityId) };
   });
 
@@ -645,16 +726,21 @@ export const registerStaffRoutes = (
     '/staff/:staffId/invitations/check',
     async (request, reply) => {
       const identity = await authenticateDevice(sql, request, reply);
+
       if (!identity) {
         return;
       }
+
       const body = z
         .strictObject({ code: z.string().trim().min(1).max(32) })
         .safeParse(request.body);
+
       if (!body.success) {
         return refuse(reply, 400, 'invalid_request', 'Enter the code from your invitation');
       }
+
       const target = await findStaffInFacility(sql, identity.facilityId, request.params.staffId);
+
       if (
         !target?.active ||
         !(await matchInvitationCode(sql, identity.facilityId, target.id, body.data.code))
@@ -666,6 +752,7 @@ export const registerStaffRoutes = (
           'That code is not right, has expired or was withdrawn. Ask your administrator to send a new one',
         );
       }
+
       return reply.code(204).send();
     },
   );

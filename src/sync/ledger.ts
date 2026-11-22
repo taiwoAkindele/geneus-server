@@ -47,6 +47,7 @@ export const claimMutation = async (
     INSERT INTO applied_mutations (device_id, client_id, transaction_id, entity_type, entity_id, outcome)
     VALUES (${identity.deviceId}, ${identity.clientId}, ${identity.transactionId}, ${entityType}, ${entityId}, ${outcome})
     ON CONFLICT (device_id, client_id) DO NOTHING`;
+
   return claimed.count === 1;
 };
 
@@ -56,6 +57,7 @@ export const wasApplied = async (
 ): Promise<boolean> => {
   const rows = await sql`
     SELECT 1 FROM applied_mutations WHERE device_id = ${identity.deviceId} AND client_id = ${identity.clientId}`;
+
   return rows.length === 1;
 };
 
@@ -86,6 +88,7 @@ export const recordRejection = async (
   rejection: Rejection,
 ): Promise<SyncRejection> => {
   const now = new Date().toISOString();
+
   const record = SyncRejection.parse({
     id: `sync_rejection:${randomUUID()}`,
     type: 'sync_rejection',
@@ -108,6 +111,8 @@ export const recordRejection = async (
     visibility: rejection.visibility,
     visibleToStaffIds: rejection.visibleToStaffIds,
   });
+
   await insertRecord(sql, 'sync_rejection', record);
+
   return record;
 };

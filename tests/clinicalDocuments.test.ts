@@ -21,6 +21,7 @@ import {
   upload,
   type ScratchDatabase,
 } from './postgres.ts';
+
 describe('clinical documents and immutable file storage', () => {
   let db: ScratchDatabase;
   let app: FastifyInstance;
@@ -32,6 +33,7 @@ describe('clinical documents and immutable file storage', () => {
   let otherDoctor: Staff;
   let sequence = 0;
   const bytes = (text = 'Synthetic hospital form') => Buffer.from(`%PDF-1.4\n${text}\n%%EOF`);
+
   const descriptor = (id: string, body = bytes()): DocumentFile => ({
     id,
     fileName: 'Form.pdf',
@@ -39,6 +41,7 @@ describe('clinical documents and immutable file storage', () => {
     byteSize: body.length,
     sha256: createHash('sha256').update(body).digest('hex'),
   });
+
   const postFile = (file: DocumentFile, body = bytes(), actor = doctor, owner = facility) =>
     app.inject({
       method: 'POST',
@@ -52,12 +55,14 @@ describe('clinical documents and immutable file storage', () => {
       },
       payload: body,
     });
+
   const getFile = (id: string, actor = doctor, owner = facility) =>
     app.inject({
       method: 'GET',
       url: `/documents/files/${encodeURIComponent(id)}`,
       headers: { authorization: `Bearer ${owner.device.credential}`, 'x-actor-staff-id': actor.id },
     });
+
   const put = (record: LibraryDocument | VisitDocument): UploadMutation => ({
     clientId: clientId(),
     op: 'put',
@@ -65,6 +70,7 @@ describe('clinical documents and immutable file storage', () => {
     id: record.id,
     data: record,
   });
+
   const send = (...mutations: UploadMutation[]) =>
     upload(app, facility.device.credential, {
       transactionId: 1,
@@ -75,12 +81,14 @@ describe('clinical documents and immutable file storage', () => {
       policyVersion: 11,
       mutations,
     });
+
   const env = () => ({
     ...envelopeFor(facility),
     schemaVersion: 5,
     createdBy: doctor.id,
     actorRole: doctor.role,
   });
+
   const library = (file: DocumentFile, id = `library:${++sequence}`) =>
     LibraryDocument.parse({
       ...env(),
@@ -93,6 +101,7 @@ describe('clinical documents and immutable file storage', () => {
       action: 'upload',
       archived: false,
     });
+
   const inpatient = async () => {
     const suffix = String(++sequence).padStart(6, '0');
     const patientId = `${facility.facility.id}-${suffix}-K2`;
@@ -109,6 +118,7 @@ describe('clinical documents and immutable file storage', () => {
       sex: 'female',
       ageYears: 30,
     });
+
     await insertRecord(db.sql, 'encounter', {
       ...env(),
       id: encounterId,
@@ -116,6 +126,7 @@ describe('clinical documents and immutable file storage', () => {
       patientId,
       openedOn: new Date().toISOString(),
     });
+
     await insertRecord(db.sql, 'encounter_entry', {
       ...env(),
       id: requestId,
@@ -126,6 +137,7 @@ describe('clinical documents and immutable file storage', () => {
       values: { ward: 'Ward' },
       actorRole: 'doctor',
     });
+
     await insertRecord(db.sql, 'inpatient_event', {
       ...env(),
       id: admissionId,
@@ -138,8 +150,10 @@ describe('clinical documents and immutable file storage', () => {
       receivingUnitId: 'unit:ward',
       actorRole: 'doctor',
     });
+
     return { patientId, encounterId, admissionId, admissionEventId: admissionId };
   };
+
   before(async () => {
     db = await scratchDatabase();
     app = testApp(db.sql);
@@ -158,14 +172,17 @@ describe('clinical documents and immutable file storage', () => {
       active: true,
     });
   });
+
   after(async () => {
     if (app) {
       await app.close();
     }
+
     if (db) {
       await db.drop();
     }
   });
+
   it('stores and downloads exact bytes only within the enrolled hospital and current clinical access', async () => {
     const file = descriptor('file:exact');
     assert.equal((await postFile(file)).statusCode, 201);
@@ -181,21 +198,25 @@ describe('clinical documents and immutable file storage', () => {
     assert.equal((await getFile(file.id, readonly)).statusCode, 200);
     assert.equal((await postFile(descriptor('file:readonly'), bytes(), readonly)).statusCode, 403);
   });
+
   it('requires device authentication and refuses disguised, corrupt and oversized files', async () => {
     assert.equal(
       (await app.inject({ method: 'GET', url: '/documents/files/unknown' })).statusCode,
       401,
     );
+
     const html = Buffer.from('<html>not a PDF</html>');
     assert.equal((await postFile(descriptor('file:html', html), html)).statusCode, 400);
     assert.equal(
       (await postFile({ ...descriptor('file:bad-hash'), sha256: 'b'.repeat(64) })).statusCode,
       400,
     );
+
     const huge = Buffer.alloc(10 * 1024 * 1024 + 1);
     assert.equal((await postFile(descriptor('file:large', huge), huge)).statusCode, 413);
     assert.equal((await postFile(descriptor('file:cashier'), bytes(), cashier)).statusCode, 403);
   });
+
   it('is idempotent and never overwrites a stored file identity', async () => {
     const file = descriptor('file:retry');
     assert.equal((await postFile(file)).statusCode, 201);
@@ -208,6 +229,7 @@ describe('clinical documents and immutable file storage', () => {
       /never changed/,
     );
   });
+
   it('preserves library originals and issued visit copies when replacing and archiving', async () => {
     const a = descriptor('file:original');
     const b = descriptor('file:replacement', bytes('Replacement'));
@@ -217,6 +239,7 @@ describe('clinical documents and immutable file storage', () => {
     const stay = await inpatient();
     const id = `visit-document:${++sequence}`;
     assert.deepEqual((await send(put(original))).rejected, []);
+
     const copy = VisitDocument.parse({
       ...env(),
       ...stay,
@@ -230,7 +253,9 @@ describe('clinical documents and immutable file storage', () => {
       action: 'attach',
       signatureStatus: 'unsigned',
     });
+
     assert.deepEqual((await send(put(copy))).rejected, []);
+
     const replacement = LibraryDocument.parse({
       ...original,
       ...env(),
@@ -240,7 +265,9 @@ describe('clinical documents and immutable file storage', () => {
       action: 'replace',
       file: b,
     });
+
     assert.deepEqual((await send(put(replacement))).rejected, []);
+
     const archive = LibraryDocument.parse({
       ...replacement,
       ...env(),
@@ -250,32 +277,40 @@ describe('clinical documents and immutable file storage', () => {
       action: 'archive',
       archived: true,
     });
+
     assert.deepEqual((await send(put(archive))).rejected, []);
     assert.equal(
       (await findRecord<VisitDocument>(db.sql, 'visit_document', copy.id))?.file.id,
       a.id,
     );
+
     assert.equal(
       (await findRecord<LibraryDocument>(db.sql, 'library_document', original.id))?.file.id,
       a.id,
     );
+
     assert.equal((await getFile(a.id)).statusCode, 200);
     await assert.rejects(db.sql`DELETE FROM visit_documents WHERE id=${copy.id}`, /never changed/);
   });
+
   it('holds metadata whose binary is missing without losing its recovery payload', async () => {
     const record = library(descriptor('file:missing'));
     const response = await send(put(record));
     assert.equal(response.rejected.length, 1);
+
     const [rejected] =
       await db.sql`SELECT refused_record FROM sync_rejections WHERE entity_id=${record.id}`;
+
     assert.equal(rejected.refused_record.file.id, 'file:missing');
     assert.equal(await findRecord(db.sql, 'library_document', record.id), undefined);
   });
+
   it('requires inpatient visits and refuses changes after departure/cancellation', async () => {
     const file = descriptor('file:inpatient');
     await postFile(file);
     const stay = await inpatient();
     const id = `visit-document:${++sequence}`;
+
     const record = VisitDocument.parse({
       ...env(),
       ...stay,
@@ -288,6 +323,7 @@ describe('clinical documents and immutable file storage', () => {
       action: 'attach',
       signatureStatus: 'unsigned',
     });
+
     assert.deepEqual((await send(put(record))).rejected, []);
     const [admission] = await db.sql`SELECT * FROM inpatient_events WHERE id=${stay.admissionId}`;
     await insertRecord(db.sql, 'inpatient_event', {
@@ -302,6 +338,7 @@ describe('clinical documents and immutable file storage', () => {
       actorRole: 'doctor',
       note: 'Synthetic withdrawal',
     });
+
     const update = VisitDocument.parse({
       ...record,
       ...env(),
@@ -311,20 +348,25 @@ describe('clinical documents and immutable file storage', () => {
       action: 'status',
       signatureStatus: 'awaiting_signed_copy',
     });
+
     assert.equal((await send(put(update))).rejected.length, 1);
+
     const outpatient = {
       ...record,
       id: `visit-document:${++sequence}`,
       documentId: `invalid:${sequence}`,
       admissionId: 'missing',
     };
+
     assert.equal((await send(put(outpatient))).rejected.length, 1);
   });
+
   it('serializes concurrent library revisions instead of selecting one by device time', async () => {
     const file = descriptor('file:revision');
     await postFile(file);
     const original = library(file);
     assert.deepEqual((await send(put(original))).rejected, []);
+
     const revisions = ['A', 'B'].map((title) =>
       LibraryDocument.parse({
         ...original,
@@ -336,9 +378,11 @@ describe('clinical documents and immutable file storage', () => {
         title,
       }),
     );
+
     const outcomes = await Promise.all(revisions.map((record) => send(put(record))));
     assert.equal(outcomes.flatMap((result) => result.rejected).length, 1);
   });
+
   it('requires explicit signature evidence and retains a signed copy and reviewer attribution', async () => {
     const originalFile = descriptor('file:unsigned');
     const signedFile = descriptor('file:signed', bytes('Patient signed scan'));
@@ -346,6 +390,7 @@ describe('clinical documents and immutable file storage', () => {
     await postFile(signedFile, bytes('Patient signed scan'));
     const stay = await inpatient();
     const id = `visit-document:${++sequence}`;
+
     const original = VisitDocument.parse({
       ...env(),
       ...stay,
@@ -358,7 +403,9 @@ describe('clinical documents and immutable file storage', () => {
       action: 'attach',
       signatureStatus: 'unsigned',
     });
+
     assert.deepEqual((await send(put(original))).rejected, []);
+
     const signed = VisitDocument.parse({
       ...original,
       ...env(),
@@ -375,16 +422,19 @@ describe('clinical documents and immutable file storage', () => {
         authorityBasis: 'Hospital representative checks recorded',
       },
     });
+
     assert.deepEqual((await send(put(signed))).rejected, []);
     assert.equal(
       (await findRecord<VisitDocument>(db.sql, 'visit_document', original.id))?.signatureStatus,
       'unsigned',
     );
+
     assert.equal(
       (await findRecord<VisitDocument>(db.sql, 'visit_document', signed.id))?.createdBy,
       doctor.id,
     );
   });
+
   it('negotiates document support and CORS without publishing file contents into sync streams', async () => {
     const result = await app.inject({
       method: 'POST',
@@ -397,6 +447,7 @@ describe('clinical documents and immutable file storage', () => {
         policyVersion: 11,
       },
     });
+
     assert.equal(result.statusCode, 200);
     assert.equal(result.json().documentWorkflowVersion, 1);
     assert.equal(
@@ -404,6 +455,7 @@ describe('clinical documents and immutable file storage', () => {
         .document_workflow,
       1,
     );
+
     const options = await app.inject({
       method: 'OPTIONS',
       url: '/documents/files/file',
@@ -413,9 +465,12 @@ describe('clinical documents and immutable file storage', () => {
         'access-control-request-headers': 'x-actor-staff-id,x-file-mime,x-file-sha256',
       },
     });
+
     assert.match(options.headers['access-control-allow-headers']!, /x-file-sha256/);
+
     const [publication] =
       await db.sql`SELECT count(*) AS n FROM pg_publication_tables WHERE pubname='powersync' AND tablename='document_files'`;
+
     assert.equal(Number(publication.n), 0);
   });
 });

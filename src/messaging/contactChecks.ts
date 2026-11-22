@@ -11,14 +11,18 @@ export const contactUploadIssues = async (tx: Tx, record: PatientContact): Promi
   if (record.source !== 'staff') {
     return ['Only the patient can record their own choice'];
   }
+
   if (!record.replaces) {
     const [existing] =
       await tx`SELECT id FROM patient_contacts WHERE facility_id = ${record.facilityId} AND patient_id = ${record.patientId} LIMIT 1 FOR UPDATE`;
+
     return existing
       ? ["This patient's contact details were changed on another device. Review them and try again"]
       : [];
   }
+
   const previous = await findRecord<PatientContact>(tx, 'patient_contact', record.replaces);
+
   if (
     !previous ||
     previous.facilityId !== record.facilityId ||
@@ -26,13 +30,17 @@ export const contactUploadIssues = async (tx: Tx, record: PatientContact): Promi
   ) {
     return ["A contact change must replace this patient's own contact details"];
   }
+
   const [later] =
     await tx`SELECT id FROM patient_contacts WHERE facility_id = ${record.facilityId} AND replaces = ${record.replaces} LIMIT 1`;
+
   if (later) {
     return [
       "This patient's contact details were changed on another device. Review them and try again",
     ];
   }
+
   const problem = contactChangeProblem(previous, record);
+
   return problem ? [problem] : [];
 };

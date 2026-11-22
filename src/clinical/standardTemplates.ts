@@ -21,18 +21,22 @@ type Range = ReferenceRange[];
 const adult = { value: 18, unit: 'years' } as const;
 const adults = (low: number, high: number): Range => [{ ageFrom: adult, low, high }];
 const adultsUpTo = (high: number): Range => [{ ageFrom: adult, high }];
+
 const bySex = (male: [number, number], female: [number, number]): Range => [
   { sex: 'male', ageFrom: adult, low: male[0], high: male[1] },
   { sex: 'female', ageFrom: adult, low: female[0], high: female[1] },
 ];
+
 const bySexUpTo = (male: number, female: number): Range => [
   { sex: 'male', ageFrom: adult, high: male },
   { sex: 'female', ageFrom: adult, high: female },
 ];
+
 const bySexFrom = (male: number, female: number): Range => [
   { sex: 'male', ageFrom: adult, low: male },
   { sex: 'female', ageFrom: adult, low: female },
 ];
+
 const number = (
   key: string,
   label: string,
@@ -49,6 +53,7 @@ const number = (
   ranges,
   required,
 });
+
 const choice = (key: string, label: string, answers: string[], required = true) => ({
   key,
   label,
@@ -56,18 +61,21 @@ const choice = (key: string, label: string, answers: string[], required = true) 
   answers,
   required,
 });
+
 const note = (key: string, label: string, required = false) => ({
   key,
   label,
   kind: 'text' as const,
   required,
 });
+
 const section = (key: string, label: string, required = false) => ({
   key,
   label,
   kind: 'section' as const,
   required,
 });
+
 const images = {
   key: 'images',
   label: 'Images',
@@ -78,6 +86,7 @@ const images = {
 
 const GRADES = ['Negative', 'Trace', '1+', '2+', '3+'];
 const TITRES = ['Less than 1:20', '1:20', '1:40', '1:80', '1:160', '1:320 or higher'];
+
 const ANTIBIOTICS = [
   'Amoxicillin-clavulanate',
   'Ampicillin',

@@ -30,6 +30,7 @@ describe('patient message helpers', () => {
     assert.equal(smsNumber('2348031234567'), '2348031234567');
     assert.equal(smsNumber('12345'), undefined);
   });
+
   it('keeps a bill SMS to the hospital, the number, the amount and the link', () => {
     const sms = billMessage(
       {
@@ -41,6 +42,7 @@ describe('patient message helpers', () => {
       } as never,
       'https://app.example.org/p/b/' + 'x'.repeat(43),
     ).sms;
+
     assert.equal(
       sms,
       `Sunrise Hospital: bill B-63AF2E1C9D04, NGN 20,500.00 due. View and pay: https://app.example.org/p/b/${'x'.repeat(43)}`,
@@ -56,27 +58,35 @@ describe('sending bills and receipts to patients', () => {
   let session: string | undefined;
   const sent: EmailMessage[] = [];
   let failing = false;
+
   const mailer: Mailer = {
     configured: true,
     send: async (message) => {
       if (failing) {
         throw new EmailNotSent('Resend answered 500: synthetic');
       }
+
       sent.push(message);
+
       return { providerMessageId: 'email-1' };
     },
   };
+
   const texts: { to: string; text: string }[] = [];
+
   const sms = {
     configured: false,
     send: async (to: string, text: string) => {
       texts.push({ to, text });
+
       return { providerMessageId: 'sms-1' };
     },
   };
+
   const patient = (n: string) => `${f.facility.id}-${n}-K2`;
   const billId = randomUUID();
   let key = '';
+
   const post = async (path: string, body: Record<string, unknown>) => {
     if (!session) {
       const proof = await issuePinSetupCode(db.sql, {
@@ -85,15 +95,19 @@ describe('sending bills and receipts to patients', () => {
         issuedBy: f.admin.id,
         issuedFrom: f.device.deviceId,
       });
+
       assert.ok(proof.ok);
+
       const response = await app.inject({
         method: 'POST',
         url: '/staff/session/enrol',
         headers: { authorization: `Bearer ${f.device.credential}` },
         payload: { staffId: f.admin.id, pin: '246810', setupCode: proof.code },
       });
+
       session = response.json().token;
     }
+
     return app.inject({
       method: 'POST',
       url: path,
@@ -105,6 +119,7 @@ describe('sending bills and receipts to patients', () => {
       payload: body,
     });
   };
+
   const contact = (id: string, extra: Record<string, unknown>) =>
     insertRecord(db.sql, 'patient_contact', {
       ...envelopeFor(f),
@@ -118,6 +133,7 @@ describe('sending bills and receipts to patients', () => {
       source: 'staff',
       ...extra,
     });
+
   const messages = () =>
     db.sql`SELECT channel, "to", status, attempts, reason, automatic FROM patient_messages ORDER BY created_on`;
 
@@ -128,6 +144,7 @@ describe('sending bills and receipts to patients', () => {
       { config, sql: db.sql, signer, mailer, smsSender: sms },
       { logger: false, rateLimit: false },
     );
+
     await db.sql`UPDATE facilities SET email = 'desk@example.org' WHERE id = ${f.facility.id}`;
     const admin = { ...envelopeFor(f), schemaVersion: 5 };
     await insertRecord(db.sql, 'fee_item', {
@@ -140,6 +157,7 @@ describe('sending bills and receipts to patients', () => {
       currency: 'NGN',
       chargeWhen: 'when_ordered',
     });
+
     await insertRecord(db.sql, 'patient', {
       ...admin,
       id: patient('000001'),
@@ -151,6 +169,7 @@ describe('sending bills and receipts to patients', () => {
       ageYears: 30,
       phone: '08031234567',
     });
+
     const charge = {
       ...admin,
       id: 'charge:one',
@@ -164,14 +183,17 @@ describe('sending bills and receipts to patients', () => {
       currency: 'NGN',
       billId,
     };
+
     await insertRecord(db.sql, 'charge', charge);
     key = billKey(charge as never);
     await contact('patient_contact:one', { email: 'ada@example.org' });
   });
+
   after(async () => {
     if (app) {
       await app.close();
     }
+
     if (db) {
       await db.drop();
     }
@@ -183,6 +205,7 @@ describe('sending bills and receipts to patients', () => {
       billKey: key,
       channels: ['email', 'sms'],
     });
+
     assert.equal(response.statusCode, 200, response.body);
     assert.deepEqual(
       response
@@ -197,6 +220,7 @@ describe('sending bills and receipts to patients', () => {
         ['sms', 'refused', "SMS sending isn't set up yet"],
       ],
     );
+
     assert.equal(sent.length, 1);
     const [email] = sent;
     assert.equal(email.to, 'ada@example.org');
@@ -208,6 +232,7 @@ describe('sending bills and receipts to patients', () => {
       new RegExp(`${config.corsOrigins[0]}/p/b/[A-Za-z0-9_-]{43}`),
       'the link opens the web app',
     );
+
     assert.match(email.text, /NGN 5,000\.00/);
     assert.equal(email.attachments?.[0].contentType, 'application/pdf');
     assert.equal(Buffer.from(email.attachments![0].content).subarray(0, 4).toString(), '%PDF');
@@ -242,6 +267,7 @@ describe('sending bills and receipts to patients', () => {
       0,
       'not before the back-off',
     );
+
     for (let i = 0; i < 2; i++) {
       await db.sql`UPDATE patient_messages SET updated_on = now() - interval '1 hour'`;
       await retryPatientMessages({
@@ -251,11 +277,13 @@ describe('sending bills and receipts to patients', () => {
         log: { warn: () => undefined },
       });
     }
+
     [row] = await messages();
     assert.deepEqual(
       [row.status, row.attempts, row.reason],
       ['failed', 3, "The email service didn't accept the message"],
     );
+
     failing = false;
   });
 
@@ -267,11 +295,13 @@ describe('sending bills and receipts to patients', () => {
       createdBy: 'patient',
       replaces: 'patient_contact:one',
     });
+
     const response = await post('/billing/documents/send', {
       kind: 'bill',
       billKey: key,
       channels: ['email'],
     });
+
     assert.deepEqual(response.json().messages, [
       { channel: 'email', status: 'refused', reason: 'The patient stopped email' },
     ]);
@@ -279,11 +309,13 @@ describe('sending bills and receipts to patients', () => {
 
   it('texts the bill once Geneus has SMS: hospital, number, amount and the web app link', async () => {
     sms.configured = true;
+
     const response = await post('/billing/documents/send', {
       kind: 'bill',
       billKey: key,
       channels: ['sms'],
     });
+
     assert.equal(response.json().messages[0].status, 'queued');
     assert.equal(texts.length, 1);
     assert.equal(texts[0].to, '2348031234567');
@@ -293,6 +325,7 @@ describe('sending bills and receipts to patients', () => {
         `: bill B-[^,]+, NGN 5,000\\.00 due\\. View and pay: ${config.corsOrigins[0]}/p/b/[A-Za-z0-9_-]{43}$`,
       ),
     );
+
     const [row] = await db.sql`SELECT "to", status FROM patient_messages WHERE channel = 'sms'`;
     assert.deepEqual({ ...row }, { to: '0803 *** 4567', status: 'sent' });
   });
@@ -313,13 +346,16 @@ describe('sending bills and receipts to patients', () => {
         allocations: [{ chargeId: 'charge:one', amountMinor: 1_000_00 }],
         ...(method === 'waiver' ? { reason: 'Synthetic waiver' } : {}),
       });
+
     await pay('payment:cash', 'cash', '300001');
     await pay('payment:waived', 'waiver', '300002');
     assert.deepEqual(
       (await db.sql`SELECT payment_id FROM patient_receipt_queue`).map((r) => r.payment_id),
       ['payment:cash'],
     );
+
     texts.length = 0;
+
     const deps = {
       sql: db.sql,
       mailer,
@@ -327,13 +363,16 @@ describe('sending bills and receipts to patients', () => {
       appUrl: config.corsOrigins[0],
       log: { warn: () => undefined },
     };
+
     assert.equal(await sendQueuedReceipts(deps), 1);
     assert.equal(await sendQueuedReceipts(deps), 0, 'each receipt is sent once');
     // The patient stopped email earlier, so only the SMS goes.
     assert.equal(texts.length, 1);
     assert.match(texts[0].text, /: receipt .*-R-300001-K2, NGN 1,000\.00 paid\. Download: /);
+
     const [row] =
       await db.sql`SELECT kind, subject, automatic, created_by, status FROM patient_messages WHERE kind = 'receipt'`;
+
     assert.deepEqual(
       { ...row },
       {
@@ -362,15 +401,18 @@ describe('sending bills and receipts to patients', () => {
 
 describe('Sendar', () => {
   const calls: { url: string; init: RequestInit }[] = [];
+
   const reply =
     (body: unknown, status = 200): typeof fetch =>
     async (url, init) => {
       calls.push({ url: String(url), init: init! });
+
       return new Response(JSON.stringify(body), {
         status,
         headers: { 'content-type': 'application/json' },
       });
     };
+
   it('sends one transactional SMS as Sendar specifies', async () => {
     const sender = createSendarSender(
       { apiKey: 'fictional-key', senderId: 'Geneus', baseUrl: 'https://sms.example.org/' },
@@ -379,6 +421,7 @@ describe('Sendar', () => {
         data: [{ number: '2348031234567', message_id: 991, status: 'queued' }],
       }),
     );
+
     assert.deepEqual(await sender.send('2348031234567', 'Hello'), { providerMessageId: '991' });
     assert.equal(calls[0].url, 'https://sms.example.org/api/sms/send');
     assert.equal((calls[0].init.headers as Record<string, string>)['API-KEY'], 'fictional-key');
@@ -388,6 +431,7 @@ describe('Sendar', () => {
       wallet_type: 'transactional',
     });
   });
+
   it("reports a refusal with Sendar's status for the log", async () => {
     await assert.rejects(
       createSendarSender(
@@ -396,6 +440,7 @@ describe('Sendar', () => {
       ).send('2348031234567', 'Hello'),
       (e: SmsNotSent) => e.providerStatus === 401 && e.providerReason === 'Invalid API key',
     );
+
     await assert.rejects(
       createSendarSender(
         { apiKey: 'k', senderId: 'Geneus', baseUrl: 'https://sms.example.org' },
@@ -404,6 +449,7 @@ describe('Sendar', () => {
       SmsNotSent,
     );
   });
+
   it('is off until Geneus configures it', () => {
     assert.equal(smsSenderFrom({ sendarBaseUrl: 'https://sms-submit.sendar.io' }), undefined);
     assert.ok(

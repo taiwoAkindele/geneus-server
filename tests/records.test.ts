@@ -61,6 +61,7 @@ describe('records', () => {
       allergies: ['penicillin', 'sulfa'],
       phone: '08012345678',
     });
+
     await insertRecord(db.sql, 'patient', written);
 
     const read = await findRecord<PatientRecord>(db.sql, 'patient', written.id);
@@ -84,6 +85,7 @@ describe('records', () => {
         { id: 'f2', type: 'select', label: 'Outcome', options: ['Treated', 'Referred'] },
       ],
     });
+
     await insertRecord(db.sql, 'register_definition', written);
 
     const read = await findRecord<RegisterDefinitionRecord>(
@@ -105,6 +107,7 @@ describe('records', () => {
       quantityOnHand: 120.5,
       reorderLevel: 30,
     });
+
     await insertRecord(db.sql, 'stock_item', written);
 
     const read = await findRecord<StockItemRecord>(db.sql, 'stock_item', written.id);

@@ -18,4 +18,5 @@ for (const outcome of outcomes) {
     `  ${outcome.outcome.padEnd(16)} ${String(outcome.version).padStart(4, '0')}_${outcome.name}`,
   );
 }
+
 console.log(`\n  ${outcomes.filter((outcome) => outcome.outcome === 'applied').length} applied\n`);

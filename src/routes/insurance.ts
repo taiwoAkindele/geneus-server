@@ -112,6 +112,7 @@ type Verified = { identity: DeviceIdentity; staff: Staff };
 
 const header = (value: string | string[] | undefined) =>
   typeof value === 'string' ? value : undefined;
+
 const hashBody = (body: unknown) => createHash('sha256').update(JSON.stringify(body)).digest('hex');
 
 const PayerSave = z.strictObject({
@@ -124,10 +125,12 @@ const PayerSave = z.strictObject({
   code: z.string().trim().min(1).max(30),
   active: z.boolean(),
 });
+
 const DraftSave = z.strictObject({
   terms: z.unknown(),
   expectedRevision: z.number().int().positive().optional(),
 });
+
 const Activate = z.strictObject({
   contractVersionId: z.string().min(1),
   acknowledgeUnsupported: z.boolean().default(false),
@@ -135,13 +138,16 @@ const Activate = z.strictObject({
   /** Revoked devices whose unsent work the administrator accepts will never arrive — named one by one. */
   acceptRevokedDevices: z.array(z.string().min(1)).max(100).default([]),
 });
+
 const End = z.strictObject({
   contractVersionId: z.string().min(1),
   endsOn: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   reason: z.string().trim().min(1).max(1000),
   requestKey: z.string().min(8).max(200),
 });
+
 const ChargeList = z.strictObject({ chargeIds: z.array(z.string().min(1)).min(1).max(200) });
+
 const Confirm = ChargeList.extend({
   requestKey: z.string().min(8).max(200),
   basis: z.enum(['visit', 'routine_bulk', 'exception']),
@@ -171,59 +177,75 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
     needs: 'any' | 'configure' | 'billing' = 'configure',
   ): Promise<Verified | undefined> => {
     const identity = await authenticateDevice(sql, request, reply);
+
     if (!identity) {
       return;
     }
+
     const staff = await verifiedRequestStaff(sql, identity, request.headers);
+
     if (!staff) {
       reply.code(403).send({
         error: 'staff_session_required',
         message: 'Confirm your PIN to continue',
       } satisfies ApiErrorBody);
+
       return;
     }
+
     if (
       (await catalogueEnabled(sql, identity.facilityId)) &&
       request.headers['x-billing-catalogue-version'] !== '1'
     ) {
       throw new BillingCompatibilityError('Update this financial client before continuing');
     }
+
     if (
       (await integratedEnabled(sql, identity.facilityId)) &&
       request.headers['x-integrated-billing-version'] !== '1'
     ) {
       throw new BillingCompatibilityError('Update this financial client before continuing');
     }
+
     if (!staffPermissions(staff).includes(permission)) {
       reply.code(403).send({
         error: 'forbidden',
         message: `This action needs ${permission}`,
       } satisfies ApiErrorBody);
+
       return;
     }
+
     // Insurance workflow activation is separate from ordinary financial refund authority.
     const state = await insuranceState(sql, identity.facilityId);
+
     const history =
       state !== 'active' &&
       needs === 'billing' &&
       (await billingPeriods(sql, identity.facilityId)).length > 0;
+
     if (state === 'off' && needs !== 'any' && !history) {
       reply.code(403).send({
         error: 'insurance_not_enabled',
         message: 'Insurance is not enabled for this hospital',
       } satisfies ApiErrorBody);
+
       return;
     }
+
     // Billing work continues for charges raised while billing was on, even after it is turned off.
     if (needs === 'billing' && state !== 'active' && !history) {
       reply.code(403).send({
         error: 'insurance_billing_inactive',
         message: 'Insurance billing is not active for this hospital yet',
       } satisfies ApiErrorBody);
+
       return;
     }
+
     return { identity, staff };
   };
+
   const invalid = (reply: FastifyReply, message: string) =>
     reply.code(400).send({ error: 'invalid_request', message } satisfies ApiErrorBody);
 
@@ -243,9 +265,11 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
     const facilityId = who.identity.facilityId;
     await tx`SELECT pg_advisory_xact_lock(hashtext(${`${facilityId}:${key}`}))`;
     const hash = hashBody(body);
+
     const [prior] = await tx<
       { operation: string; staff_id: string; body_hash: string; response: T }[]
     >`SELECT operation, staff_id, body_hash, response FROM insurance_requests WHERE facility_id = ${facilityId} AND request_key = ${key}`;
+
     if (prior) {
       return prior.operation === operation &&
         prior.staff_id === who.staff.id &&
@@ -253,10 +277,13 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
         ? { replayed: true, response: prior.response }
         : { conflict: true };
     }
+
     const response = await run();
     await tx`INSERT INTO insurance_requests (facility_id, request_key, operation, staff_id, body_hash, response) VALUES (${facilityId}, ${key}, ${operation}, ${who.staff.id}, ${hash}, ${tx.json(response as never)})`;
+
     return { replayed: false, response };
   };
+
   const refusal = (reply: FastifyReply, cause: unknown) => {
     if (
       cause instanceof ContractRefusal ||
@@ -270,33 +297,43 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
         ...(cause.details ? { details: cause.details } : {}),
       });
     }
+
     throw cause;
   };
 
   app.post('/insurance/payers/save', async (request, reply) => {
     const who = await verified(request, reply, 'insurance_contract:manage');
+
     if (!who) {
       return;
     }
+
     const body = PayerSave.safeParse(request.body);
+
     if (!body.success) {
       return invalid(reply, 'Give the payer a name, kind and code');
     }
+
     const now = new Date().toISOString();
+
     const payer = await sql.begin(async (tx) => {
       await tx`SELECT id FROM facilities WHERE id = ${who.identity.facilityId} FOR UPDATE`;
+
       const fields = {
         name: body.data.name,
         kind: body.data.kind,
         code: body.data.code,
         active: body.data.active,
       };
+
       const existing = body.data.id
         ? await findRecord<Payer>(tx, 'payer', body.data.id)
         : undefined;
+
       if (existing && existing.facilityId !== who.identity.facilityId) {
         return undefined;
       }
+
       if (existing) {
         const next = Payer.parse({
           ...existing,
@@ -304,9 +341,12 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
           updatedBy: who.staff.id,
           updatedOn: now,
         });
+
         await tx`UPDATE payers SET name = ${next.name}, kind = ${next.kind}, code = ${next.code}, active = ${next.active}, updated_by = ${who.staff.id}, updated_on = ${now} WHERE id = ${next.id}`;
+
         return next;
       }
+
       const created = Payer.parse({
         id: body.data.id ?? `payer:${randomUUID()}`,
         type: 'payer',
@@ -317,15 +357,19 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
         deviceId: who.identity.deviceId,
         ...fields,
       });
+
       await insertRecord(tx, 'payer', created);
+
       return created;
     });
+
     if (!payer) {
       return reply.code(404).send({
         error: 'not_found',
         message: 'This payer is not in this hospital',
       } satisfies ApiErrorBody);
     }
+
     await recordAuditEvent(sql, {
       facilityId: who.identity.facilityId,
       deviceId: who.identity.deviceId,
@@ -335,14 +379,17 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
       entityId: payer.id,
       metadata: { context: 'insurance' },
     });
+
     return payer;
   });
 
   app.post('/insurance/contracts/list', async (request, reply) => {
     const who = await verified(request, reply, 'insurance_contract:read');
+
     if (!who) {
       return;
     }
+
     const versions = await contractVersions(sql, who.identity.facilityId);
     await recordAuditEvent(sql, {
       facilityId: who.identity.facilityId,
@@ -352,6 +399,7 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
       entityType: 'payer',
       metadata: { context: 'insurance_contracts', count: versions.length },
     });
+
     return { versions };
   });
 
@@ -362,10 +410,13 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
    */
   app.post('/insurance/contracts/summaries', async (request, reply) => {
     const who = await verified(request, reply, 'insurance_contract:activate');
+
     if (!who) {
       return;
     }
+
     const versions = await contractVersions(sql, who.identity.facilityId);
+
     return {
       versions: versions.map((v) => ({
         id: v.id,
@@ -384,17 +435,22 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
 
   app.post('/insurance/contracts/draft', async (request, reply) => {
     const who = await verified(request, reply, 'insurance_contract:manage');
+
     if (!who) {
       return;
     }
+
     const body = DraftSave.safeParse(request.body);
+
     if (!body.success) {
       return invalid(reply, 'Send the contract terms to save');
     }
+
     try {
       const saved = await sql.begin((tx) =>
         saveDraft(tx, who.identity.facilityId, who.staff.id, body.data),
       );
+
       await recordAuditEvent(sql, {
         facilityId: who.identity.facilityId,
         deviceId: who.identity.deviceId,
@@ -408,6 +464,7 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
           revision: saved.version.revision,
         },
       });
+
       return saved;
     } catch (cause) {
       return refusal(reply, cause);
@@ -416,21 +473,27 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
 
   app.post('/insurance/contracts/readiness', async (request, reply) => {
     const who = await verified(request, reply, 'insurance_contract:activate');
+
     if (!who) {
       return;
     }
+
     return { devices: await activationBlockers(sql, who.identity.facilityId) };
   });
 
   app.post('/insurance/contracts/activate', async (request, reply) => {
     const who = await verified(request, reply, 'insurance_contract:activate');
+
     if (!who) {
       return;
     }
+
     const body = Activate.safeParse(request.body);
+
     if (!body.success) {
       return invalid(reply, 'Choose the contract version and a request key');
     }
+
     try {
       const result = await sql.begin((tx) =>
         once(tx, who, body.data.requestKey, 'activate', body.data, () =>
@@ -444,12 +507,14 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
           }),
         ),
       );
+
       if ('conflict' in result) {
         return reply.code(409).send({
           error: 'request_reused',
           message: 'This request key was already used for a different action',
         } satisfies ApiErrorBody);
       }
+
       if (!result.replayed) {
         await recordAuditEvent(sql, {
           facilityId: who.identity.facilityId,
@@ -466,6 +531,7 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
           },
         });
       }
+
       return result.response;
     } catch (cause) {
       return refusal(reply, cause);
@@ -475,13 +541,17 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
   /** Ends cover under an active version from today or later. Confirmed splits are snapshots and never change. */
   app.post('/insurance/contracts/end', async (request, reply) => {
     const who = await verified(request, reply, 'insurance_contract:activate');
+
     if (!who) {
       return;
     }
+
     const body = End.safeParse(request.body);
+
     if (!body.success) {
       return invalid(reply, 'Choose the contract version, the end date and a reason');
     }
+
     try {
       const result = await sql.begin((tx) =>
         once(tx, who, body.data.requestKey, 'end', body.data, () =>
@@ -494,12 +564,14 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
           }),
         ),
       );
+
       if ('conflict' in result) {
         return reply.code(409).send({
           error: 'request_reused',
           message: 'This request key was already used for a different action',
         } satisfies ApiErrorBody);
       }
+
       if (!result.replayed) {
         await recordAuditEvent(sql, {
           facilityId: who.identity.facilityId,
@@ -514,6 +586,7 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
           },
         });
       }
+
       return result.response;
     } catch (cause) {
       return refusal(reply, cause);
@@ -526,28 +599,35 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
    */
   app.post('/insurance/allocations/preview', async (request, reply) => {
     const who = await verified(request, reply, 'coverage:confirm', 'billing');
+
     if (!who) {
       return;
     }
+
     const body = ChargeList.safeParse(request.body);
+
     if (!body.success) {
       return invalid(reply, 'Choose up to 200 charges');
     }
+
     const mayReadContracts = staffPermissions(who.staff).includes('insurance_contract:read');
     const facilityId = who.identity.facilityId;
     const charges = await chargesById(sql, facilityId, body.data.chargeIds);
     const positions = await chargePositions(sql, facilityId, charges);
     const items = [];
+
     for (const position of positions.values()) {
       const { estimate, money, charge } = position;
       const paid = money.receivedMinor + money.waivedByPaymentMinor - money.refundedMinor;
       let split;
+
       if (mayReadContracts && estimate.state === 'estimated') {
         const version = await findContractVersion(
           sql,
           facilityId,
           estimate.schedule.contractVersionId,
         );
+
         const computed = version
           ? computeAllocation({
               terms: version.terms,
@@ -556,10 +636,12 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
               units: estimate.units,
             })
           : undefined;
+
         if (computed?.ok) {
           split = computed.split;
         }
       }
+
       items.push({
         chargeId: charge.id,
         patientId: charge.patientId,
@@ -574,18 +656,23 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
         ...(split ? { split } : {}),
       });
     }
+
     return { items };
   });
 
   app.post('/insurance/allocations/confirm', async (request, reply) => {
     const who = await verified(request, reply, 'coverage:confirm', 'billing');
+
     if (!who) {
       return;
     }
+
     const body = Confirm.safeParse(request.body);
+
     if (!body.success) {
       return invalid(reply, body.error.issues.map((i) => i.message).join('; '));
     }
+
     const result = await sql.begin((tx) =>
       once(tx, who, body.data.requestKey, 'confirm', body.data, () =>
         confirmAllocations(tx, {
@@ -604,12 +691,14 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
         }),
       ),
     );
+
     if ('conflict' in result) {
       return reply.code(409).send({
         error: 'request_reused',
         message: 'This request key was already used for a different action',
       } satisfies ApiErrorBody);
     }
+
     if (!result.replayed) {
       await recordAuditEvent(sql, {
         facilityId: who.identity.facilityId,
@@ -627,14 +716,17 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
         },
       });
     }
+
     return { outcomes: result.response };
   });
 
   app.post('/billing/refunds', async (request, reply) => {
     const who = await verified(request, reply, 'payment:refund', 'any');
+
     if (!who) {
       return;
     }
+
     if (
       !(await integratedEnabled(sql, who.identity.facilityId)) &&
       (await insuranceState(sql, who.identity.facilityId)) !== 'active' &&
@@ -644,10 +736,13 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
         'Self-pay refunds are waiting for compatible financial readers so every account sees the money handed back',
       );
     }
+
     const body = RefundRequest.safeParse(request.body);
+
     if (!body.success) {
       return invalid(reply, 'Choose the charges, amounts, method and a reason for the refund');
     }
+
     try {
       const { refund, replayed } = await sql.begin((tx) =>
         recordRefund(tx, {
@@ -657,6 +752,7 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
           request: body.data,
         }),
       );
+
       if (!replayed) {
         await recordAuditEvent(sql, {
           facilityId: who.identity.facilityId,
@@ -668,6 +764,7 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
           metadata: { context: 'refund', charges: refund.allocations.length },
         });
       }
+
       return reply.code(replayed ? 200 : 201).send(refund);
     } catch (cause) {
       return refusal(reply, cause);
@@ -679,29 +776,38 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
   /** What the hospital has and still needs; readable by anyone who configures or activates insurance. */
   app.post('/insurance/setup/status', async (request, reply) => {
     const who = (await verified(request, reply, 'insurance_contract:activate', 'any')) ?? undefined;
+
     if (!who) {
       return;
     }
+
     return insuranceSetupStatus(sql, who.identity.facilityId);
   });
+
   app.post('/insurance/setup/status/officer', async (request, reply) => {
     const who = await verified(request, reply, 'insurance_contract:manage', 'any');
+
     if (!who) {
       return;
     }
+
     return insuranceSetupStatus(sql, who.identity.facilityId);
   });
 
   /** A hospital administrator enters or leaves setup. Billing activation is never reachable here. */
   app.post('/insurance/setup', async (request, reply) => {
     const who = await verified(request, reply, 'insurance_contract:activate', 'any');
+
     if (!who) {
       return;
     }
+
     const body = z.strictObject({ state: z.enum(['off', 'setup']) }).safeParse(request.body);
+
     if (!body.success) {
       return invalid(reply, 'Choose setup or off');
     }
+
     try {
       const state = await setInsuranceSetup(sql, {
         facilityId: who.identity.facilityId,
@@ -709,6 +815,7 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
         deviceId: who.identity.deviceId,
         to: body.data.state,
       });
+
       return { state };
     } catch (cause) {
       return refusal(reply, cause);
@@ -722,15 +829,19 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
    */
   app.post('/insurance/activation/request', async (request, reply) => {
     const who = await verified(request, reply, 'insurance_contract:activate', 'configure');
+
     if (!who) {
       return;
     }
+
     const body = z
       .strictObject({ note: z.string().trim().min(1).max(1000).optional() })
       .safeParse(request.body ?? {});
+
     if (!body.success) {
       return invalid(reply, 'The note is too long');
     }
+
     try {
       await sql.begin((tx) =>
         requestActivation(tx, {
@@ -740,16 +851,20 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
           ...(body.data.note ? { note: body.data.note } : {}),
         }),
       );
+
       return insuranceSetupStatus(sql, who.identity.facilityId);
     } catch (cause) {
       return refusal(reply, cause);
     }
   });
+
   app.post('/insurance/activation/withdraw', async (request, reply) => {
     const who = await verified(request, reply, 'insurance_contract:activate', 'configure');
+
     if (!who) {
       return;
     }
+
     try {
       await sql.begin((tx) =>
         withdrawActivation(tx, {
@@ -758,6 +873,7 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
           deviceId: who.identity.deviceId,
         }),
       );
+
       return insuranceSetupStatus(sql, who.identity.facilityId);
     } catch (cause) {
       return refusal(reply, cause);
@@ -796,40 +912,54 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
    */
   app.post('/insurance/documents', { bodyLimit: DOCUMENT_MAX_BYTES }, async (request, reply) => {
     const who = await verified(request, reply, 'insurance_contract:manage');
+
     if (!who) {
       return;
     }
+
     let meta: unknown;
+
     try {
       meta = JSON.parse(decodeURIComponent(header(request.headers['x-document-meta']) ?? ''));
     } catch {
       return invalid(reply, 'Describe the document');
     }
+
     const upload = InsuranceDocumentUpload.safeParse(meta);
     const body = request.body;
+
     if (!upload.success) {
       return invalid(reply, upload.error.issues.map((i) => i.message).join('; '));
     }
+
     if (!Buffer.isBuffer(body) || !body.length || body.length > DOCUMENT_MAX_BYTES) {
       return invalid(reply, 'Choose a PDF or image up to 10 MB');
     }
+
     const mime = documentContentType(body);
     const sha256 = createHash('sha256').update(body).digest('hex');
+
     if (!mime || sha256 !== header(request.headers['x-file-sha256'])) {
       return invalid(reply, 'The file is not a PDF or image, or did not arrive intact');
     }
+
     const result = await sql.begin(async (tx) => {
       await tx`SELECT id FROM facilities WHERE id = ${who.identity.facilityId} FOR UPDATE`;
+
       const [payer] =
         await tx`SELECT id FROM payers WHERE facility_id = ${who.identity.facilityId} AND id = ${upload.data.payerId}`;
+
       if (!payer) {
         return { error: 'unknown_payer' as const };
       }
+
       let version = 1;
+
       if (upload.data.replaces) {
         const [previous] = await tx<
           { version: number; payer_id: string; document_type: string }[]
         >`SELECT version, payer_id, document_type FROM insurance_documents WHERE facility_id = ${who.identity.facilityId} AND id = ${upload.data.replaces}`;
+
         if (
           !previous ||
           previous.payer_id !== upload.data.payerId ||
@@ -837,17 +967,22 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
         ) {
           return { error: 'invalid_replaces' as const };
         }
+
         const [later] =
           await tx`SELECT 1 FROM insurance_documents WHERE facility_id = ${who.identity.facilityId} AND replaces = ${upload.data.replaces}`;
+
         if (later) {
           return { error: 'already_replaced' as const };
         }
+
         version = previous.version + 1;
       }
+
       const id = `insurance_document:${randomUUID()}`;
       await tx`INSERT INTO insurance_documents (id, facility_id, payer_id, document_type, title, file_name, mime_type, byte_size, sha256, content, version, replaces, effective_from, notes, uploaded_by, device_id)
         VALUES (${id}, ${who.identity.facilityId}, ${upload.data.payerId}, ${upload.data.documentType}, ${upload.data.title}, ${upload.data.fileName}, ${mime}, ${body.length}, ${sha256}, ${body}, ${version},
           ${upload.data.replaces ?? null}, ${upload.data.effectiveFrom ?? null}, ${upload.data.notes ?? null}, ${who.staff.id}, ${who.identity.deviceId})`;
+
       await recordAuditEvent(tx, {
         facilityId: who.identity.facilityId,
         deviceId: who.identity.deviceId,
@@ -862,8 +997,10 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
           version,
         },
       });
+
       return { id };
     });
+
     if (result.error || !result.id) {
       return reply.code(409).send({
         error: result.error ?? 'conflict',
@@ -873,42 +1010,53 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
             : 'Replace the current version of a document of the same payer and type',
       } satisfies ApiErrorBody);
     }
+
     const [row] = await sql`SELECT * FROM insurance_documents WHERE id = ${result.id}`;
+
     return reply.code(201).send(docRow(row));
   });
 
   app.post('/insurance/documents/list', async (request, reply) => {
     const who = await verified(request, reply, 'insurance_contract:read');
+
     if (!who) {
       return;
     }
+
     const body = z
       .strictObject({ payerId: z.string().min(1).optional() })
       .safeParse(request.body ?? {});
+
     if (!body.success) {
       return invalid(reply, 'Choose a payer');
     }
+
     const rows = body.data.payerId
       ? await sql`SELECT id, payer_id, document_type, title, file_name, mime_type, byte_size, sha256, version, replaces, effective_from, notes, verification, verified_by, verified_on, verification_note, uploaded_by, uploaded_on FROM insurance_documents WHERE facility_id = ${who.identity.facilityId} AND payer_id = ${body.data.payerId} ORDER BY uploaded_on`
       : await sql`SELECT id, payer_id, document_type, title, file_name, mime_type, byte_size, sha256, version, replaces, effective_from, notes, verification, verified_by, verified_on, verification_note, uploaded_by, uploaded_on FROM insurance_documents WHERE facility_id = ${who.identity.facilityId} ORDER BY uploaded_on`;
+
     return { documents: rows.map(docRow) };
   });
 
   /** Download: the stored bytes with their sniffed type, as an attachment, never rendered inline. Audited. */
   app.post<{ Params: { id: string } }>('/insurance/documents/:id/file', async (request, reply) => {
     const who = await verified(request, reply, 'insurance_contract:read');
+
     if (!who) {
       return;
     }
+
     const [file] = await sql<
       { mime_type: string; content: Buffer; file_name: string; payer_id: string }[]
     >`SELECT mime_type, content, file_name, payer_id FROM insurance_documents WHERE facility_id = ${who.identity.facilityId} AND id = ${request.params.id}`;
+
     if (!file) {
       return reply.code(404).send({
         error: 'not_found',
         message: 'This document is not in this hospital',
       } satisfies ApiErrorBody);
     }
+
     await recordAuditEvent(sql, {
       facilityId: who.identity.facilityId,
       deviceId: who.identity.deviceId,
@@ -918,6 +1066,7 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
       entityId: file.payer_id,
       metadata: { context: 'insurance_document_downloaded', documentId: request.params.id },
     });
+
     return reply
       .type(file.mime_type)
       .header(
@@ -934,27 +1083,33 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
     '/insurance/documents/:id/verify',
     async (request, reply) => {
       const who = await verified(request, reply, 'insurance_contract:manage');
+
       if (!who) {
         return;
       }
+
       const body = z
         .strictObject({
           verification: z.enum(['verified', 'rejected']),
           note: z.string().trim().min(1).max(1000).optional(),
         })
         .safeParse(request.body);
+
       if (!body.success) {
         return invalid(reply, 'Choose verified or rejected');
       }
+
       const updated =
         await sql`UPDATE insurance_documents SET verification = ${body.data.verification}, verified_by = ${who.staff.id}, verified_on = now(), verification_note = ${body.data.note ?? null}
       WHERE facility_id = ${who.identity.facilityId} AND id = ${request.params.id} AND verification = 'unverified' RETURNING *`;
+
       if (!updated.length) {
         return reply.code(409).send({
           error: 'already_verified',
           message: 'This document was already reviewed',
         } satisfies ApiErrorBody);
       }
+
       await recordAuditEvent(sql, {
         facilityId: who.identity.facilityId,
         deviceId: who.identity.deviceId,
@@ -968,6 +1123,7 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
           verification: body.data.verification,
         },
       });
+
       return docRow(updated[0]);
     },
   );
@@ -976,9 +1132,11 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
 
   app.post('/insurance/submission/list', async (request, reply) => {
     const who = await verified(request, reply, 'insurance_contract:read');
+
     if (!who) {
       return;
     }
+
     const rows = await sql<
       {
         payer_id: string;
@@ -988,6 +1146,7 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
         updated_on: string;
       }[]
     >`SELECT payer_id, profile, revision, updated_by, updated_on FROM payer_submission_profiles WHERE facility_id = ${who.identity.facilityId}`;
+
     return {
       profiles: rows.map((r) =>
         StoredSubmissionProfile.parse({
@@ -1004,9 +1163,11 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
   /** Manual submission only. Direct submission is shown as coming soon and refused here. */
   app.post('/insurance/submission/save', async (request, reply) => {
     const who = await verified(request, reply, 'insurance_contract:manage');
+
     if (!who) {
       return;
     }
+
     const body = z
       .strictObject({
         payerId: z.string().min(1),
@@ -1014,33 +1175,41 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
         expectedRevision: z.number().int().positive().optional(),
       })
       .safeParse(request.body);
+
     if (!body.success) {
       return invalid(
         reply,
         body.error.issues.map((i) => `${i.path.slice(1).join('.')}: ${i.message}`).join('; '),
       );
     }
+
     if (body.data.profile.method === 'direct') {
       return reply.code(409).send({
         error: 'direct_submission_unavailable',
         message: 'Direct submission to HMOs is not available yet. Choose manual submission',
       } satisfies ApiErrorBody);
     }
+
     const result = await sql.begin(async (tx) => {
       const [payer] =
         await tx`SELECT id FROM payers WHERE facility_id = ${who.identity.facilityId} AND id = ${body.data.payerId}`;
+
       if (!payer) {
         return 'unknown_payer' as const;
       }
+
       const [current] = await tx<
         { revision: number }[]
       >`SELECT revision FROM payer_submission_profiles WHERE facility_id = ${who.identity.facilityId} AND payer_id = ${body.data.payerId} FOR UPDATE`;
+
       if ((current?.revision ?? undefined) !== body.data.expectedRevision) {
         return 'stale' as const;
       }
+
       const revision = (current?.revision ?? 0) + 1;
       await tx`INSERT INTO payer_submission_profiles (facility_id, payer_id, profile, revision, updated_by) VALUES (${who.identity.facilityId}, ${body.data.payerId}, ${tx.json(body.data.profile as never)}, ${revision}, ${who.staff.id})
         ON CONFLICT (facility_id, payer_id) DO UPDATE SET profile = EXCLUDED.profile, revision = EXCLUDED.revision, updated_by = EXCLUDED.updated_by, updated_on = now()`;
+
       await recordAuditEvent(tx, {
         facilityId: who.identity.facilityId,
         deviceId: who.identity.deviceId,
@@ -1054,20 +1223,24 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
           channel: body.data.profile.channel,
         },
       });
+
       return revision;
     });
+
     if (result === 'unknown_payer') {
       return reply.code(404).send({
         error: 'not_found',
         message: 'Choose a payer of this hospital',
       } satisfies ApiErrorBody);
     }
+
     if (result === 'stale') {
       return reply.code(409).send({
         error: 'stale_submission_method',
         message: "Someone changed this payer's submission method. Review the current one",
       } satisfies ApiErrorBody);
     }
+
     return { payerId: body.data.payerId, profile: body.data.profile, revision: result };
   });
 
@@ -1080,33 +1253,44 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
     diagnosis_catalogue: 'insurance_contract:manage',
     remittance: 'insurance_remittance:record',
   };
+
   app.post('/insurance/import-templates/list', async (request, reply) => {
     const body = z.strictObject({ kind: ImportKind }).safeParse(request.body);
+
     if (!body.success) {
       return invalid(reply, 'Choose what is being imported');
     }
+
     const who = await verified(request, reply, IMPORT_PERMISSION[body.data.kind]);
+
     if (!who) {
       return;
     }
+
     return { templates: await listImportTemplates(sql, who.identity.facilityId, body.data.kind) };
   });
+
   app.post('/insurance/import-templates/save', async (request, reply) => {
     const body = ImportTemplateSave.safeParse(request.body);
+
     if (!body.success) {
       return invalid(
         reply,
         body.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; '),
       );
     }
+
     const who = await verified(request, reply, IMPORT_PERMISSION[body.data.kind]);
+
     if (!who) {
       return;
     }
+
     try {
       const saved = await sql.begin((tx) =>
         saveImportTemplate(tx, who.identity.facilityId, who.staff.id, body.data),
       );
+
       await recordAuditEvent(sql, {
         facilityId: who.identity.facilityId,
         deviceId: who.identity.deviceId,
@@ -1121,6 +1305,7 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
           revision: saved.revision,
         },
       });
+
       return saved;
     } catch (cause) {
       return refusal(reply, cause);
@@ -1137,10 +1322,13 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
     { bodyLimit: 2 * 1024 * 1024 },
     async (request, reply) => {
       const who = await verified(request, reply, 'insurance_contract:manage');
+
       if (!who) {
         return;
       }
+
       const body = TariffImport.safeParse(request.body);
+
       if (!body.success) {
         return invalid(
           reply,
@@ -1150,6 +1338,7 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
             .join('; '),
         );
       }
+
       try {
         // The server's own checksum of exactly what it validated and applied: the evidence, unlike the file checksum the browser reports.
         const payloadSha256 = createHash('sha256')
@@ -1166,18 +1355,21 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
             }),
           )
           .digest('hex');
+
         const result = await sql.begin((tx) =>
           once(tx, who, body.data.requestKey, 'import_tariff', body.data, async () => ({
             ...(await applyTariffImport(tx, who.identity.facilityId, who.staff.id, body.data)),
             payloadSha256,
           })),
         );
+
         if ('conflict' in result) {
           return reply.code(409).send({
             error: 'request_reused',
             message: 'This request key was already used for a different action',
           } satisfies ApiErrorBody);
         }
+
         if (!result.replayed) {
           await recordAuditEvent(sql, {
             facilityId: who.identity.facilityId,
@@ -1204,6 +1396,7 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
             },
           });
         }
+
         return result.response;
       } catch (cause) {
         return refusal(reply, cause);
@@ -1215,6 +1408,7 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
 
   // Claims carry contract prices and payer shares: insurance officers only. Billing work continues after billing is turned off.
   const CLAIMS: Permission = 'coverage:confirm';
+
   const audit = (
     who: Verified,
     entityId: string,
@@ -1233,39 +1427,50 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
   /** Prior authorizations and referrals, recorded as obtained by staff who verify cover. */
   app.post('/insurance/authorizations/save', async (request, reply) => {
     const who = await verified(request, reply, 'cover:verify', 'configure');
+
     if (!who) {
       return;
     }
+
     const body = AuthorizationInput.safeParse(request.body);
+
     if (!body.success) {
       return invalid(reply, body.error.issues.map((i) => i.message).join('; '));
     }
+
     try {
       const saved = await sql.begin((tx) =>
         recordAuthorization(tx, who.identity.facilityId, who.staff.id, body.data),
       );
+
       await audit(who, saved.id, {
         context: 'insurance_authorization_recorded',
         kind: saved.kind,
         status: saved.status,
         patientId: saved.patientId,
       });
+
       return saved;
     } catch (cause) {
       return refusal(reply, cause);
     }
   });
+
   app.post('/insurance/authorizations/list', async (request, reply) => {
     const who = await verified(request, reply, 'cover:verify', 'configure');
+
     if (!who) {
       return;
     }
+
     const body = z
       .strictObject({ patientId: z.string().min(1).optional() })
       .safeParse(request.body ?? {});
+
     if (!body.success) {
       return invalid(reply, 'Choose a patient');
     }
+
     return {
       authorizations: await listAuthorizations(
         sql,
@@ -1277,9 +1482,11 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
 
   app.post('/insurance/claims/generate', async (request, reply) => {
     const who = await verified(request, reply, CLAIMS, 'billing');
+
     if (!who) {
       return;
     }
+
     const body = z
       .strictObject({
         payerId: z.string().min(1).optional(),
@@ -1287,12 +1494,15 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
         to: z.iso.date().optional(),
       })
       .safeParse(request.body ?? {});
+
     if (!body.success) {
       return invalid(reply, 'Choose a payer and dates');
     }
+
     const result = await sql.begin((tx) =>
       generateClaims(tx, who.identity.facilityId, who.staff.id, body.data),
     );
+
     if (result.lines) {
       await audit(who, who.identity.facilityId, {
         context: 'insurance_claims_generated',
@@ -1301,13 +1511,17 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
         lines: result.lines,
       });
     }
+
     return result;
   });
+
   app.post('/insurance/claims/list', async (request, reply) => {
     const who = await verified(request, reply, CLAIMS, 'billing');
+
     if (!who) {
       return;
     }
+
     const body = z
       .strictObject({
         payerId: z.string().min(1).optional(),
@@ -1317,48 +1531,62 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
         includeSuperseded: z.boolean().optional(),
       })
       .safeParse(request.body ?? {});
+
     if (!body.success) {
       return invalid(reply, 'Choose which claims to list');
     }
+
     return { claims: await listClaims(sql, who.identity.facilityId, body.data) };
   });
+
   app.post('/insurance/claims/ready', async (request, reply) => {
     const who = await verified(request, reply, CLAIMS, 'billing');
+
     if (!who) {
       return;
     }
+
     const body = z
       .strictObject({ claimIds: z.array(z.string().min(1)).min(1).max(300) })
       .safeParse(request.body);
+
     if (!body.success) {
       return invalid(reply, 'Choose claims');
     }
+
     try {
       const result = await sql.begin((tx) =>
         markReady(tx, who.identity.facilityId, who.staff.id, body.data.claimIds),
       );
+
       for (const o of result.outcomes.filter((x) => x.outcome === 'ready')) {
         await audit(who, o.claimId, { context: 'insurance_claim_ready' });
       }
+
       return result;
     } catch (cause) {
       return refusal(reply, cause);
     }
   });
+
   app.post<{ Params: { id: string } }>('/insurance/claims/:id/revise', async (request, reply) => {
     const who = await verified(request, reply, CLAIMS, 'billing');
+
     if (!who) {
       return;
     }
+
     const body = z
       .strictObject({
         reason: z.string().trim().min(3).max(1000),
         requestKey: z.string().min(8).max(100),
       })
       .safeParse(request.body);
+
     if (!body.success) {
       return invalid(reply, 'Give a reason for the revision');
     }
+
     try {
       const result = await sql.begin((tx) =>
         once(
@@ -1377,12 +1605,14 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
             ),
         ),
       );
+
       if ('conflict' in result) {
         return reply.code(409).send({
           error: 'request_reused',
           message: 'This request key was already used for a different action',
         } satisfies ApiErrorBody);
       }
+
       if (!result.replayed) {
         await audit(who, request.params.id, {
           context: 'insurance_claim_revised',
@@ -1390,24 +1620,30 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
           reason: body.data.reason,
         });
       }
+
       return result.response;
     } catch (cause) {
       return refusal(reply, cause);
     }
   });
+
   app.post<{ Params: { id: string } }>(
     '/insurance/claims/:id/attachments',
     async (request, reply) => {
       const who = await verified(request, reply, CLAIMS, 'billing');
+
       if (!who) {
         return;
       }
+
       const body = z
         .strictObject({ documentId: z.string().min(1), remove: z.boolean().default(false) })
         .safeParse(request.body);
+
       if (!body.success) {
         return invalid(reply, 'Choose a document');
       }
+
       try {
         await sql.begin((tx) =>
           setAttachment(
@@ -1419,23 +1655,28 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
             body.data.remove,
           ),
         );
+
         await audit(who, request.params.id, {
           context: body.data.remove
             ? 'insurance_claim_attachment_removed'
             : 'insurance_claim_attachment_added',
           documentId: body.data.documentId,
         });
+
         return { ok: true };
       } catch (cause) {
         return refusal(reply, cause);
       }
     },
   );
+
   app.post('/insurance/claims/batches/create', async (request, reply) => {
     const who = await verified(request, reply, CLAIMS, 'billing');
+
     if (!who) {
       return;
     }
+
     const body = z
       .strictObject({
         payerId: z.string().min(1),
@@ -1444,36 +1685,46 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
         reference: z.string().trim().min(1).max(60).optional(),
       })
       .safeParse(request.body);
+
     if (!body.success) {
       return invalid(reply, 'Choose a payer and period');
     }
+
     try {
       const result = await sql.begin((tx) =>
         createBatch(tx, who.identity.facilityId, who.staff.id, body.data),
       );
+
       await audit(who, result.batchId, {
         context: 'insurance_claim_batch_created',
         reference: result.reference,
         claims: result.claims,
       });
+
       return result;
     } catch (cause) {
       return refusal(reply, cause);
     }
   });
+
   app.post('/insurance/claims/batches/list', async (request, reply) => {
     const who = await verified(request, reply, CLAIMS, 'billing');
+
     if (!who) {
       return;
     }
+
     return { batches: await listBatches(sql, who.identity.facilityId) };
   });
+
   /** Rows for a file the device writes (CSV/XLSX) or prints (PDF). Recorded, never a submission. */
   app.post('/insurance/claims/export', async (request, reply) => {
     const who = await verified(request, reply, CLAIMS, 'billing');
+
     if (!who) {
       return;
     }
+
     const body = z
       .strictObject({
         claimIds: z.array(z.string().min(1)).max(2000).optional(),
@@ -1485,20 +1736,25 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
       })
       .refine((b) => Boolean(b.claimIds?.length) !== Boolean(b.batchId), 'Choose claims or a batch')
       .safeParse(request.body);
+
     if (!body.success) {
       return invalid(reply, body.error.issues.map((i) => i.message).join('; '));
     }
+
     try {
       const result = await sql.begin(async (tx) =>
         once(tx, who, body.data.requestKey, 'export_claims', body.data, async () => {
           let template: ImportTemplate | undefined;
+
           if (body.data.templateId) {
             const [row] = await tx<
               Record<string, unknown>[]
             >`SELECT * FROM import_mapping_templates WHERE facility_id = ${who.identity.facilityId} AND id = ${body.data.templateId} AND kind = 'claim_export'`;
+
             if (!row) {
               throw new ClaimRefusal('unknown_template', 'Choose a saved export layout');
             }
+
             template = ImportTemplate.parse({
               id: row.id,
               kind: row.kind,
@@ -1513,18 +1769,21 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
               updatedOn: new Date(row.updated_on as string).toISOString(),
             });
           }
+
           return exportClaims(tx, who.identity.facilityId, who.staff.id, {
             ...body.data,
             ...(template ? { template } : {}),
           });
         }),
       );
+
       if ('conflict' in result) {
         return reply.code(409).send({
           error: 'request_reused',
           message: 'This request key was already used for a different action',
         } satisfies ApiErrorBody);
       }
+
       if (!result.replayed) {
         await audit(who, result.response.exportId, {
           context: 'insurance_claims_exported',
@@ -1535,32 +1794,40 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
           payloadSha256: result.response.payloadSha256,
         });
       }
+
       return result.response;
     } catch (cause) {
       return refusal(reply, cause);
     }
   });
+
   app.post('/insurance/claims/submit', async (request, reply) => {
     const who = await verified(request, reply, CLAIMS, 'billing');
+
     if (!who) {
       return;
     }
+
     const body = ClaimSubmissionInput.safeParse(request.body);
+
     if (!body.success) {
       return invalid(reply, body.error.issues.map((i) => i.message).join('; '));
     }
+
     try {
       const result = await sql.begin((tx) =>
         once(tx, who, body.data.requestKey, 'submit_claims', body.data, () =>
           recordSubmission(tx, who.identity.facilityId, who.staff.id, body.data),
         ),
       );
+
       if ('conflict' in result) {
         return reply.code(409).send({
           error: 'request_reused',
           message: 'This request key was already used for a different action',
         } satisfies ApiErrorBody);
       }
+
       if (!result.replayed) {
         await audit(who, result.response.submissionId, {
           context: 'insurance_claims_submitted',
@@ -1569,48 +1836,60 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
           claims: result.response.claims,
         });
       }
+
       return result.response;
     } catch (cause) {
       return refusal(reply, cause);
     }
   });
+
   app.post('/insurance/claims/acknowledge', async (request, reply) => {
     const who = await verified(request, reply, CLAIMS, 'billing');
+
     if (!who) {
       return;
     }
+
     const body = ClaimAcknowledgementInput.safeParse(request.body);
+
     if (!body.success) {
       return invalid(reply, body.error.issues.map((i) => i.message).join('; '));
     }
+
     try {
       const result = await sql.begin((tx) =>
         once(tx, who, body.data.requestKey, 'acknowledge_claims', body.data, () =>
           recordAcknowledgement(tx, who.identity.facilityId, who.staff.id, body.data),
         ),
       );
+
       if ('conflict' in result) {
         return reply.code(409).send({
           error: 'request_reused',
           message: 'This request key was already used for a different action',
         } satisfies ApiErrorBody);
       }
+
       if (!result.replayed) {
         await audit(who, result.response.acknowledgementId, {
           context: 'insurance_claims_acknowledged',
           claims: result.response.claims,
         });
       }
+
       return result.response;
     } catch (cause) {
       return refusal(reply, cause);
     }
   });
+
   app.post('/insurance/claims/submissions/list', async (request, reply) => {
     const who = await verified(request, reply, CLAIMS, 'billing');
+
     if (!who) {
       return;
     }
+
     return { submissions: await listSubmissions(sql, who.identity.facilityId) };
   });
 
@@ -1622,10 +1901,13 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
     { bodyLimit: 8 * 1024 * 1024 },
     async (request, reply) => {
       const who = await verified(request, reply, 'insurance_contract:manage');
+
       if (!who) {
         return;
       }
+
       const body = DiagnosisCatalogueImport.safeParse(request.body);
+
       if (!body.success) {
         return invalid(
           reply,
@@ -1635,17 +1917,20 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
             .join('; '),
         );
       }
+
       const result = await sql.begin((tx) =>
         once(tx, who, body.data.requestKey, 'import_diagnosis_catalogue', body.data, () =>
           importDiagnosisCatalogue(tx, who.identity.facilityId, who.staff.id, body.data),
         ),
       );
+
       if ('conflict' in result) {
         return reply.code(409).send({
           error: 'request_reused',
           message: 'This request key was already used for a different action',
         } satisfies ApiErrorBody);
       }
+
       if (!result.replayed) {
         await audit(who, result.response.importId, {
           context: 'diagnosis_catalogue_imported',
@@ -1661,14 +1946,18 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
           removed: result.response.removed,
         });
       }
+
       return result.response;
     },
   );
+
   app.post('/insurance/diagnosis-catalogue/list', async (request, reply) => {
     const who = await verified(request, reply, 'insurance_contract:read');
+
     if (!who) {
       return;
     }
+
     return { catalogues: await diagnosisCatalogues(sql, who.identity.facilityId) };
   });
 
@@ -1685,10 +1974,13 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
   ) => {
     app.post(path, async (request, reply) => {
       const who = await verified(request, reply, permission, 'billing');
+
       if (!who) {
         return;
       }
+
       const body = schema.safeParse(request.body);
+
       if (!body.success) {
         return invalid(
           reply,
@@ -1698,20 +1990,24 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
             .join('; '),
         );
       }
+
       try {
         const result = await sql.begin((tx) =>
           once(tx, who, body.data.requestKey, operation, body.data, () => run(tx, who, body.data)),
         );
+
         if ('conflict' in result) {
           return reply.code(409).send({
             error: 'request_reused',
             message: 'This request key was already used for a different action',
           } satisfies ApiErrorBody);
         }
+
         if (!result.replayed) {
           const [entityId, metadata] = auditOf(result.response, body.data);
           await audit(who, entityId, { context: operation, ...metadata });
         }
+
         return result.response;
       } catch (cause) {
         return refusal(reply, cause);
@@ -1734,6 +2030,7 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
       },
     ],
   );
+
   settle(
     '/insurance/remittances/record',
     'insurance_remittance:record',
@@ -1753,6 +2050,7 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
       },
     ],
   );
+
   settle(
     '/insurance/remittances/allocate',
     'insurance_remittance:record',
@@ -1764,6 +2062,7 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
       { allocatedMinor: r.allocatedMinor, unallocatedMinor: r.unallocatedMinor },
     ],
   );
+
   settle(
     '/insurance/remittances/reverse',
     'insurance_remittance:record',
@@ -1772,6 +2071,7 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
     (tx, who, body) => reverseRemittance(tx, who.identity.facilityId, who.staff.id, body),
     (r, b) => [r.remittanceId, { reason: b.reason }],
   );
+
   settle(
     '/insurance/disputes/open',
     CLAIMS,
@@ -1780,6 +2080,7 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
     (tx, who, body) => openDispute(tx, who.identity.facilityId, who.staff.id, body),
     (r, b) => [b.claimId, { disputeId: r.disputeId, amountMinor: b.amountMinor }],
   );
+
   settle(
     '/insurance/disputes/resolve',
     CLAIMS,
@@ -1788,6 +2089,7 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
     (tx, who, body) => resolveDispute(tx, who.identity.facilityId, who.staff.id, body),
     (r) => [r.disputeId, { outcome: r.outcome }],
   );
+
   settle(
     '/insurance/write-offs',
     'billing:write_off',
@@ -1802,27 +2104,35 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
 
   app.post('/insurance/remittances/list', async (request, reply) => {
     const who = await verified(request, reply, 'insurance_remittance:record', 'billing');
+
     if (!who) {
       return;
     }
+
     const body = z
       .strictObject({ payerId: z.string().min(1).optional() })
       .safeParse(request.body ?? {});
+
     if (!body.success) {
       return invalid(reply, 'Choose a payer');
     }
+
     return { remittances: await listRemittances(sql, who.identity.facilityId, body.data.payerId) };
   });
+
   /** Proposed matches for a payer's payment advice. Records nothing. */
   app.post(
     '/insurance/remittances/match',
     { bodyLimit: 4 * 1024 * 1024 },
     async (request, reply) => {
       const who = await verified(request, reply, 'insurance_remittance:record', 'billing');
+
       if (!who) {
         return;
       }
+
       const minor = z.number().int().nonnegative().optional();
+
       const body = z
         .strictObject({
           payerId: z.string().min(1),
@@ -1843,9 +2153,11 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
             .max(5000),
         })
         .safeParse(request.body);
+
       if (!body.success) {
         return invalid(reply, 'Send the mapped rows of the payment advice');
       }
+
       return {
         matches: await matchRemittance(
           sql,
@@ -1856,25 +2168,33 @@ export const registerInsuranceRoutes = (app: FastifyInstance, sql: Sql): void =>
       };
     },
   );
+
   app.post('/insurance/disputes/list', async (request, reply) => {
     const who = await verified(request, reply, CLAIMS, 'billing');
+
     if (!who) {
       return;
     }
+
     return { disputes: await listDisputes(sql, who.identity.facilityId) };
   });
+
   /** What payers still owe, claim by claim, with expected, approved, paid, disputed and written-off kept apart. */
   app.post('/insurance/outstanding', async (request, reply) => {
     const who = await verified(request, reply, 'insurance_remittance:record', 'billing');
+
     if (!who) {
       return;
     }
+
     const body = z
       .strictObject({ payerId: z.string().min(1).optional() })
       .safeParse(request.body ?? {});
+
     if (!body.success) {
       return invalid(reply, 'Choose a payer');
     }
+
     return outstandingClaims(sql, who.identity.facilityId, body.data.payerId);
   });
 };

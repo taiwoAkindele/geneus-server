@@ -67,6 +67,7 @@ export const findContractVersion = async (
     : await sql<
         Row[]
       >`SELECT * FROM payer_contract_versions WHERE facility_id = ${facilityId} AND id = ${id}`;
+
   return row ? fromContractRow(row) : undefined;
 };
 
@@ -91,6 +92,7 @@ export const insuranceState = async (sql: Sql | Tx, facilityId: string): Promise
       { insurance_state: InsuranceState }[]
     >`SELECT insurance_state FROM facilities WHERE id = ${facilityId}`
   )[0]?.insurance_state ?? 'off';
+
 export const insuranceBillingActive = async (sql: Sql | Tx, facilityId: string) =>
   (await insuranceState(sql, facilityId)) === 'active';
 
@@ -107,13 +109,16 @@ const feeCategories = async (
       ...terms.plans.flatMap((p) => Object.keys(p.rules.items)),
     ]),
   ];
+
   const rows = named.length
     ? await tx<
         { id: string; category: FeeCategory }[]
       >`SELECT id, category FROM fee_items WHERE facility_id = ${facilityId} AND id = ANY(${named})`
     : [];
+
   const categories = new Map(rows.map((r) => [r.id, r.category]));
   const unknown = named.filter((id) => !categories.has(id));
+
   if (unknown.length) {
     throw new ContractRefusal(
       'unknown_fee_items',
@@ -121,6 +126,7 @@ const feeCategories = async (
       { feeItemIds: unknown },
     );
   }
+
   return categories;
 };
 
@@ -135,30 +141,39 @@ export const saveDraft = async (
   input: { terms: unknown; expectedRevision?: number },
 ) => {
   const parsed = PayerContractTerms.safeParse(input.terms);
+
   if (!parsed.success) {
     throw new ContractRefusal(
       'invalid_terms',
       parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; '),
     );
   }
+
   const terms = parsed.data;
+
   if (newCategoryTerms(terms) && !(await catalogueEnabled(tx, facilityId))) {
     throw new BillingCompatibilityError(
       'Update active devices before configuring new insurance categories',
     );
   }
+
   await tx`SELECT id FROM facilities WHERE id = ${facilityId} FOR UPDATE`;
+
   const [payer] =
     await tx`SELECT id FROM payers WHERE facility_id = ${facilityId} AND id = ${terms.payerId}`;
+
   if (!payer) {
     throw new ContractRefusal('unknown_payer', 'Choose a payer of this hospital');
   }
+
   await feeCategories(tx, facilityId, terms);
   const contractId = contractIdFor(terms.payerId);
   const now = new Date().toISOString();
+
   const [draft] = await tx<
     Row[]
   >`SELECT * FROM payer_contract_versions WHERE facility_id = ${facilityId} AND contract_id = ${contractId} AND status = 'draft' FOR UPDATE`;
+
   if (draft) {
     if (input.expectedRevision !== draft.revision) {
       throw new ContractRefusal(
@@ -166,6 +181,7 @@ export const saveDraft = async (
         'This draft changed since you opened it. Review the current draft before saving',
       );
     }
+
     await tx`UPDATE payer_contract_versions SET terms = ${tx.json(terms as never)}, revision = revision + 1, updated_by = ${staffId}, updated_on = ${now} WHERE id = ${draft.id as string}`;
   } else {
     if (input.expectedRevision !== undefined) {
@@ -174,15 +190,19 @@ export const saveDraft = async (
         'This draft was activated or replaced. Start from the current version',
       );
     }
+
     const [{ next }] = await tx<
       { next: number }[]
     >`SELECT COALESCE(MAX(version), 0) + 1 AS next FROM payer_contract_versions WHERE facility_id = ${facilityId} AND contract_id = ${contractId}`;
+
     await tx`INSERT INTO payer_contract_versions (id, facility_id, contract_id, payer_id, version, status, terms, revision, created_by, created_on)
       VALUES (${contractVersionId(contractId, next)}, ${facilityId}, ${contractId}, ${terms.payerId}, ${next}, 'draft', ${tx.json(terms as never)}, 1, ${staffId}, ${now})`;
   }
+
   const [saved] = await tx<
     Row[]
   >`SELECT * FROM payer_contract_versions WHERE facility_id = ${facilityId} AND contract_id = ${contractId} AND status = 'draft'`;
+
   return { version: fromContractRow(saved), unsupported: unsupportedArrangements(terms) };
 };
 
@@ -231,9 +251,12 @@ export const activationBlockers = async (
     FROM devices d LEFT JOIN workforce_client_versions v ON v.device_id = d.id
     WHERE d.facility_id = ${facilityId} AND (d.status = 'active' OR (d.status = 'revoked' AND COALESCE(v.pending_mutation_count, 0) > 0))
     ORDER BY d.id`;
+
   const dayAgo = now - 86_400_000;
+
   return rows.flatMap((row) => {
     const reasons: DeviceBlocker['reasons'] = [];
+
     if (row.status === 'revoked') {
       reasons.push('revoked_with_unsent_changes');
     } else if (!row.recorded_on) {
@@ -242,13 +265,16 @@ export const activationBlockers = async (
       if (row.insurance_version !== 1) {
         reasons.push('no_insurance_support');
       }
+
       if ((row.pending_mutation_count ?? 1) !== 0) {
         reasons.push('unsent_changes');
       }
+
       if (Date.parse(row.recorded_on) < dayAgo) {
         reasons.push('not_seen_in_24_hours');
       }
     }
+
     return reasons.length
       ? [
           {
@@ -285,6 +311,7 @@ export const activateContract = async (
   now = Date.now(),
 ) => {
   await tx`SELECT id FROM facilities WHERE id = ${input.facilityId} FOR UPDATE`;
+
   // Activating a contract version prepares cover; it changes bills only once billing itself is active.
   if (!insuranceConfigurable(await insuranceState(tx, input.facilityId))) {
     throw new ContractRefusal(
@@ -292,19 +319,24 @@ export const activateContract = async (
       'Insurance setup is not enabled for this hospital',
     );
   }
+
   if (!(await facilityTimeZone(tx, input.facilityId))) {
     throw new ContractRefusal(
       'timezone_required',
       "Record the hospital's time zone first: insurance dates every service in local time",
     );
   }
+
   const version = await findContractVersion(tx, input.facilityId, input.contractVersionId, true);
+
   if (!version) {
     throw new ContractRefusal('not_found', 'This contract version is not in this hospital');
   }
+
   if (version.status !== 'draft') {
     throw new ContractRefusal('already_active', 'This contract version is already active');
   }
+
   const blockers = (await activationBlockers(tx, input.facilityId, now)).filter(
     (b) =>
       !(
@@ -313,6 +345,7 @@ export const activateContract = async (
         input.acceptRevokedDevices.includes(b.deviceId)
       ),
   );
+
   if (blockers.length) {
     throw new ContractRefusal(
       'devices_not_ready',
@@ -320,7 +353,9 @@ export const activateContract = async (
       { devices: blockers },
     );
   }
+
   const unsupported = unsupportedArrangements(version.terms);
+
   if (unsupported.length && !input.acknowledgeUnsupported) {
     throw new ContractRefusal(
       'unsupported_arrangements',
@@ -328,8 +363,10 @@ export const activateContract = async (
       { unsupported },
     );
   }
+
   const categories = await feeCategories(tx, input.facilityId, version.terms);
   const createdOn = new Date(now).toISOString();
+
   const schedules = version.terms.plans.map((plan) =>
     CoverSchedule.parse({
       id: `cover_schedule:${version.id}:${plan.planCode}`,
@@ -353,10 +390,13 @@ export const activateContract = async (
       ...buildScheduleLines(version.terms, plan, (id) => categories.get(id)),
     }),
   );
+
   await tx`UPDATE payer_contract_versions SET status = 'active', activated_by = ${input.staffId}, activated_on = ${createdOn} WHERE id = ${version.id}`;
+
   for (const schedule of schedules) {
     await insertRecord(tx, 'cover_schedule', schedule);
   }
+
   return {
     contractVersionId: version.id,
     scheduleIds: schedules.map((s) => s.id),
@@ -386,32 +426,41 @@ export const endContract = async (
   await tx`SELECT id FROM facilities WHERE id = ${input.facilityId} FOR UPDATE`;
   const timeZone = await facilityTimeZone(tx, input.facilityId);
   const today = serviceDateOf(new Date(now).toISOString(), timeZone);
+
   if (!today) {
     throw new ContractRefusal('timezone_required', "Record the hospital's time zone first");
   }
+
   if (input.endsOn < today) {
     throw new ContractRefusal(
       'end_in_past',
       'A contract can only end today or later. Past services keep the cover they had',
     );
   }
+
   const version = await findContractVersion(tx, input.facilityId, input.contractVersionId, true);
+
   if (!version || version.status !== 'active') {
     throw new ContractRefusal('not_found', 'Choose an active contract version of this hospital');
   }
+
   if (version.endedOn) {
     throw new ContractRefusal(
       'already_ended',
       `This contract version already ends on ${version.endedOn}`,
     );
   }
+
   if (input.endsOn < version.terms.effectiveFrom) {
     throw new ContractRefusal('end_before_start', 'A contract cannot end before it starts');
   }
+
   const stamp = new Date(now).toISOString();
   await tx`UPDATE payer_contract_versions SET ended_on = ${input.endsOn}, ended_by = ${input.staffId}, end_reason = ${input.reason} WHERE id = ${version.id}`;
+
   const ended =
     await tx`UPDATE cover_schedules SET ended_on = ${input.endsOn}, updated_by = ${input.staffId}, updated_on = ${stamp} WHERE facility_id = ${input.facilityId} AND contract_version_id = ${version.id} RETURNING id`;
+
   return {
     contractVersionId: version.id,
     endsOn: input.endsOn,
