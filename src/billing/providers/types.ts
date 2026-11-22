@@ -95,3 +95,11 @@ export const providerReply = <T>(schema: z.ZodType<T>, value: unknown, what: str
   if (!result.success) throw new ProviderUnexpectedReply(`${what}: ${result.error.issues.map((i) => `${i.path.join('.')} ${i.code}`).join(', ')}`);
   return result.data;
 };
+
+/** What a provider's hosted checkout needs to take one payment for one bill. Amounts are minor units. */
+export type CheckoutRequest = { reference: string; amountMinor: number; currency: string; email: string; name: string; description: string; returnUrl: string };
+/** The provider's answer about a checkout, asked directly by the server (a redirect or webhook is never proof). */
+export type CheckoutOutcome =
+  | { status: 'paid'; reference: string; mode: ProviderMode; amountMinor: number; currency: string; paidAt: string; payerName?: string }
+  | { status: 'pending' }
+  | { status: 'failed' };

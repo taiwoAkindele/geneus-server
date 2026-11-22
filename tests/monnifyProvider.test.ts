@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
 import { monnifyAccountReference, monnifyCheckAccess, monnifyCreateAccount, monnifyDescriptor, monnifyGetAccount, monnifyMode, monnifyVerifyTransfer, monnifyWebhookReference, resetMonnifyTokens, MonnifyAccountDetails } from '../src/billing/providers/monnify.ts';
 import { ProviderRefused, ProviderUnavailable, ProviderUnexpectedReply, toMinor } from '../src/billing/providers/types.ts';
+import { monnifyVerifyCheckout } from '../src/billing/providers/monnify.ts';
 
 // Fictional sandbox credentials and replies shaped like Monnify's documentation. Confirmed against the real sandbox in plan step 0.
 const keys = { apiKey: 'MK_TEST_FICTIONAL1', secretKey: 'FictionalSecretKey0001', contractCode: '1234567890' };
@@ -24,6 +25,26 @@ const reserved = (accounts = [{ bankCode: '035', bankName: 'Wema Bank', accountN
   ({ body: { requestSuccessful: true, responseBody: { accountReference: 'geneus-TEST', accountName: 'Fictional Hospital', currencyCode: 'NGN', status: 'ACTIVE', accounts } } });
 
 beforeEach(() => resetMonnifyTokens());
+
+test('checkout verification refuses a successful payment whose currency was omitted', async () => {
+  const reference = 'geneus-co-11111111-1111-4111-8111-111111111111';
+  const { http } = fake({
+    '/api/v1/auth/login': login,
+    '/api/v2/merchant/transactions/query': () => ({
+      body: {
+        requestSuccessful: true,
+        responseBody: {
+          paymentReference: reference,
+          paymentStatus: 'PAID',
+          amountPaid: '100.00',
+          paidOn: '2026-11-22T00:00:00.000Z',
+        },
+      },
+    }),
+  });
+
+  await assert.rejects(() => monnifyVerifyCheckout(keys, reference, http), ProviderUnexpectedReply);
+});
 
 test('test keys use the sandbox; sign-in is cached and sent as a bearer token', async () => {
   assert.equal(monnifyMode(keys), 'test'); assert.equal(monnifyMode({ apiKey: 'MK_PROD_X' }), 'live');

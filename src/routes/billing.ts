@@ -1,9 +1,13 @@
-import { randomBytes, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
-import { DocumentLinkRequest, Payment, PaymentAllocation, ServiceChargeAllocation,SCHEMA_VERSION, billKeyParts, staffPermissions, type DocumentLinkResponse, type DocumentLinkStopResponse, type IncomingTransfer, type Permission } from '#shared';
+import { DocumentLinkRequest, SendToPatientRequest, Payment, PaymentAllocation, ServiceChargeAllocation,SCHEMA_VERSION, billKeyParts, staffPermissions, type DocumentLinkResponse, type DocumentLinkStopResponse, type IncomingTransfer, type Permission } from '#shared';
 import { createDocumentLink, patientPagePath, stopDocumentLinks } from '../patientDocuments/links.ts';
+import { sendDocumentToPatient, type MessagingDeps } from '../messaging/patientMessages.ts';
+import { providerConnection } from '../billing/connection.ts';
+import { nextReceiptNumber } from '../billing/receipts.ts';
+import { acceptCheckoutWebhook } from '../billing/checkout.ts';
 import { loadBill, loadReceipt } from '../patientDocuments/documentData.ts';
 import { authenticateDevice } from '../auth/deviceAuth.ts';
 import { verifiedRequestStaff } from '../auth/staffSessions.ts';
@@ -14,8 +18,8 @@ import {integratedEnabled,integratedReadiness} from '../billing/integrated.ts';
 import {buildPatientStatement} from '../billing/patientStatements.ts';
 import {confirmInsuranceReturn} from '../billing/insuranceReturns.ts';
 import { catalogueEnabled, catalogueReadiness, BillingCompatibilityError } from '../billing/catalogue.ts';
-import { accountFromTerminal, callPaystack, openPaystackSecret, PaystackTerminal, sealPaystackSecret, type PaystackFetch } from '../billing/paystack.ts';
-import { deserialiseCredentials, paymentProvider, PROVIDERS, serialiseCredentials } from '../billing/providers/index.ts';
+import { accountFromTerminal, callPaystack, PaystackTerminal, sealPaystackSecret, type PaystackFetch } from '../billing/paystack.ts';
+import { paymentProvider, PROVIDERS, serialiseCredentials } from '../billing/providers/index.ts';
 import type { Sql } from '../db/client.ts';
 import { findRecord,fromRow, insertRecord } from '../db/records.ts';
 import type { Config } from '../lib/config.ts';
@@ -29,10 +33,9 @@ const Actor = z.object({ actorStaffId: z.string().min(1).optional() });
 const LinkAccount = Actor.extend({ providerAccountId: z.string().regex(/^[A-Za-z0-9_|-]{1,100}$/), departmentId: z.string().min(1).optional() });
 const Match = Actor.extend({ patientId: z.string().min(1), allocations: z.array(PaymentAllocation).min(1), requestId: z.string().uuid() })
   .refine((value) => new Set(value.allocations.map((a) => a.chargeId)).size === value.allocations.length);
-type ConnectionRow = { encrypted_secret: string; mode: 'test' | 'live'; provider: string };
 type AccountRow = { id: string; department_id: string | null; account_number: string };
 
-export const registerBillingRoutes = (app: FastifyInstance, sql: Sql, config: Config, fetcher: PaystackFetch = fetch) => {
+export const registerBillingRoutes = (app: FastifyInstance, sql: Sql, config: Config, fetcher: PaystackFetch = fetch, messaging?: MessagingDeps) => {
   const authorize = async (request: FastifyRequest, reply: Parameters<typeof authenticateDevice>[2], permission: Permission|readonly Permission[]) => {
     const identity = await authenticateDevice(sql, request, reply);
     if (!identity) return;
@@ -86,6 +89,18 @@ export const registerBillingRoutes = (app: FastifyInstance, sql: Sql, config: Co
     // The patient opens it in the web app (its first configured origin), which reads the document from this server.
     return { url: `${config.corsOrigins[0].replace(/\/+$/, '')}${patientPagePath(body.kind, token)}`, expiresOn } satisfies DocumentLinkResponse;
   });
+  // Send a bill or receipt to the patient by SMS and/or email (src/messaging/patientMessages.ts).
+  app.post('/billing/documents/send', async (request, reply) => {
+    const who = await authorize(request, reply, DOCUMENT_STAFF); if (!who) return;
+    if (!messaging) throw conflict('Sending to patients is not available on this server');
+    const { actorStaffId: _actor, ...rest } = (request.body ?? {}) as Record<string, unknown>;
+    const body = parseBody(SendToPatientRequest, rest);
+    const subject = body.kind === 'bill' ? body.billKey : body.paymentId;
+    const result = await sendDocumentToPatient(messaging, { facilityId: who.facilityId, deviceId: who.deviceId, createdBy: who.actorStaffId, automatic: false, kind: body.kind, subject, channels: body.channels });
+    await recordAuditEvent(sql, { facilityId: who.facilityId, deviceId: who.deviceId, actorStaffId: who.actorStaffId, action: 'export', entityType: body.kind === 'receipt' ? 'payment' : 'patient',
+      entityId: body.kind === 'receipt' ? subject : billKeyParts(subject)?.patientId, metadata: { context: 'patient_message', kind: body.kind, channels: body.channels.join(','), queued: result.messages.filter((m) => m.status === 'queued').length } });
+    return result;
+  });
   app.post('/billing/documents/stop', async (request, reply) => {
     const who = await authorize(request, reply, DOCUMENT_STAFF); if (!who) return;
     const body = documentRequest(request.body);
@@ -127,15 +142,7 @@ export const registerBillingRoutes = (app: FastifyInstance, sql: Sql, config: Co
     return sql.begin(async tx=>{await tx`SELECT id FROM facilities WHERE id=${who.facilityId} FOR UPDATE`;const sources=[];for(const id of [...new Set(body.ids)].sort()){const c=await sourceCapacity(tx,who.facilityId,id);sources.push({id,patientMinor:c.patientMinor,payerMinor:c.payerMinor,availableMinor:Math.max(0,c.availableMinor),overRecognizedMinor:Math.max(0,-c.availableMinor)});}return {sources};});
   });
   /** The hospital's connected provider, its decrypted credentials (server memory only) and mode. */
-  const connection = async (facilityId: string) => {
-    if (!config.billingEncryptionKey) throw conflict('Payment setup isn\'t finished on the server. Ask your system administrator.');
-    const [row] = await sql<ConnectionRow[]>`SELECT encrypted_secret, mode, provider FROM billing_connections WHERE facility_id = ${facilityId}`;
-    if (!row) throw conflict('Connect the hospital\'s payment provider first');
-    const provider = paymentProvider(row.provider);
-    if (!provider) throw conflict('The hospital\'s payment provider is no longer supported. Connect a supported provider.');
-    const credentials = deserialiseCredentials(provider, openPaystackSecret(row.encrypted_secret, config.billingEncryptionKey, facilityId));
-    return { provider, providerId: row.provider, credentials, mode: row.mode, encryptedSecret: row.encrypted_secret };
-  };
+  const connection = (facilityId: string) => providerConnection(sql, config, facilityId);
   app.post('/billing/connection/status', async (request, reply) => {
     const who = await authorize(request, reply, 'fee_item:manage'); if (!who) return;
     const [row] = await sql<{ mode: string; provider: string; receiving_account_id: string | null }[]>`SELECT mode,provider,receiving_account_id FROM billing_connections WHERE facility_id = ${who.facilityId}`;
@@ -297,6 +304,21 @@ export const registerBillingRoutes = (app: FastifyInstance, sql: Sql, config: Co
   app.post<{ Params: { provider: string; facilityId: string } }>('/billing/:provider/:facilityId/webhook', async (request, reply) => {
     const provider = paymentProvider(request.params.provider);
     if (!provider) return reply.code(404).send({ error: 'unknown_provider' });
+    const checkoutAccepted = await acceptCheckoutWebhook(
+      sql,
+      config,
+      { facilityId: request.params.facilityId, provider: request.params.provider },
+      billingRawBodies.get(request) ?? '',
+      request.headers[provider.webhookHeader],
+      fetcher,
+    );
+
+    if (checkoutAccepted !== undefined) {
+      return checkoutAccepted
+        ? { received: true }
+        : reply.code(401).send({ error: 'invalid_signature' });
+    }
+
     const key = await connection(request.params.facilityId);
     if (key.providerId !== request.params.provider) return reply.code(409).send({ error: 'inactive_provider' });
     const result = key.provider.webhookReference(billingRawBodies.get(request) ?? '', request.headers[key.provider.webhookHeader], key.credentials);
@@ -338,10 +360,7 @@ export const registerBillingRoutes = (app: FastifyInstance, sql: Sql, config: Co
         if (a.amountMinor > await availableOnCharge(tx, who.facilityId, a.chargeId)) throw conflict('An allocation exceeds the current bill balance. Refresh the patient account.');
       }
       await tx`SELECT id FROM facilities WHERE id = ${who.facilityId} FOR UPDATE`;
-      const [receiptSequence] = await tx<{ n: number }[]>`SELECT COALESCE(MAX(substring(receipt_number FROM char_length(${who.facilityId}) + 4 FOR 6)::int), 0) + 1 AS n FROM payments WHERE facility_id = ${who.facilityId}`;
-      const next = receiptSequence.n;
-      if (next > 999999) throw conflict('Receipt sequence exhausted');
-      const receiptNumber = `${who.facilityId}-R-${String(next).padStart(6, '0')}-${randomBytes(1).toString('hex').toUpperCase()}`;
+      const receiptNumber = await nextReceiptNumber(tx, who.facilityId);
       const record = Payment.parse({ id, type: 'payment', facilityId: who.facilityId, deviceId: who.deviceId, schemaVersion: SCHEMA_VERSION,
         createdBy: who.actorStaffId, createdOn: new Date().toISOString(), patientId: body.patientId, method: 'transfer',
         amountMinor, currency: source.currency, incomingTransferId: request.params.id, reference: source.provider_reference,

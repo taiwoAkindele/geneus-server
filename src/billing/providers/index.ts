@@ -1,13 +1,13 @@
 import type { PaystackFetch } from '../paystack.ts';
 import {
   paystackCheckAccess, paystackCreateAccount, paystackDescriptor, paystackGetAccount, paystackListAccounts, paystackMode,
-  paystackVerifyTransfer, paystackWebhookReference, PaystackAccountDetails, PaystackCredentials,
+  paystackStartCheckout, paystackVerifyCheckout, paystackVerifyTransfer, paystackWebhookReference, PaystackAccountDetails, PaystackCredentials,
 } from './paystack.ts';
 import {
-  monnifyCheckAccess, monnifyCreateAccount, monnifyDescriptor, monnifyGetAccount, monnifyMode, monnifyVerifyTransfer,
+  monnifyCheckAccess, monnifyCreateAccount, monnifyDescriptor, monnifyGetAccount, monnifyMode, monnifyStartCheckout, monnifyVerifyCheckout, monnifyVerifyTransfer,
   monnifyWebhookReference, MonnifyAccountDetails, MonnifyCredentials,
 } from './monnify.ts';
-import type { ProviderDescriptor, ProviderMode, ReceivingAccount, VerifiedTransfer } from './types.ts';
+import type { CheckoutOutcome, CheckoutRequest, ProviderDescriptor, ProviderMode, ReceivingAccount, VerifiedTransfer } from './types.ts';
 
 type Credentials = Record<string, string>;
 /**
@@ -28,7 +28,13 @@ export type PaymentProvider = {
   verifyTransfer: (credentials: Credentials, reference: string, http: PaystackFetch) => Promise<VerifiedTransfer | undefined>;
   /** Header that carries the webhook signature, and the check itself. */
   webhookHeader: string;
-  webhookReference: (raw: string, signature: unknown, credentials: Credentials) => { ok: false } | { ok: true; reference?: string };
+  /** `reference`: a bank transfer to verify. `checkoutReference`: a bill checkout to settle. */
+  webhookReference: (raw: string, signature: unknown, credentials: Credentials) => { ok: false } | { ok: true; reference?: string; checkoutReference?: string };
+  /** A hosted checkout where a patient pays one bill online, when the provider offers one. */
+  checkout?: {
+    start: (credentials: Credentials, input: CheckoutRequest, http: PaystackFetch) => Promise<{ checkoutUrl: string }>;
+    verify: (credentials: Credentials, reference: string, http: PaystackFetch) => Promise<CheckoutOutcome>;
+  };
   /** Paystack stored a bare secret key before providers existed; others store a JSON bundle. */
   storesBareSecret?: boolean;
 };
@@ -46,6 +52,7 @@ const paystack: PaymentProvider = {
   verifyTransfer: (c, reference, http) => paystackVerifyTransfer(c.secretKey, reference, http),
   webhookHeader: 'x-paystack-signature',
   webhookReference: (raw, signature, c) => paystackWebhookReference(raw, signature, c.secretKey),
+  checkout: { start: (c, input, http) => paystackStartCheckout(c.secretKey, input, http), verify: (c, reference, http) => paystackVerifyCheckout(c.secretKey, reference, http) },
 };
 
 const monnify: PaymentProvider = {
@@ -58,6 +65,7 @@ const monnify: PaymentProvider = {
   verifyTransfer: (c, reference, http) => monnifyVerifyTransfer(c as MonnifyCredentials, reference, http),
   webhookHeader: 'monnify-signature',
   webhookReference: (raw, signature, c) => monnifyWebhookReference(raw, signature, { secretKey: c.secretKey }),
+  checkout: { start: (c, input, http) => monnifyStartCheckout(c as MonnifyCredentials, input, http), verify: (c, reference, http) => monnifyVerifyCheckout(c as MonnifyCredentials, reference, http) },
 };
 
 const REGISTRY: Record<string, PaymentProvider> = { paystack, monnify };

@@ -17,6 +17,18 @@ const CATEGORY: Record<FeeCategory, string> = {
 };
 const METHOD: Record<Payment['method'], string> = { cash: 'Cash', transfer: 'Bank transfer', pos: 'Card (POS)', waiver: 'Waiver', online: 'Paid online' };
 
+const receivedBy = (payment: Payment, staff: Staff | undefined): string => {
+  if (payment.method === 'online') {
+    return 'Online payment';
+  }
+
+  if (staff?.facilityId === payment.facilityId) {
+    return staff.fullName;
+  }
+
+  return payment.incomingTransferId ? 'Bank transfer (confirmed automatically)' : 'Hospital staff';
+};
+
 const header = async (sql: Sql | Tx, facilityId: string): Promise<DocumentHospital | undefined> => {
   const facility = await findRecord<Facility>(sql, 'facility', facilityId);
   return facility ? { name: facility.name, address: facility.address, phone: facility.phone, email: facility.email, timeZone: facility.timeZone ?? 'Africa/Lagos' } : undefined;
@@ -80,7 +92,7 @@ export const loadReceipt = async (sql: Sql | Tx, facilityId: string, paymentId: 
   return {
     paymentId: payment.id, number: payment.receiptNumber, currency: payment.currency, receivedOn: payment.createdOn,
     method: METHOD[payment.method] ?? payment.method, reference: payment.reference, reversal: Boolean(payment.reverses),
-    receivedBy: staff?.facilityId === facilityId ? staff.fullName : payment.incomingTransferId ? 'Bank transfer (confirmed automatically)' : 'Hospital staff',
+    receivedBy: receivedBy(payment, staff),
     hospital, patient, amountMinor: payment.amountMinor,
     applied: payment.allocations.flatMap((a) => { const c = byId.get(a.chargeId); return c ? [{ bill: billReference(billKey(c)), item: c.description, amountMinor: a.amountMinor }] : []; }),
     stillDue: keys.map((key) => ({ bill: billReference(key), dueMinor: billCharges.filter((c) => billKey(c) === key).reduce((n, c) => n + Math.max(0, positions.get(c.id)!.balanceMinor), 0) }))

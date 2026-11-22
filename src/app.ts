@@ -21,6 +21,8 @@ import { registerStaffSessionRoutes } from './routes/staffSessions.ts';
 import { ensureBootstrapOperators, registerOperatorRoutes } from './routes/operator.ts';
 import { billingRawBodies, registerBillingRoutes } from './routes/billing.ts';
 import { registerPatientDocumentRoutes } from './routes/patientDocuments.ts';
+import { smsSenderFrom } from './messaging/sendar.ts';
+import type { SmsSender } from './messaging/patientMessages.ts';
 import type { PaystackFetch } from './billing/paystack.ts';
 import { PROVIDER_ERROR_CODES } from './billing/providers/types.ts';
 import { createRateLimiter } from './lib/rateLimit.ts';
@@ -31,7 +33,8 @@ import { createMailer, EmailNotSent, type Mailer } from './lib/email.ts';
  * tests can drive it with `inject` against a scratch database and no port.
  */
 /** `mailer` defaults to one built from the config; tests pass one that records what was sent. */
-export type AppDependencies = { config: Config; sql: Sql; signer: Signer; mailer?: Mailer; paystackFetch?: PaystackFetch };
+/** `smsSender` replaces the Sendar sender built from the configuration (tests use a stand-in). */
+export type AppDependencies = { config: Config; sql: Sql; signer: Signer; mailer?: Mailer; paystackFetch?: PaystackFetch; smsSender?: SmsSender };
 /**
  * `rateLimit: false` is for tests that make many requests from one injected
  * address on purpose; tests/hardening.test.ts keeps it on to prove the limit.
@@ -42,7 +45,9 @@ export type AppOptions = { logger?: boolean; rateLimit?: boolean };
  * An invite token in a URL is as good as the invite until it is claimed, so it
  * never reaches the log. Everything else about the request is kept.
  */
-const redactUrl = (url: string): string => url.replace(/^\/invites\/[^/?#]+/, '/invites/[redacted]');
+const redactUrl = (url: string): string => url
+  .replace(/^\/invites\/[^/?#]+/, '/invites/[redacted]')
+  .replace(/^(\/public\/documents\/[^/]+\/)[^/?#]+/, '$1[redacted]');
 
 const serializers = {
   req: (request: FastifyRequest) => ({
@@ -80,7 +85,7 @@ const RATE_LIMITED_ROUTES = new Set([
 ]);
 const RATE_LIMIT_PER_MINUTE = 10;
 
-export const buildApp = ({ config, sql, signer, mailer: givenMailer, paystackFetch }: AppDependencies, options: AppOptions = {}): FastifyInstance => {
+export const buildApp = ({ config, sql, signer, mailer: givenMailer, paystackFetch, smsSender }: AppDependencies, options: AppOptions = {}): FastifyInstance => {
   /**
    * Pretty printing is a terminal convenience, and `pino-pretty` is a dev
    * dependency the production image does not install — asking for it there
@@ -255,9 +260,14 @@ export const buildApp = ({ config, sql, signer, mailer: givenMailer, paystackFet
   registerStaffRoutes(app, sql, mailer, config.corsOrigins[0]);
   registerInvitationLinkRoutes(app, sql, config);
   registerSyncRoutes(app, sql, config, signer);
-  registerBillingRoutes(app, sql, config, paystackFetch);
+  // Bills and receipts sent to patients link to the web app, like invitation links.
+  registerBillingRoutes(app, sql, config, paystackFetch, { sql, mailer, sms: smsSender ?? smsSenderFrom(config), appUrl: config.corsOrigins[0], log: app.log });
   // Patient links open in the web app, like invitation links.
-  registerPatientDocumentRoutes(app, sql, config.corsOrigins[0], { rateLimit: options.rateLimit });
+  registerPatientDocumentRoutes(app, sql, config.corsOrigins[0], {
+    rateLimit: options.rateLimit,
+    config,
+    http: paystackFetch,
+  });
 
   return app;
 };

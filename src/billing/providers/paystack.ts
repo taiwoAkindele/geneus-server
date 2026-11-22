@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { accountFromTerminal, callPaystack, PaystackAccount, validPaystackSignature, VerifiedPaystackTransfer, type PaystackFetch } from '../paystack.ts';
-import { providerReply, type ProviderDescriptor, type ProviderMode, type ReceivingAccount, type VerifiedTransfer } from './types.ts';
+import { providerReply, ProviderRefused, ProviderUnexpectedReply, type CheckoutOutcome, type CheckoutRequest, type ProviderDescriptor, type ProviderMode, type ReceivingAccount, type VerifiedTransfer } from './types.ts';
 
 /**
  * Paystack as a provider. The hospital's central account is a Paystack dedicated virtual account
@@ -60,9 +60,40 @@ export const paystackVerifyTransfer = async (secretKey: string, reference: strin
 };
 
 /** The webhook only prompts a check: a valid signature yields the reference of a successful charge. */
-export const paystackWebhookReference = (raw: string, signature: unknown, secretKey: string): { ok: false } | { ok: true; reference?: string } => {
+export const paystackWebhookReference = (raw: string, signature: unknown, secretKey: string): { ok: false } | { ok: true; reference?: string; checkoutReference?: string } => {
   if (!validPaystackSignature(raw, signature, secretKey)) return { ok: false };
   const event = z.object({ event: z.string(), data: z.object({ reference: z.string().min(1) }).partial().optional() }).safeParse((() => { try { return JSON.parse(raw); } catch { return undefined; } })());
   if (!event.success || event.data.event !== 'charge.success') return { ok: true };
-  return { ok: true, reference: event.data.data?.reference };
+  const reference = event.data.data?.reference;
+  // A bill checkout uses Geneus's own reference; anything else is a transfer into the hospital's account.
+  return reference?.startsWith('geneus-co-') ? { ok: true, checkoutReference: reference } : { ok: true, reference };
+};
+
+/* ---- Online checkout for a bill (Paystack Standard: /transaction/initialize, /transaction/verify) ---- */
+const Initialized = z.object({ authorization_url: z.string().url(), reference: z.string().min(1) });
+export const paystackStartCheckout = async (secretKey: string, input: CheckoutRequest, http: PaystackFetch) => {
+  const data = providerReply(Initialized, await callPaystack(secretKey, '/transaction/initialize', http, {
+    email: input.email, amount: input.amountMinor, currency: input.currency, reference: input.reference, callback_url: input.returnUrl,
+    metadata: { geneus_checkout: input.reference, cancel_action: input.returnUrl, custom_fields: [{ display_name: 'Bill', variable_name: 'bill', value: input.description }] },
+  }), 'checkout');
+  if (data.reference !== input.reference) throw new ProviderUnexpectedReply('checkout: reference changed');
+  return { checkoutUrl: data.authorization_url };
+};
+const CheckoutTransaction = z.object({
+  reference: z.string().min(1), status: z.string(), amount: z.number().int().nonnegative(), currency: z.string(),
+  domain: z.enum(['test', 'live']), paid_at: z.string().nullable().optional(), customer: z.object({ first_name: z.string().nullable().optional(), last_name: z.string().nullable().optional() }).optional(),
+});
+export const paystackVerifyCheckout = async (secretKey: string, reference: string, http: PaystackFetch): Promise<CheckoutOutcome> => {
+  let raw: unknown;
+  try { raw = await callPaystack(secretKey, `/transaction/verify/${encodeURIComponent(reference)}`, http); }
+  // Paystack answers 400 "Transaction reference not found" until the patient has started paying.
+  catch (cause) { if (cause instanceof ProviderRefused && cause.providerStatus === 400) return { status: 'pending' }; throw cause; }
+  const t = providerReply(CheckoutTransaction, raw, 'checkout verification');
+  if (t.reference !== reference) return { status: 'pending' };
+  if (t.status === 'success' && t.paid_at) {
+    const payerName = [t.customer?.first_name, t.customer?.last_name].filter(Boolean).join(' ') || undefined;
+    return { status: 'paid', reference, mode: t.domain, amountMinor: t.amount, currency: t.currency, paidAt: new Date(t.paid_at).toISOString(), ...(payerName ? { payerName } : {}) };
+  }
+  // "abandoned" means the patient left the checkout page; they may still come back and pay.
+  return ['failed', 'reversed'].includes(t.status) ? { status: 'failed' } : { status: 'pending' };
 };

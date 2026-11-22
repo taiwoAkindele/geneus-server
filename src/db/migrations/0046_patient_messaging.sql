@@ -45,3 +45,4 @@ CREATE TABLE patient_messages (
 );
 CREATE INDEX patient_messages_subject_idx ON patient_messages(facility_id, kind, subject);
 ALTER PUBLICATION powersync ADD TABLE patient_messages;
+
