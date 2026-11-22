@@ -279,8 +279,26 @@ describe('patient bill checkout', () => {
     assert.equal((await loadBill(db.sql, facility.facility.id, bill.key))?.totals.dueMinor, 10_000);
   });
 
-  it('refuses mismatched amounts, currency and provider mode without recording any money', async () => {
-    for (const change of [{ amount: 1 }, { currency: 'USD' }, { domain: 'test' as const }]) {
+  it('records more or less than asked: applies up to what is due and holds the rest for staff', async () => {
+    const over = await makeBill();
+    const paidMore = await start(over.api);
+    markPaid(paidMore, { amount: paidMore.amountMinor + 2_500 });
+    const more = await confirmCheckout(db.sql, checkoutConfig, paidMore.reference, http);
+    assert.deepEqual([more?.status, more?.heldMinor], ['paid', 2_500]);
+    assert.equal((await loadBill(db.sql, facility.facility.id, over.key))?.totals.dueMinor, 0);
+
+    const under = await makeBill();
+    const paidLess = await start(under.api);
+    markPaid(paidLess, { amount: 4_000 });
+    const less = await confirmCheckout(db.sql, checkoutConfig, paidLess.reference, http);
+    assert.deepEqual([less?.status, less?.heldMinor], ['paid', 0]);
+    assert.equal((await loadBill(db.sql, facility.facility.id, under.key))?.totals.dueMinor, paidLess.amountMinor - 4_000);
+    const [transfer] = await db.sql`SELECT amount_minor FROM incoming_transfers WHERE provider_reference = ${paidLess.reference}`;
+    assert.equal(transfer.amount_minor, 4_000, 'the money actually received is what is recorded');
+  });
+
+  it('refuses a payment in another currency or provider mode without recording any money', async () => {
+    for (const change of [{ currency: 'USD' }, { domain: 'test' as const }]) {
       const bill = await makeBill();
       const checkout = await start(bill.api);
       markPaid(checkout, change);

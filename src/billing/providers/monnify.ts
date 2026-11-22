@@ -206,7 +206,8 @@ export const monnifyVerifyCheckout = async (c: MonnifyCredentials, reference: st
 
   const status = transaction.paymentStatus.toUpperCase();
 
-  if (status === 'PAID' || status === 'OVERPAID') {
+  // Money arrived in every one of these; a partial or excess amount is applied up to what's due and the rest held.
+  if (status === 'PAID' || status === 'OVERPAID' || status === 'PARTIALLY_PAID') {
     const amountMinor = toMinor(transaction.amountPaid);
     const paidAt = isoDate(transaction.paidOn ?? transaction.completedOn ?? undefined);
     const currency = transaction.currencyCode ?? transaction.currency;

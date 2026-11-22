@@ -260,9 +260,11 @@ export const confirmCheckout = async (
   ));
   const outcome = await provider.checkout.verify(credentials, reference, http);
 
+  // A different amount is still money received (a bank transfer through the checkout can be more or less than
+  // asked): it is recorded, applied up to what the bill owes and the rest held for staff. Only a payment that
+  // isn't this checkout's (another reference, currency or mode) is refused.
   if (outcome.status === 'paid' && (
     outcome.reference !== reference
-    || outcome.amountMinor !== session.amount_minor
     || outcome.currency !== session.currency
     || outcome.mode !== session.mode
   )) {
@@ -379,10 +381,12 @@ export const reconcileCheckouts = async (
   log: CheckoutLog,
   http: PaystackFetch = fetch,
 ): Promise<void> => {
+  // Most unpaid checkouts were simply abandoned, so they are asked about often at first, then rarely, then not at
+  // all: every minute for the first hour, hourly up to 48 hours. A payment after that still arrives by webhook.
   const sessions = await sql<{ reference: string }[]>`
     SELECT reference FROM checkout_sessions WHERE status <> 'paid'
-      AND created_on > now() - interval '7 days'
-      AND (checked_on IS NULL OR checked_on < now() - interval '1 minute')
+      AND created_on > now() - interval '48 hours'
+      AND (checked_on IS NULL OR checked_on < now() - CASE WHEN created_on > now() - interval '1 hour' THEN interval '1 minute' ELSE interval '1 hour' END)
     ORDER BY checked_on NULLS FIRST, created_on LIMIT 20`;
 
   for (const session of sessions) {
