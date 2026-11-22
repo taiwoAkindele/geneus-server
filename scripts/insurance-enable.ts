@@ -17,17 +17,44 @@ import { insuranceSetupStatus, setInsuranceState } from '../src/insurance/enable
 // Hospital administrators can also move between off and setup themselves, in the app.
 const [operation, filename] = process.argv.slice(2);
 const states = { setup: 'setup', activate: 'active', off: 'off' } as const;
-if (!filename?.toLowerCase().endsWith('.json') || !['status', ...Object.keys(states)].includes(operation))
-  throw new Error('Usage: node scripts/insurance-enable.ts status|setup|activate|off approved-input.json');
-const config = loadConfig(), sql = createSql(config.postgresUrl);
+
+if (
+  !filename?.toLowerCase().endsWith('.json') ||
+  !['status', ...Object.keys(states)].includes(operation)
+) {
+  throw new Error(
+    'Usage: node scripts/insurance-enable.ts status|setup|activate|off approved-input.json',
+  );
+}
+
+const config = loadConfig();
+const sql = createSql(config.postgresUrl);
 const input: unknown = JSON.parse(await readFile(filename, 'utf8'));
+
 try {
   if (operation === 'status') {
     const { facilityId } = z.object({ facilityId: z.string().min(1) }).parse(input);
     console.log(JSON.stringify(await insuranceSetupStatus(sql, facilityId), null, 2));
   } else {
-    const command = z.object({ facilityId: z.string().min(1), operator: z.string().trim().min(1), governanceReference: z.string().trim().min(1), timeZone: z.string().optional() }).parse(input);
-    console.log(JSON.stringify(await setInsuranceState(sql, { ...command, state: states[operation as keyof typeof states] }), null, 2));
+    const command = z
+      .object({
+        facilityId: z.string().min(1),
+        operator: z.string().trim().min(1),
+        governanceReference: z.string().trim().min(1),
+        timeZone: z.string().optional(),
+      })
+      .parse(input);
+
+    console.log(
+      JSON.stringify(
+        await setInsuranceState(sql, {
+          ...command,
+          state: states[operation as keyof typeof states],
+        }),
+        null,
+        2,
+      ),
+    );
   }
 } finally {
   await sql.end();

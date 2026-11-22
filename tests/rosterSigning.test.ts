@@ -2,10 +2,25 @@ import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { createPublicKey, verify } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
-import { rosterSignaturePayload, RosterShift, type FacilityRegistrationResult, type Staff } from '#shared';
+import {
+  rosterSignaturePayload,
+  RosterShift,
+  type FacilityRegistrationResult,
+  type Staff,
+} from '#shared';
 import { findRecord, insertRecord } from '../src/db/records.ts';
 import { signPendingShifts } from '../src/roster/rosterSigning.ts';
-import { addStaff, clientId, envelopeFor, registerScratchFacility, scratchDatabase, signer, testApp, upload, type ScratchDatabase } from './postgres.ts';
+import {
+  addStaff,
+  clientId,
+  envelopeFor,
+  registerScratchFacility,
+  scratchDatabase,
+  signer,
+  testApp,
+  upload,
+  type ScratchDatabase,
+} from './postgres.ts';
 
 /**
  * Roster signing is what lets a device tell, offline, a genuine shift from one
@@ -19,10 +34,20 @@ describe('roster signing', () => {
   let a: FacilityRegistrationResult;
   let nurse: Staff;
 
-  const publicKey = createPublicKey({ key: Buffer.from(signer.publicKeyBase64, 'base64'), format: 'der', type: 'spki' });
+  const publicKey = createPublicKey({
+    key: Buffer.from(signer.publicKeyBase64, 'base64'),
+    format: 'der',
+    type: 'spki',
+  });
+
   const isValid = (shift: RosterShift) =>
     Boolean(shift.signature) &&
-    verify(null, Buffer.from(rosterSignaturePayload(shift), 'utf8'), publicKey, Buffer.from(shift.signature as string, 'base64'));
+    verify(
+      null,
+      Buffer.from(rosterSignaturePayload(shift), 'utf8'),
+      publicKey,
+      Buffer.from(shift.signature as string, 'base64'),
+    );
 
   const addShift = async (id: string) => {
     const shift = RosterShift.parse({
@@ -33,7 +58,9 @@ describe('roster signing', () => {
       startsAt: '2026-09-12T08:00:00Z',
       endsAt: '2026-09-12T16:00:00Z',
     });
+
     await insertRecord(db.sql, 'roster_shift', shift);
+
     return shift;
   };
 
@@ -72,6 +99,7 @@ describe('roster signing', () => {
 
   it('clears the signature when an upload extends the shift, and signs the new values', async () => {
     const extendedUntil = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+
     const response = await upload(app, a.device.credential, {
       transactionId: null,
       mutations: [
@@ -84,6 +112,7 @@ describe('roster signing', () => {
         },
       ],
     });
+
     assert.equal(response.applied, 1, JSON.stringify(response.rejected));
 
     const cleared = await findRecord<RosterShift>(db.sql, 'roster_shift', 'roster_shift:one');

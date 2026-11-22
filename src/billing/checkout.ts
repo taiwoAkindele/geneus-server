@@ -23,6 +23,7 @@ import { nextReceiptNumber } from './receipts.ts';
 import { reserveSource } from './sourceCapacity.ts';
 
 export const CHECKOUT_REFERENCE = /^geneus-co-[a-f0-9-]{36}$/;
+
 const CHECKOUT_DURATION_MS = 30 * 60_000;
 const MAX_AMOUNT_MINOR = 2_147_483_647;
 
@@ -45,10 +46,11 @@ type CheckoutSession = {
 
 type CheckoutScope = { facilityId: string; provider: string } | { linkId: string };
 
-const conflict = (message: string) => Object.assign(new Error(message), {
-  statusCode: 409,
-  code: 'checkout_unavailable',
-});
+const conflict = (message: string) =>
+  Object.assign(new Error(message), {
+    statusCode: 409,
+    code: 'checkout_unavailable',
+  });
 
 const withinScope = (session: CheckoutSession, scope: CheckoutScope): boolean => {
   if ('linkId' in scope) {
@@ -60,10 +62,12 @@ const withinScope = (session: CheckoutSession, scope: CheckoutScope): boolean =>
 
 const WebhookReferences = z.object({
   data: z.object({ reference: z.string().optional() }).optional(),
-  eventData: z.object({
-    paymentReference: z.string().optional(),
-    product: z.object({ reference: z.string().optional() }).optional(),
-  }).optional(),
+  eventData: z
+    .object({
+      paymentReference: z.string().optional(),
+      product: z.object({ reference: z.string().optional() }).optional(),
+    })
+    .optional(),
 });
 
 /** Identify the encrypted connection, then authenticate the exact webhook bytes before using its reference. */
@@ -89,15 +93,18 @@ export const acceptCheckoutWebhook = async (
     return undefined;
   }
 
-  const reference = parsed.data.data?.reference
-    ?? parsed.data.eventData?.paymentReference
-    ?? parsed.data.eventData?.product?.reference;
+  const reference =
+    parsed.data.data?.reference ??
+    parsed.data.eventData?.paymentReference ??
+    parsed.data.eventData?.product?.reference;
 
   if (!reference || !CHECKOUT_REFERENCE.test(reference)) {
     return undefined;
   }
 
-  const [session] = await sql<CheckoutSession[]>`SELECT * FROM checkout_sessions WHERE reference = ${reference}`;
+  const [session] = await sql<
+    CheckoutSession[]
+  >`SELECT * FROM checkout_sessions WHERE reference = ${reference}`;
 
   if (!session || !withinScope(session, scope) || !config.billingEncryptionKey) {
     return false;
@@ -109,11 +116,11 @@ export const acceptCheckoutWebhook = async (
     return false;
   }
 
-  const credentials = deserialiseCredentials(provider, openPaystackSecret(
-    session.encrypted_secret,
-    config.billingEncryptionKey,
-    session.facility_id,
-  ));
+  const credentials = deserialiseCredentials(
+    provider,
+    openPaystackSecret(session.encrypted_secret, config.billingEncryptionKey, session.facility_id),
+  );
+
   const authenticated = provider.webhookReference(raw, signature, credentials);
 
   if (!authenticated.ok || authenticated.checkoutReference !== reference) {
@@ -130,7 +137,11 @@ const publicState = (session: CheckoutSession): CheckoutState => {
 
   // A sandbox payment counts as paid only when it settled the bill (the hospital was in test mode and something
   // was applied); otherwise the patient is never told their bill was paid.
-  const testNotApplied = session.mode === 'test' && session.held_minor !== null && session.held_minor >= session.amount_minor;
+  const testNotApplied =
+    session.mode === 'test' &&
+    session.held_minor !== null &&
+    session.held_minor >= session.amount_minor;
+
   if (session.status === 'paid' && testNotApplied) {
     status = 'failed';
   } else if (session.status === 'pending' && Date.parse(session.expires_on) <= Date.now()) {
@@ -157,7 +168,9 @@ export const startCheckout = async (
   const checkout = connection.provider.checkout;
 
   if (link.kind !== 'bill' || !checkout) {
-    throw conflict('This hospital does not offer online payments yet. Contact the hospital to pay.');
+    throw conflict(
+      'This hospital does not offer online payments yet. Contact the hospital to pay.',
+    );
   }
 
   const bill = await loadBill(sql, link.facilityId, link.subject);
@@ -181,17 +194,31 @@ export const startCheckout = async (
     throw conflict('The hospital needs to record a contact email before online payment can start.');
   }
 
-  const charges = await sql<{ id: string; bill_id: string | null; encounter_id: string | null; appointment_id: string | null }[]>`
+  const charges = await sql<
+    {
+      id: string;
+      bill_id: string | null;
+      encounter_id: string | null;
+      appointment_id: string | null;
+    }[]
+  >`
     SELECT id, bill_id, encounter_id, appointment_id FROM charges
     WHERE facility_id = ${link.facilityId} AND patient_id = ${link.patientId} AND currency = ${bill.currency}`;
-  const chargeIds = charges.filter((charge) => billKey({
-    id: charge.id,
-    patientId: link.patientId,
-    currency: bill.currency,
-    billId: charge.bill_id ?? undefined,
-    encounterId: charge.encounter_id ?? undefined,
-    appointmentId: charge.appointment_id ?? undefined,
-  }) === link.subject).map((charge) => charge.id);
+
+  const chargeIds = charges
+    .filter(
+      (charge) =>
+        billKey({
+          id: charge.id,
+          patientId: link.patientId,
+          currency: bill.currency,
+          billId: charge.bill_id ?? undefined,
+          encounterId: charge.encounter_id ?? undefined,
+          appointmentId: charge.appointment_id ?? undefined,
+        }) === link.subject,
+    )
+    .map((charge) => charge.id);
+
   const reference = `geneus-co-${randomUUID()}`;
   const expiresOn = new Date(Date.now() + CHECKOUT_DURATION_MS).toISOString();
 
@@ -206,15 +233,20 @@ export const startCheckout = async (
 
   const callback = new URL(returnUrl);
   callback.searchParams.set('checkout', reference);
-  const started = await checkout.start(connection.credentials, {
-    reference,
-    amountMinor: bill.totals.dueMinor,
-    currency: bill.currency,
-    email,
-    name: bill.patient.name,
-    description: `Bill ${bill.reference}`,
-    returnUrl: callback.toString(),
-  }, http);
+
+  const started = await checkout.start(
+    connection.credentials,
+    {
+      reference,
+      amountMinor: bill.totals.dueMinor,
+      currency: bill.currency,
+      email,
+      name: bill.patient.name,
+      description: `Bill ${bill.reference}`,
+      returnUrl: callback.toString(),
+    },
+    http,
+  );
 
   if (new URL(started.checkoutUrl).protocol !== 'https:') {
     throw conflict('The payment provider did not return a secure checkout. Try again later.');
@@ -235,7 +267,9 @@ export const confirmCheckout = async (
     return undefined;
   }
 
-  const [session] = await sql<CheckoutSession[]>`SELECT * FROM checkout_sessions WHERE reference = ${reference}`;
+  const [session] = await sql<
+    CheckoutSession[]
+  >`SELECT * FROM checkout_sessions WHERE reference = ${reference}`;
 
   if (!session || (scope && !withinScope(session, scope))) {
     return undefined;
@@ -255,27 +289,31 @@ export const confirmCheckout = async (
     throw conflict('This payment provider is no longer available. Contact the hospital.');
   }
 
-  const credentials = deserialiseCredentials(provider, openPaystackSecret(
-    session.encrypted_secret,
-    config.billingEncryptionKey,
-    session.facility_id,
-  ));
+  const credentials = deserialiseCredentials(
+    provider,
+    openPaystackSecret(session.encrypted_secret, config.billingEncryptionKey, session.facility_id),
+  );
+
   const outcome = await provider.checkout.verify(credentials, reference, http);
 
   // A different amount is still money received (a bank transfer through the checkout can be more or less than
   // asked): it is recorded, applied up to what the bill owes and the rest held for staff. Only a payment that
   // isn't this checkout's (another reference, currency or mode) is refused.
-  if (outcome.status === 'paid' && (
-    outcome.reference !== reference
-    || outcome.currency !== session.currency
-    || outcome.mode !== session.mode
-  )) {
+  if (
+    outcome.status === 'paid' &&
+    (outcome.reference !== reference ||
+      outcome.currency !== session.currency ||
+      outcome.mode !== session.mode)
+  ) {
     throw conflict('The provider payment does not match this checkout. Contact the hospital.');
   }
 
   return sql.begin(async (tx) => {
     await tx`SELECT id FROM facilities WHERE id = ${session.facility_id} FOR UPDATE`;
-    const [current] = await tx<CheckoutSession[]>`SELECT * FROM checkout_sessions WHERE reference = ${reference} FOR UPDATE`;
+
+    const [current] = await tx<
+      CheckoutSession[]
+    >`SELECT * FROM checkout_sessions WHERE reference = ${reference} FOR UPDATE`;
 
     if (current.status === 'paid') {
       return publicState(current);
@@ -284,6 +322,7 @@ export const confirmCheckout = async (
     if (outcome.status !== 'paid') {
       // An earlier failed attempt can later succeed; only a verified payment is final.
       await tx`UPDATE checkout_sessions SET status = ${outcome.status}, checked_on = now() WHERE reference = ${reference}`;
+
       return publicState({ ...current, status: outcome.status });
     }
 
@@ -295,6 +334,7 @@ export const confirmCheckout = async (
     }
 
     const now = new Date().toISOString();
+
     const envelope = {
       facilityId: current.facility_id,
       deviceId: device.id,
@@ -302,6 +342,7 @@ export const confirmCheckout = async (
       createdBy: 'system',
       createdOn: now,
     };
+
     const source = IncomingTransfer.parse({
       ...envelope,
       id: `incoming_transfer:${reference}`,
@@ -320,9 +361,13 @@ export const confirmCheckout = async (
     await insertRecord(tx, 'incoming_transfer', source);
 
     let heldMinor = outcome.amountMinor;
+
     // Test money settles a bill only while the hospital is still connected in test mode, so the whole flow can be
     // tried before going live. Once it is live, a late sandbox payment never marks a real bill paid.
-    const [connected] = await tx<{ mode: 'test' | 'live' }[]>`SELECT mode FROM billing_connections WHERE facility_id = ${current.facility_id}`;
+    const [connected] = await tx<
+      { mode: 'test' | 'live' }[]
+    >`SELECT mode FROM billing_connections WHERE facility_id = ${current.facility_id}`;
+
     const settles = current.mode === 'live' || connected?.mode === 'test';
 
     if (settles) {
@@ -331,9 +376,15 @@ export const confirmCheckout = async (
         SELECT * FROM charges WHERE facility_id = ${current.facility_id}
           AND patient_id = ${current.patient_id} AND currency = ${current.currency}
           AND id = ANY(${current.charge_ids}) ORDER BY id FOR UPDATE`;
-      const charges = rows.map((row) => fromRow<Charge>('charge', row))
+
+      const charges = rows
+        .map((row) => fromRow<Charge>('charge', row))
         .filter((charge) => billKey(charge) === current.bill_key)
-        .sort((left, right) => left.createdOn.localeCompare(right.createdOn) || left.id.localeCompare(right.id));
+        .sort(
+          (left, right) =>
+            left.createdOn.localeCompare(right.createdOn) || left.id.localeCompare(right.id),
+        );
+
       const positions = await chargePositions(tx, current.facility_id, charges);
       const allocations: { chargeId: string; amountMinor: number }[] = [];
 
@@ -350,8 +401,12 @@ export const confirmCheckout = async (
       const appliedMinor = outcome.amountMinor - heldMinor;
 
       if (appliedMinor > 0) {
-        await reserveSource(tx, current.facility_id, source.id, appliedMinor, current.currency, { allowTest: current.mode === 'test' });
+        await reserveSource(tx, current.facility_id, source.id, appliedMinor, current.currency, {
+          allowTest: current.mode === 'test',
+        });
+
         const receiptNumber = await nextReceiptNumber(tx, current.facility_id);
+
         const payment = Payment.parse({
           ...envelope,
           id: `payment:${reference}`,
@@ -402,10 +457,13 @@ export const reconcileCheckouts = async (
     try {
       await confirmCheckout(sql, config, session.reference, http);
     } catch (cause) {
-      log.warn({
-        reference: session.reference,
-        reason: cause instanceof Error ? cause.message : 'Payment confirmation failed',
-      }, 'checkout reconciliation deferred');
+      log.warn(
+        {
+          reference: session.reference,
+          reason: cause instanceof Error ? cause.message : 'Payment confirmation failed',
+        },
+        'checkout reconciliation deferred',
+      );
     }
   }
 };

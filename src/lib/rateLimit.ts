@@ -17,18 +17,29 @@ export const createRateLimiter = (limit: number, windowMs: number): RateLimiter 
   const windows = new Map<string, { count: number; resetsAt: number }>();
 
   const sweep = (now: number) => {
-    for (const [key, window] of windows) if (window.resetsAt <= now) windows.delete(key);
+    for (const [key, window] of windows) {
+      if (window.resetsAt <= now) {
+        windows.delete(key);
+      }
+    }
   };
 
   return {
     hit: (key, now = Date.now()) => {
-      if (windows.size > SWEEP_THRESHOLD) sweep(now);
+      if (windows.size > SWEEP_THRESHOLD) {
+        sweep(now);
+      }
+
       const window = windows.get(key);
+
       if (!window || window.resetsAt <= now) {
         windows.set(key, { count: 1, resetsAt: now + windowMs });
+
         return undefined;
       }
+
       window.count += 1;
+
       return window.count > limit ? Math.ceil((window.resetsAt - now) / 1000) : undefined;
     },
   };

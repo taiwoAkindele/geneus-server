@@ -1,5 +1,5 @@
-import {assertIntegratedUpload,integratedEnabled} from '../billing/integrated.ts';
-import {prepareServiceAllocation} from '../billing/serviceAllocations.ts';
+import { assertIntegratedUpload, integratedEnabled } from '../billing/integrated.ts';
+import { prepareServiceAllocation } from '../billing/serviceAllocations.ts';
 import { careWorkflowIssues, chargeOrderIssues, routeReferral } from '../clinical/careWorkflow.ts';
 import { assertCatalogueUpload, chargePriceIssues, stockPriceIssue } from '../billing/catalogue.ts';
 import { labReportUploadIssues } from '../clinical/labReports.ts';
@@ -10,7 +10,9 @@ import { clinicalDocumentIssues } from '../documents/validation.ts';
 import { isDeepStrictEqual } from 'node:util';
 import type { ZodType } from 'zod';
 import {
-  CLOSING_STEPS, closesEncounter, POST_CONSULTATION_STEPS,
+  CLOSING_STEPS,
+  closesEncounter,
+  POST_CONSULTATION_STEPS,
   ENCOUNTER_STEP_VALUES,
   REPEATABLE_STEPS,
   HIGH_RISK_PERMISSIONS,
@@ -27,8 +29,10 @@ import {
   staffPermissions,
   PIN_SETUP_CODE_CLAIM_FIELDS,
   ROSTER_SIGNED_FIELDS,
-  FACILITY_DOCUMENT_POLICY, RESTRICTED_FACILITY_DOCUMENT_TYPES,
-  SCHEMA_BY_TYPE, type FacilityDependency,
+  FACILITY_DOCUMENT_POLICY,
+  RESTRICTED_FACILITY_DOCUMENT_TYPES,
+  SCHEMA_BY_TYPE,
+  type FacilityDependency,
   type AnyDocument,
   type Appointment,
   type ConflictingColumn,
@@ -44,7 +48,10 @@ import {
   type UploadMutation,
   type UploadRejection,
   type UploadRequest,
-  type UploadResponse, isConfigurationWrite, careServiceVisitIssues } from '#shared';
+  type UploadResponse,
+  isConfigurationWrite,
+  careServiceVisitIssues,
+} from '#shared';
 import { recordsInFacility } from '../workforce/records.ts';
 import {
   CHECK_VIOLATION,
@@ -60,15 +67,27 @@ import type { DeviceIdentity } from '../devices/credentials.ts';
 import { describeDenial, findStaffInFacility, staffDenial } from '../auth/staffAuthorization.ts';
 import { keepsAdministrator } from '../staff/access.ts';
 import { availableOnCharge } from '../billing/ledger.ts';
-import { completionUploadIssues, flagInsuredOverpayment, insuranceUploadIssues } from '../insurance/uploadChecks.ts';
+import {
+  completionUploadIssues,
+  flagInsuredOverpayment,
+  insuranceUploadIssues,
+} from '../insurance/uploadChecks.ts';
 import { claimMutation, recordRejection } from './ledger.ts';
 import { stockMovementIssue } from '../inventory/validation.ts';
 import { contactUploadIssues } from '../messaging/contactChecks.ts';
 import { validateWorkforceRecord, workforceType } from '../workforce/validation.ts';
 import { refreshFacilityAuthority } from '../workforce/authority.ts';
-import { clinicalAuthorityRefusal, historicalReviewValid, completeHistoricalReview, clinicalAttestationRefusal } from '../workforce/clinical.ts';
+import {
+  clinicalAuthorityRefusal,
+  historicalReviewValid,
+  completeHistoricalReview,
+  clinicalAttestationRefusal,
+} from '../workforce/clinical.ts';
 import { allocationRefusal, recordReservation } from '../workforce/allocations.ts';
-import { assertWorkforceCompatibility, orderWorkforceMutations } from '../workforce/compatibility.ts';
+import {
+  assertWorkforceCompatibility,
+  orderWorkforceMutations,
+} from '../workforce/compatibility.ts';
 import type { Signer } from '../lib/signing.ts';
 import { validatePinCodeClaim } from '../workforce/pin.ts';
 import { recordClientVersion } from '../workforce/readiness.ts';
@@ -94,12 +113,29 @@ import { recordClientVersion } from '../workforce/readiness.ts';
  */
 
 /** Written by the server; a device may never insert them. */
-const SERVER_WRITTEN: readonly DocType[] = ['facility', 'device', 'sync_rejection', 'pin_setup_code', 'incoming_transfer', 'inbound_referral', 'patient_message',
+const SERVER_WRITTEN: readonly DocType[] = [
+  'facility',
+  'device',
+  'sync_rejection',
+  'pin_setup_code',
+  'incoming_transfer',
+  'inbound_referral',
+  'patient_message',
   'coverage_financial_summary',
   // Insurance configuration, confirmed splits and refunds are decided online by verified staff (routes/insurance.ts).
-  'payer', 'cover_schedule', 'coverage_allocation', 'refund'];
+  'payer',
+  'cover_schedule',
+  'coverage_allocation',
+  'refund',
+];
+
 /** Server-written, but a device may patch the few columns that record what it did with them. */
-const DEVICE_MARKABLE: readonly DocType[] = ['sync_rejection', 'pin_setup_code', 'inbound_referral'];
+const DEVICE_MARKABLE: readonly DocType[] = [
+  'sync_rejection',
+  'pin_setup_code',
+  'inbound_referral',
+];
+
 /**
  * Never patched: the record is the event. An encounter is closed by a step, not
  * an edit (SCHEMA.md §13); a payment is cancelled by a reversal (SCHEMA.md §14).
@@ -111,25 +147,37 @@ const APPEND_ONLY: readonly DocType[] = [
   'encounter',
   'encounter_entry',
   'clinical_event',
-  'inpatient_event', 'bed_ready_event',
+  'inpatient_event',
+  'bed_ready_event',
   'ward_care_event',
-  'library_document','visit_document',
+  'library_document',
+  'visit_document',
   'charge',
   'payment',
   'billing_adjustment',
   'service_charge_allocation',
   'patient_identity_event',
-  'patient_cover', 'cover_check', 'coverage_election', 'service_completion',
+  'patient_cover',
+  'cover_check',
+  'coverage_election',
+  'service_completion',
   'patient_contact',
 ];
+
 /** Never patched: a change is a new version (SCHEMA.md §11.2). */
 const IMMUTABLE_PER_VERSION: readonly DocType[] = ['register_definition'];
+
 /** Administrative: a same-column race applies the later upload, audited (SCHEMA.md §7). */
-const ADMIN_LAST_WRITE_WINS: readonly DocType[] = ['staff', 'roster_shift', 'unit', 'sync_rejection'];
+const ADMIN_LAST_WRITE_WINS: readonly DocType[] = [
+  'staff',
+  'roster_shift',
+  'unit',
+  'sync_rejection',
+];
 
 /** Columns only the server may set. */
 const SERVER_OWNED_COLUMNS: Partial<Record<DocType, readonly string[]>> = {
-  service_charge_allocation:['acceptedOn','creditMinor'],
+  service_charge_allocation: ['acceptedOn', 'creditMinor'],
   roster_shift: ['signature'],
   staff: ['personId'],
   fee_item: ['priceVersion', 'priceEvidenceVersion'],
@@ -144,7 +192,7 @@ const RESOLUTION_COLUMNS = new Set(['resolvedOn', 'resolvedBy', 'resolution']);
 const PATCH_METADATA = new Set(['id', 'updatedBy', 'updatedOn']);
 
 const PUT_PERMISSION: Partial<Record<DocType, Permission>> = {
-  service_charge_allocation:'charge:associate',
+  service_charge_allocation: 'charge:associate',
   patient: 'patient:create',
   patient_identity_event: 'patient_identity:review',
   visit: 'visit:create',
@@ -152,8 +200,10 @@ const PUT_PERMISSION: Partial<Record<DocType, Permission>> = {
   encounter_entry: 'encounter:record',
   ward_care_event: 'encounter:record',
   clinical_event: 'encounter:record',
-  inpatient_event: 'admission:manage', bed_ready_event: 'admission:manage',
-  library_document:'encounter:record',visit_document:'encounter:record',
+  inpatient_event: 'admission:manage',
+  bed_ready_event: 'admission:manage',
+  library_document: 'encounter:record',
+  visit_document: 'encounter:record',
   handoff: 'handoff:create',
   appointment: 'appointment:create',
   register_definition: 'register_definition:publish',
@@ -182,19 +232,42 @@ const PUT_PERMISSION: Partial<Record<DocType, Permission>> = {
  * yet: nothing in the app updates them, and a permission is added when
  * something does — never inferred.
  */
-const patchPermissions = (table: DocType, changes: Record<string, unknown>): Permission[] | undefined => {
+const patchPermissions = (
+  table: DocType,
+  changes: Record<string, unknown>,
+): Permission[] | undefined => {
   const columns = Object.keys(changes).filter((column) => !PATCH_METADATA.has(column));
+
   switch (table) {
     case 'patient':
       return ['patient:update'];
     case 'appointment':
-      return columns.every((column) => ['status', 'scheduledFor', 'attendance', 'activity', 'allocation', 'schemaVersion'].includes(column)) ? ['appointment:update'] : undefined;
+      return columns.every((column) =>
+        [
+          'status',
+          'scheduledFor',
+          'attendance',
+          'activity',
+          'allocation',
+          'schemaVersion',
+        ].includes(column),
+      )
+        ? ['appointment:update']
+        : undefined;
     case 'handoff':
       return columns.every((column) => column === 'status') ? ['handoff:update'] : undefined;
     case 'referral':
-      return columns.every((column) => ['status','seenOn','arrivedOn','closedOn','notYetArrivedFlagged'].includes(column)) ? ['referral:update'] : undefined;
+      return columns.every((column) =>
+        ['status', 'seenOn', 'arrivedOn', 'closedOn', 'notYetArrivedFlagged'].includes(column),
+      )
+        ? ['referral:update']
+        : undefined;
     case 'inbound_referral':
-      return columns.every((column) => ['status','localPatientId','localEncounterId','arrivedOn','closedOn'].includes(column)) ? ['referral:update'] : undefined;
+      return columns.every((column) =>
+        ['status', 'localPatientId', 'localEncounterId', 'arrivedOn', 'closedOn'].includes(column),
+      )
+        ? ['referral:update']
+        : undefined;
     case 'stock_item':
       return ['stock_item:manage'];
     case 'fee_item':
@@ -206,18 +279,38 @@ const patchPermissions = (table: DocType, changes: Record<string, unknown>): Per
       return [
         ...new Set(
           columns.map((column): Permission => {
-            if (['permission', 'role', 'additionalRoles', 'additionalPermissions', 'loginAccess'].includes(column)) return 'staff:permission';
-            if (column === 'active' && changes.active === false) return 'staff:deactivate';
+            if (
+              [
+                'permission',
+                'role',
+                'additionalRoles',
+                'additionalPermissions',
+                'loginAccess',
+              ].includes(column)
+            ) {
+              return 'staff:permission';
+            }
+
+            if (column === 'active' && changes.active === false) {
+              return 'staff:deactivate';
+            }
+
             return 'staff:manage';
           }),
         ),
       ];
     case 'roster_shift':
-      return columns.every((column) => column === 'extendedUntil') ? ['roster:extend'] : ['roster:assign'];
+      return columns.every((column) => column === 'extendedUntil')
+        ? ['roster:extend']
+        : ['roster:assign'];
     case 'sync_rejection':
-      return columns.every((column) => RESOLUTION_COLUMNS.has(column)) ? ['sync_rejection:resolve'] : undefined;
+      return columns.every((column) => RESOLUTION_COLUMNS.has(column))
+        ? ['sync_rejection:resolve']
+        : undefined;
     case 'pin_setup_code':
-      return columns.every((column) => (PIN_SETUP_CODE_CLAIM_FIELDS as readonly string[]).includes(column))
+      return columns.every((column) =>
+        (PIN_SETUP_CODE_CLAIM_FIELDS as readonly string[]).includes(column),
+      )
         ? ['pin_setup_code:claim']
         : undefined;
     default:
@@ -225,50 +318,133 @@ const patchPermissions = (table: DocType, changes: Record<string, unknown>): Per
   }
 };
 
-type Refusal = { category: RejectionCategory; reason: string; conflicts?: ConflictingColumn[]; dependencies?: FacilityDependency[] };
+type Refusal = {
+  category: RejectionCategory;
+  reason: string;
+  conflicts?: ConflictingColumn[];
+  dependencies?: FacilityDependency[];
+};
+
 /** How an upload arrived: through a device's offline queue, or saved online by a person the server verified. */
-export type UploadOptions = { online?: { staffId: string; billingPolicy?: boolean; atomic?: boolean } };
+export type UploadOptions = {
+  online?: { staffId: string; billingPolicy?: boolean; atomic?: boolean };
+};
 
 /** Release 1: old fee forms cannot opt patients into automatic bills or reclassify insured services. */
-const feeCatalogueRefusal = async (tx: Tx, identity: DeviceIdentity, mutation: UploadMutation, options: UploadOptions): Promise<Refusal | undefined> => {
-  if (mutation.table !== 'fee_item') return undefined;
+const feeCatalogueRefusal = async (
+  tx: Tx,
+  identity: DeviceIdentity,
+  mutation: UploadMutation,
+  options: UploadOptions,
+): Promise<Refusal | undefined> => {
+  if (mutation.table !== 'fee_item') {
+    return undefined;
+  }
+
   if (mutation.op === 'put' && mutation.data.chargeWhen !== 'when_ordered') {
-    return refuse('validation', 'New catalogue items must be charged only when selected. Create the item first, then explicitly configure its automatic charging policy.');
+    return refuse(
+      'validation',
+      'New catalogue items must be charged only when selected. Create the item first, then explicitly configure its automatic charging policy.',
+    );
   }
-  if(options.online?.atomic&&mutation.op==='put'){
-    const [existing]=await tx`SELECT id FROM fee_items WHERE facility_id=${identity.facilityId} AND category=${String(mutation.data.category??'')} AND lower(btrim(name))=lower(btrim(${String(mutation.data.name??'')})) AND id<>${mutation.id} LIMIT 1`;
-    if(existing)return refuse('validation','This catalogue item already exists. Use its explicit Item ID to update its price.');
+
+  if (options.online?.atomic && mutation.op === 'put') {
+    const [existing] =
+      await tx`SELECT id FROM fee_items WHERE facility_id=${identity.facilityId} AND category=${String(mutation.data.category ?? '')} AND lower(btrim(name))=lower(btrim(${String(mutation.data.name ?? '')})) AND id<>${mutation.id} LIMIT 1`;
+
+    if (existing) {
+      return refuse(
+        'validation',
+        'This catalogue item already exists. Use its explicit Item ID to update its price.',
+      );
+    }
   }
-  if (mutation.op !== 'patch') return undefined;
+
+  if (mutation.op !== 'patch') {
+    return undefined;
+  }
+
   const current = await findRecord<AnyDocument>(tx, 'fee_item', mutation.id);
-  if (!current || current.type !== 'fee_item' || current.facilityId !== identity.facilityId) return undefined;
+
+  if (!current || current.type !== 'fee_item' || current.facilityId !== identity.facilityId) {
+    return undefined;
+  }
+
   if (mutation.data.category !== undefined && mutation.data.category !== current.category) {
-    return refuse('validation', 'This item’s category cannot change until its insurance impact can be reviewed. Its existing category and historical coverage are preserved.');
+    return refuse(
+      'validation',
+      'This item’s category cannot change until its insurance impact can be reviewed. Its existing category and historical coverage are preserved.',
+    );
   }
-  const policyChanged = (['chargeWhen', 'exemptions'] as const).some((key) => mutation.data[key] !== undefined && !isDeepStrictEqual(mutation.data[key], current[key]));
+
+  const policyChanged = (['chargeWhen', 'exemptions'] as const).some(
+    (key) =>
+      mutation.data[key] !== undefined && !isDeepStrictEqual(mutation.data[key], current[key]),
+  );
+
   if (policyChanged && !options.online?.billingPolicy) {
-    return refuse('authorization', 'Change automatic charging and exemptions through the separate policy editor. Ordinary catalogue edits cannot change this policy.');
+    return refuse(
+      'authorization',
+      'Change automatic charging and exemptions through the separate policy editor. Ordinary catalogue edits cannot change this policy.',
+    );
   }
-  if (options.online?.billingPolicy && Object.keys(mutation.data).some((key) => !['chargeWhen', 'exemptions', 'updatedBy', 'updatedOn'].includes(key))) {
+
+  if (
+    options.online?.billingPolicy &&
+    Object.keys(mutation.data).some(
+      (key) => !['chargeWhen', 'exemptions', 'updatedBy', 'updatedOn'].includes(key),
+    )
+  ) {
     return refuse('validation', 'A policy save can change only automatic charging and exemptions.');
   }
+
   return undefined;
 };
-class OnlineRefusal extends Error { readonly refusal: Refusal; constructor(refusal: Refusal) { super(refusal.reason); this.refusal = refusal; } }
+
+class OnlineRefusal extends Error {
+  readonly refusal: Refusal;
+  constructor(refusal: Refusal) {
+    super(refusal.reason);
+    this.refusal = refusal;
+  }
+}
 
 /**
  * Optimistic concurrency for online configuration: a change names the values
  * it saw, and is refused if anyone changed them since. Records keyed by
  * revision already check their revision; this covers the rest (staff, roster).
  */
-const staleConfiguration = async (tx: Tx, mutation: UploadMutation): Promise<Refusal | undefined> => {
-  if (mutation.op !== 'patch' || !mutation.previous) return undefined;
-  const current = await findRecord(tx, mutation.table, mutation.id) as Record<string, unknown> | undefined;
-  if (!current) return undefined;
+const staleConfiguration = async (
+  tx: Tx,
+  mutation: UploadMutation,
+): Promise<Refusal | undefined> => {
+  if (mutation.op !== 'patch' || !mutation.previous) {
+    return undefined;
+  }
+
+  const current = (await findRecord(tx, mutation.table, mutation.id)) as
+    Record<string, unknown> | undefined;
+
+  if (!current) {
+    return undefined;
+  }
+
   const norm = (value: unknown) => JSON.stringify(value ?? null);
-  const moved = Object.keys(mutation.previous).filter((key) => !['updatedBy', 'updatedOn'].includes(key) && norm(current[key]) !== norm(mutation.previous![key]));
-  return moved.length ? refuse('conflict', 'Someone changed this since you opened it. Reopen it to see the current values, then save again') : undefined;
+
+  const moved = Object.keys(mutation.previous).filter(
+    (key) =>
+      !['updatedBy', 'updatedOn'].includes(key) &&
+      norm(current[key]) !== norm(mutation.previous![key]),
+  );
+
+  return moved.length
+    ? refuse(
+        'conflict',
+        'Someone changed this since you opened it. Reopen it to see the current values, then save again',
+      )
+    : undefined;
 };
+
 const refuse = (category: RejectionCategory, reason: string): Refusal => ({ category, reason });
 
 type Outcome = 'applied' | 'duplicate' | 'rejected' | 'applied_with_conflicts';
@@ -277,11 +453,19 @@ type MutationResult = { outcome: Outcome; refusal?: Refusal };
 
 const isPostgresRefusal = (cause: unknown): Refusal | undefined => {
   if (isPostgresError(cause, UNIQUE_VIOLATION)) {
-    return refuse('conflict', 'a record with this identity already exists — created on another device first');
+    return refuse(
+      'conflict',
+      'a record with this identity already exists — created on another device first',
+    );
   }
+
   if (isPostgresError(cause, FOREIGN_KEY_VIOLATION) || isPostgresError(cause, CHECK_VIOLATION)) {
-    return refuse('validation', `PostgreSQL refused the write: ${(cause as { constraint_name?: string }).constraint_name ?? 'constraint'}`);
+    return refuse(
+      'validation',
+      `PostgreSQL refused the write: ${(cause as { constraint_name?: string }).constraint_name ?? 'constraint'}`,
+    );
   }
+
   return undefined;
 };
 
@@ -289,10 +473,15 @@ const isPostgresRefusal = (cause: unknown): Refusal | undefined => {
 const attempt = async (tx: Tx, write: (sp: Tx) => Promise<void>): Promise<Refusal | undefined> => {
   try {
     await tx.savepoint(write);
+
     return undefined;
   } catch (cause) {
     const refusal = isPostgresRefusal(cause);
-    if (refusal) return refusal;
+
+    if (refusal) {
+      return refusal;
+    }
+
     throw cause;
   }
 };
@@ -304,10 +493,22 @@ const attempt = async (tx: Tx, write: (sp: Tx) => Promise<void>): Promise<Refusa
  * the action must arrive within the same window of being made. Together they
  * bound how stale the authority behind a staff or device change can be.
  */
-const isStale = (permissions: Permission[], performedOn: string | undefined, uploadedAt: number): boolean => {
-  if (!permissions.some((permission) => HIGH_RISK_PERMISSIONS.includes(permission))) return false;
+const isStale = (
+  permissions: Permission[],
+  performedOn: string | undefined,
+  uploadedAt: number,
+): boolean => {
+  if (!permissions.some((permission) => HIGH_RISK_PERMISSIONS.includes(permission))) {
+    return false;
+  }
+
   const performed = performedOn ? Date.parse(performedOn) : Number.NaN;
-  return Number.isNaN(performed) || performed > uploadedAt + 300_000 || uploadedAt - performed > OFFLINE_AUTHORIZATION_POLICY.highRiskMs;
+
+  return (
+    Number.isNaN(performed) ||
+    performed > uploadedAt + 300_000 ||
+    uploadedAt - performed > OFFLINE_AUTHORIZATION_POLICY.highRiskMs
+  );
 };
 
 type Context = { tx: Tx; identity: DeviceIdentity; uploadedAt: number };
@@ -318,13 +519,36 @@ type Context = { tx: Tx; identity: DeviceIdentity; uploadedAt: number };
  * with. By the time this arrives the PIN is already set on that device, so a
  * refusal here is a record for the facility to look at, not a way to undo it.
  */
-const claimRefusal = (code: PinSetupCode, updatedBy: string, changes: Record<string, unknown>): Refusal | undefined => {
-  if (updatedBy !== code.staffId) return refuse('authorization', 'a PIN setup code can only be used by the person it was issued for');
-  if (code.usedOn) return refuse('conflict', 'this PIN setup code was already used on another device');
+const claimRefusal = (
+  code: PinSetupCode,
+  updatedBy: string,
+  changes: Record<string, unknown>,
+): Refusal | undefined => {
+  if (updatedBy !== code.staffId) {
+    return refuse(
+      'authorization',
+      'a PIN setup code can only be used by the person it was issued for',
+    );
+  }
+
+  if (code.usedOn) {
+    return refuse('conflict', 'this PIN setup code was already used on another device');
+  }
+
   const usedOn = typeof changes.usedOn === 'string' ? Date.parse(changes.usedOn) : Number.NaN;
-  if (Number.isNaN(usedOn)) return refuse('validation', 'a used PIN setup code must say when it was used');
-  if (code.revokedOn && usedOn > Date.parse(code.revokedOn)) return refuse('validation', 'this PIN setup code had been replaced by a newer one');
-  if (usedOn > Date.parse(code.expiresOn)) return refuse('validation', 'this PIN setup code had expired');
+
+  if (Number.isNaN(usedOn)) {
+    return refuse('validation', 'a used PIN setup code must say when it was used');
+  }
+
+  if (code.revokedOn && usedOn > Date.parse(code.revokedOn)) {
+    return refuse('validation', 'this PIN setup code had been replaced by a newer one');
+  }
+
+  if (usedOn > Date.parse(code.expiresOn)) {
+    return refuse('validation', 'this PIN setup code had expired');
+  }
+
   return undefined;
 };
 
@@ -335,34 +559,55 @@ const claimRefusal = (code: PinSetupCode, updatedBy: string, changes: Record<str
  * anything this device recorded against it is held in the reconcile queue
  * with the patient rather than attached to the wrong person (SCHEMA.md §7).
  */
-const heldForPatient = async (tx: Tx, identity: DeviceIdentity, patientId: string): Promise<Refusal | undefined> => {
+const heldForPatient = async (
+  tx: Tx,
+  identity: DeviceIdentity,
+  patientId: string,
+): Promise<Refusal | undefined> => {
   const [held] = await tx`
     SELECT 1 FROM sync_rejections
     WHERE facility_id = ${identity.facilityId} AND device_id = ${identity.deviceId}
       AND entity_type = 'patient' AND entity_id = ${patientId} AND operation = 'put'
       AND resolved_on IS NULL
     LIMIT 1`;
+
   return held
-    ? refuse('conflict', `held: this device's registration of patient ${patientId} was refused and is waiting in the reconcile queue`)
+    ? refuse(
+        'conflict',
+        `held: this device's registration of patient ${patientId} was refused and is waiting in the reconcile queue`,
+      )
     : undefined;
 };
 
 /** Consultation closure preserves fulfillment/review and amendments, while refusing new assessments. */
-const closedEncounterRefusal = async (tx: Tx, entry: EncounterEntry): Promise<Refusal | undefined> => {
-  if ((POST_CONSULTATION_STEPS as readonly string[]).includes(entry.step)) return undefined;
+const closedEncounterRefusal = async (
+  tx: Tx,
+  entry: EncounterEntry,
+): Promise<Refusal | undefined> => {
+  if ((POST_CONSULTATION_STEPS as readonly string[]).includes(entry.step)) {
+    return undefined;
+  }
+
   const closings = await tx<{ step: string; values: Record<string, unknown> }[]>`
     SELECT step, "values" FROM encounter_entries
     WHERE facility_id = ${entry.facilityId} AND encounter_id = ${entry.encounterId}
       AND step = ANY(${[...CLOSING_STEPS]})
     `;
+
   const closing = closings.find(closesEncounter);
+
   return closing
-    ? refuse('conflict', `encounter ${entry.encounterId} was already closed (${closing.step}); clinical changes require an amendment`)
+    ? refuse(
+        'conflict',
+        `encounter ${entry.encounterId} was already closed (${closing.step}); clinical changes require an amendment`,
+      )
     : undefined;
 };
 
 const allocationsByCharge = (payment: Payment): Record<string, number> =>
-  Object.fromEntries(payment.allocations.map((allocation) => [allocation.chargeId, allocation.amountMinor]));
+  Object.fromEntries(
+    payment.allocations.map((allocation) => [allocation.chargeId, allocation.amountMinor]),
+  );
 
 /**
  * What a payment's shape cannot say about other records (SCHEMA.md §14): each
@@ -374,410 +619,1174 @@ const allocationsByCharge = (payment: Payment): Record<string, number> =>
  */
 const paymentRefusal = async (tx: Tx, payment: Payment): Promise<Refusal | undefined> => {
   // Online payments are written only by the server, after it verified the checkout with the provider.
-  if (payment.method === 'online' && !payment.reverses) return refuse('validation', 'An online payment is recorded by the server when the provider confirms it');
-  if(payment.method==='transfer'&&!payment.reverses&&await integratedEnabled(tx,payment.facilityId))return refuse('validation','Allocate a verified hospital bank receipt online. Offline cash collection remains available');
+  if (payment.method === 'online' && !payment.reverses) {
+    return refuse(
+      'validation',
+      'An online payment is recorded by the server when the provider confirms it',
+    );
+  }
+
+  if (
+    payment.method === 'transfer' &&
+    !payment.reverses &&
+    (await integratedEnabled(tx, payment.facilityId))
+  ) {
+    return refuse(
+      'validation',
+      'Allocate a verified hospital bank receipt online. Offline cash collection remains available',
+    );
+  }
+
   const chargeIds = payment.allocations.map((allocation) => allocation.chargeId);
+
   const charges = await tx<{ id: string; patient_id: string; currency: string }[]>`
     SELECT id, patient_id, currency FROM charges
     WHERE facility_id = ${payment.facilityId} AND id = ANY(${chargeIds}) ORDER BY id FOR UPDATE`;
+
   for (const chargeId of chargeIds) {
     const charge = charges.find((candidate) => candidate.id === chargeId);
-    if (!charge) return refuse('validation', `charge ${chargeId} does not exist in this facility`);
-    if (charge.patient_id !== payment.patientId) return refuse('validation', `charge ${chargeId} belongs to another patient`);
+
+    if (!charge) {
+      return refuse('validation', `charge ${chargeId} does not exist in this facility`);
+    }
+
+    if (charge.patient_id !== payment.patientId) {
+      return refuse('validation', `charge ${chargeId} belongs to another patient`);
+    }
+
     if (charge.currency !== payment.currency) {
-      return refuse('validation', `charge ${chargeId} is in ${charge.currency}, not ${payment.currency}`);
+      return refuse(
+        'validation',
+        `charge ${chargeId} is in ${charge.currency}, not ${payment.currency}`,
+      );
     }
   }
 
-  if (!payment.reverses) return undefined;
+  if (!payment.reverses) {
+    return undefined;
+  }
+
   const original = await findRecord<Payment>(tx, 'payment', payment.reverses);
+
   if (!original || original.facilityId !== payment.facilityId) {
     return refuse('validation', `no payment ${payment.reverses} exists to reverse`);
   }
-  if (original.reverses) return refuse('validation', `payment ${original.id} is itself a reversal and cannot be reversed`);
+
+  if (original.reverses) {
+    return refuse(
+      'validation',
+      `payment ${original.id} is itself a reversal and cannot be reversed`,
+    );
+  }
+
   const [reversed] = await tx`
     SELECT 1 FROM payments WHERE facility_id = ${payment.facilityId} AND reverses = ${original.id} LIMIT 1`;
-  if (reversed) return refuse('conflict', `payment ${original.id} was already reversed`);
+
+  if (reversed) {
+    return refuse('conflict', `payment ${original.id} was already reversed`);
+  }
+
   const repeatsOriginal =
     original.patientId === payment.patientId &&
     original.amountMinor === payment.amountMinor &&
     original.currency === payment.currency &&
     isDeepStrictEqual(allocationsByCharge(original), allocationsByCharge(payment));
+
   return repeatsOriginal
     ? undefined
-    : refuse('validation', `a reversal must repeat payment ${original.id}'s patient, amount and allocations exactly`);
+    : refuse(
+        'validation',
+        `a reversal must repeat payment ${original.id}'s patient, amount and allocations exactly`,
+      );
 };
 
-const evaluatePut = async ({ tx, identity, uploadedAt }: Context, mutation: UploadMutation): Promise<Refusal | undefined> => {
+const evaluatePut = async (
+  { tx, identity, uploadedAt }: Context,
+  mutation: UploadMutation,
+): Promise<Refusal | undefined> => {
   const table = mutation.table;
-  if (SERVER_WRITTEN.includes(table)) return refuse('authorization', `${table} records are written by the server`);
+
+  if (SERVER_WRITTEN.includes(table)) {
+    return refuse('authorization', `${table} records are written by the server`);
+  }
 
   const owned = SERVER_OWNED_COLUMNS[table] ?? [];
   const offending = owned.find((column) => mutation.data[column] !== undefined);
-  if (offending) return refuse('validation', `${table}.${offending} is set by the server`);
+
+  if (offending) {
+    return refuse('validation', `${table}.${offending} is set by the server`);
+  }
 
   const parsed = parseDocument({ ...mutation.data, id: mutation.id, type: table });
-  if (!parsed.success) return refuse('validation', `does not match the contract: ${parsed.error.issues.map((issue) => issue.path.join('.') + ' ' + issue.message).join('; ')}`);
+
+  if (!parsed.success) {
+    return refuse(
+      'validation',
+      `does not match the contract: ${parsed.error.issues.map((issue) => issue.path.join('.') + ' ' + issue.message).join('; ')}`,
+    );
+  }
+
   const record = parsed.data;
 
-  if (record.type === 'patient_identity_event' && ['linked', 'distinct', 'unlinked'].includes(record.outcome)) return refuse('authorization', 'Final patient identity decisions require an online server preview and confirmation');
+  if (
+    record.type === 'patient_identity_event' &&
+    ['linked', 'distinct', 'unlinked'].includes(record.outcome)
+  ) {
+    return refuse(
+      'authorization',
+      'Final patient identity decisions require an online server preview and confirmation',
+    );
+  }
+
   if (record.type === 'patient_identity_event' && record.otherPatientId) {
     const held = await heldForPatient(tx, identity, record.otherPatientId);
-    if (held) return held;
-  }
-  if (record.type === 'patient' && record.nin && !/^\d{11}$/.test(record.nin)) return refuse('validation', 'NIN must contain 11 digits');
-  if (record.type === 'patient' && record.identityStatus === 'identified' && record.provisionalReason) return refuse('validation', 'Identification history must follow a provisional registration');
 
-  if (record.facilityId !== identity.facilityId) return refuse('identity', `facilityId ${record.facilityId} is not this device's facility`);
-  if ('dispenseEntryId' in record && record.dispenseEntryId) return await pharmacyCompanionMatches(tx, record) ? undefined : refuse('validation', 'This stock or billing entry must match its accepted pharmacy supply');
-  if (record.deviceId !== identity.deviceId) return refuse('identity', `deviceId ${record.deviceId} is not this device`);
-  if (!record.createdBy) return refuse('identity', 'A record must identify its author');
+    if (held) {
+      return held;
+    }
+  }
+
+  if (record.type === 'patient' && record.nin && !/^\d{11}$/.test(record.nin)) {
+    return refuse('validation', 'NIN must contain 11 digits');
+  }
+
+  if (
+    record.type === 'patient' &&
+    record.identityStatus === 'identified' &&
+    record.provisionalReason
+  ) {
+    return refuse('validation', 'Identification history must follow a provisional registration');
+  }
+
+  if (record.facilityId !== identity.facilityId) {
+    return refuse('identity', `facilityId ${record.facilityId} is not this device's facility`);
+  }
+
+  if ('dispenseEntryId' in record && record.dispenseEntryId) {
+    return (await pharmacyCompanionMatches(tx, record))
+      ? undefined
+      : refuse('validation', 'This stock or billing entry must match its accepted pharmacy supply');
+  }
+
+  if (record.deviceId !== identity.deviceId) {
+    return refuse('identity', `deviceId ${record.deviceId} is not this device`);
+  }
+
+  if (!record.createdBy) {
+    return refuse('identity', 'A record must identify its author');
+  }
 
   if ('patientId' in record && typeof record.patientId === 'string' && table !== 'patient') {
     const held = await heldForPatient(tx, identity, record.patientId);
-    if (held) return held;
+
+    if (held) {
+      return held;
+    }
   }
 
-  if (table === 'staff') await tx`SELECT id FROM facilities WHERE id = ${identity.facilityId} FOR UPDATE`;
+  if (table === 'staff') {
+    await tx`SELECT id FROM facilities WHERE id = ${identity.facilityId} FOR UPDATE`;
+  }
+
   if (record.type === 'register_definition') {
     await tx`SELECT id FROM facilities WHERE id = ${identity.facilityId} FOR UPDATE`;
-    const rows = await tx`SELECT id FROM register_definitions WHERE facility_id = ${identity.facilityId} AND register_id = ${record.registerId}`;
-    const versions = await Promise.all(rows.map((row) => findRecord<RegisterDefinition>(tx, 'register_definition', row.id as string)));
+
+    const rows =
+      await tx`SELECT id FROM register_definitions WHERE facility_id = ${identity.facilityId} AND register_id = ${record.registerId}`;
+
+    const versions = await Promise.all(
+      rows.map((row) =>
+        findRecord<RegisterDefinition>(tx, 'register_definition', row.id as string),
+      ),
+    );
+
     const history = versions.filter((version): version is RegisterDefinition => Boolean(version));
-    const nextVersion = history.reduce((highest, version) => Math.max(highest, version.version), 0) + 1;
-    if (record.version !== nextVersion) return refuse('conflict', 'This register has a newer or missing configuration version. Review the current register before saving again');
+
+    const nextVersion =
+      history.reduce((highest, version) => Math.max(highest, version.version), 0) + 1;
+
+    if (record.version !== nextVersion) {
+      return refuse(
+        'conflict',
+        'This register has a newer or missing configuration version. Review the current register before saving again',
+      );
+    }
+
     const issues = registerDefinitionIssues(record, history);
-    if (issues.length) return refuse('validation', issues.join(' '));
+
+    if (issues.length) {
+      return refuse('validation', issues.join(' '));
+    }
   }
+
   const staff = await findStaffInFacility(tx, identity.facilityId, record.createdBy);
-  if(record.type==='stock_item'){const issue=await stockPriceIssue(tx,record);if(issue)return refuse('validation',issue);}
-  if (staff === undefined) return refuse('identity', describeDenial({ kind: 'not_member', staffId: record.createdBy }));
-  const historical = (record.type === 'encounter_entry' || record.type === 'clinical_event' || record.type === 'ward_care_event') && await historicalReviewValid(tx, record, identity.deviceId, uploadedAt);
-  if (record.type === 'encounter' || record.type === 'encounter_entry' || record.type === 'ward_care_event') {
-    const issues = await wardUploadIssues(tx, record, historical, staffPermissions(staff));
-    if (issues.length) return refuse('conflict', issues.join('; '));
+
+  if (record.type === 'stock_item') {
+    const issue = await stockPriceIssue(tx, record);
+
+    if (issue) {
+      return refuse('validation', issue);
+    }
   }
+
+  if (staff === undefined) {
+    return refuse('identity', describeDenial({ kind: 'not_member', staffId: record.createdBy }));
+  }
+
+  const historical =
+    (record.type === 'encounter_entry' ||
+      record.type === 'clinical_event' ||
+      record.type === 'ward_care_event') &&
+    (await historicalReviewValid(tx, record, identity.deviceId, uploadedAt));
+
+  if (
+    record.type === 'encounter' ||
+    record.type === 'encounter_entry' ||
+    record.type === 'ward_care_event'
+  ) {
+    const issues = await wardUploadIssues(tx, record, historical, staffPermissions(staff));
+
+    if (issues.length) {
+      return refuse('conflict', issues.join('; '));
+    }
+  }
+
   if (record.type === 'inpatient_event') {
     const issues = await dischargeReadinessIssues(tx, record);
-    if (issues.length) return refuse('validation', issues.join('; '));
+
+    if (issues.length) {
+      return refuse('validation', issues.join('; '));
+    }
   }
-  const permission = record.type === 'payment' ? paymentPermission(record)
-    : record.type === 'coverage_election' ? (record.kind === 'self_pay' ? 'coverage:elect_self_pay' : 'cover:record')
-    : PUT_PERMISSION[table];
-  if (!staff) return refuse('identity', describeDenial({ kind: 'not_member', staffId: record.createdBy }));
-  if (!staff.active && !historical) return refuse('authorization', describeDenial({ kind: 'deactivated', staffId: record.createdBy }));
+
+  const permissionFor = () => {
+    if (record.type === 'payment') {
+      return paymentPermission(record);
+    }
+
+    if (record.type === 'coverage_election') {
+      return record.kind === 'self_pay' ? 'coverage:elect_self_pay' : 'cover:record';
+    }
+
+    return PUT_PERMISSION[table];
+  };
+
+  const permission = permissionFor();
+
+  if (!staff) {
+    return refuse('identity', describeDenial({ kind: 'not_member', staffId: record.createdBy }));
+  }
+
+  if (!staff.active && !historical) {
+    return refuse(
+      'authorization',
+      describeDenial({ kind: 'deactivated', staffId: record.createdBy }),
+    );
+  }
+
   if (permission && !historical) {
     const denial = staffDenial(staff, record.createdBy, permission);
-    if (denial) return refuse('authorization', describeDenial(denial));
+
+    if (denial) {
+      return refuse('authorization', describeDenial(denial));
+    }
+
     if (isStale([permission], record.createdOn, uploadedAt)) {
-      return refuse('authorization', `${permission} was performed more than 24 hours before reaching the server`);
+      return refuse(
+        'authorization',
+        `${permission} was performed more than 24 hours before reaching the server`,
+      );
     }
   }
 
   if (record.type === 'staff') {
     const denial = staffDenial(staff, record.createdBy, 'staff:permission');
-    if (denial) return refuse('authorization', describeDenial(denial));
+
+    if (denial) {
+      return refuse('authorization', describeDenial(denial));
+    }
   }
 
   if (record.type === 'inpatient_event' || record.type === 'bed_ready_event') {
-    if (!rolesFor(staff).includes(record.actorRole)) return refuse('authorization', 'The recorded role is not held by this staff member');
+    if (!rolesFor(staff).includes(record.actorRole)) {
+      return refuse('authorization', 'The recorded role is not held by this staff member');
+    }
+
     const issues = await inpatientUploadIssues(tx, record);
-    if (issues.length) return refuse('conflict', issues.join('; '));
-  }
-  if(record.type==='library_document'||record.type==='visit_document'){
-    if(!rolesFor(staff).includes(record.actorRole))return refuse('authorization','The document role must be held by its author');
-    const issues=await clinicalDocumentIssues(tx,record);if(issues.length)return refuse('conflict',issues.join('; '));
+
+    if (issues.length) {
+      return refuse('conflict', issues.join('; '));
+    }
   }
 
-  if (record.type === 'appointment' && ((record.activity?.length ?? 0) > 0 || (record.attendance && record.attendance !== 'booked'))) return refuse('validation', 'Create a booking before recording attendance changes');
-  if ((record.type === 'appointment' || record.type === 'encounter') && record.offeringId) {
-    const [offerings, definitions] = await Promise.all([recordsInFacility(tx, identity.facilityId, 'service_offering'), recordsInFacility(tx, identity.facilityId, 'service_definition')]);
-    const issues = careServiceVisitIssues(record, { offerings, definitions }, { recorded: true });
-    if (issues.length) return refuse('validation', issues.join('; '));
+  if (record.type === 'library_document' || record.type === 'visit_document') {
+    if (!rolesFor(staff).includes(record.actorRole)) {
+      return refuse('authorization', 'The document role must be held by its author');
+    }
+
+    const issues = await clinicalDocumentIssues(tx, record);
+
+    if (issues.length) {
+      return refuse('conflict', issues.join('; '));
+    }
   }
+
+  if (
+    record.type === 'appointment' &&
+    ((record.activity?.length ?? 0) > 0 || (record.attendance && record.attendance !== 'booked'))
+  ) {
+    return refuse('validation', 'Create a booking before recording attendance changes');
+  }
+
+  if ((record.type === 'appointment' || record.type === 'encounter') && record.offeringId) {
+    const [offerings, definitions] = await Promise.all([
+      recordsInFacility(tx, identity.facilityId, 'service_offering'),
+      recordsInFacility(tx, identity.facilityId, 'service_definition'),
+    ]);
+
+    const issues = careServiceVisitIssues(record, { offerings, definitions }, { recorded: true });
+
+    if (issues.length) {
+      return refuse('validation', issues.join('; '));
+    }
+  }
+
   if (record.type === 'encounter' && record.appointmentId) {
     // Use the same lock as attendance changes so cancellation cannot race a visit.
     await tx`SELECT id FROM appointments WHERE facility_id = ${identity.facilityId} AND id = ${record.appointmentId} FOR UPDATE`;
     const booking = await findRecord<Appointment>(tx, 'appointment', record.appointmentId);
-    if (!booking || booking.facilityId !== record.facilityId || booking.patientId !== record.patientId) return refuse('validation', 'The booking must belong to this visit patient and facility');
-    if (booking.attendance === 'cancelled' || booking.attendance === 'no_show') return refuse('conflict', 'Reopen this inactive booking before starting its visit');
-    const [visit] = await tx`SELECT id FROM encounters WHERE facility_id = ${identity.facilityId} AND appointment_id = ${record.appointmentId} LIMIT 1`;
-    if (visit) return refuse('conflict', 'This booking already has a visit. Continue or review that visit');
+
+    if (
+      !booking ||
+      booking.facilityId !== record.facilityId ||
+      booking.patientId !== record.patientId
+    ) {
+      return refuse('validation', 'The booking must belong to this visit patient and facility');
+    }
+
+    if (booking.attendance === 'cancelled' || booking.attendance === 'no_show') {
+      return refuse('conflict', 'Reopen this inactive booking before starting its visit');
+    }
+
+    const [visit] =
+      await tx`SELECT id FROM encounters WHERE facility_id = ${identity.facilityId} AND appointment_id = ${record.appointmentId} LIMIT 1`;
+
+    if (visit) {
+      return refuse('conflict', 'This booking already has a visit. Continue or review that visit');
+    }
   }
 
   if (record.type === 'referral') {
-    if (record.fromFacilityId !== identity.facilityId || record.toFacilityId === identity.facilityId || record.status !== 'sent' || record.deliveryStatus !== 'alert_pending') return refuse('validation', 'A new referral must originate here and await delivery');
+    if (
+      record.fromFacilityId !== identity.facilityId ||
+      record.toFacilityId === identity.facilityId ||
+      record.status !== 'sent' ||
+      record.deliveryStatus !== 'alert_pending'
+    ) {
+      return refuse('validation', 'A new referral must originate here and await delivery');
+    }
+
     const [destination] = await tx`SELECT id FROM facilities WHERE id=${record.toFacilityId}`;
-    if (!destination) return refuse('validation', 'The receiving facility does not exist');
+
+    if (!destination) {
+      return refuse('validation', 'The receiving facility does not exist');
+    }
   }
-  if (record.type === 'charge') { const issues = [...await chargeOrderIssues(tx, record), ...await chargePriceIssues(tx, record)]; if (issues.length) return refuse('validation', issues.join('. ')); }
+
+  if (record.type === 'charge') {
+    const issues = [
+      ...(await chargeOrderIssues(tx, record)),
+      ...(await chargePriceIssues(tx, record)),
+    ];
+
+    if (issues.length) {
+      return refuse('validation', issues.join('. '));
+    }
+  }
+
   if (record.type === 'encounter_entry') {
     if (record.step === 'dispense' && record.pharmacyVersion !== 1) {
-      const [tracked] = await tx`SELECT id FROM encounter_entries WHERE facility_id=${record.facilityId} AND encounter_id=${record.encounterId} AND pharmacy_version=1 LIMIT 1`;
-      if (tracked) return refuse('conflict', 'This prescription uses quantity-based dispensing. Upgrade and open Pharmacy before another supply');
+      const [tracked] =
+        await tx`SELECT id FROM encounter_entries WHERE facility_id=${record.facilityId} AND encounter_id=${record.encounterId} AND pharmacy_version=1 LIMIT 1`;
+
+      if (tracked) {
+        return refuse(
+          'conflict',
+          'This prescription uses quantity-based dispensing. Upgrade and open Pharmacy before another supply',
+        );
+      }
     }
+
     // Serialise repeat saves, closure and corrections for the same encounter.
     await tx`SELECT id FROM encounters WHERE facility_id = ${identity.facilityId} AND id = ${record.encounterId} FOR UPDATE`;
+
     // The stamp names the role the server knows, never one the device asserts (PRD §9.8.5).
     if (!historical && !rolesFor(staff).includes(record.actorRole)) {
-      return refuse('authorization', `saved as ${record.actorRole}, but ${record.createdBy} is ${staff.role}`);
+      return refuse(
+        'authorization',
+        `saved as ${record.actorRole}, but ${record.createdBy} is ${staff.role}`,
+      );
     }
+
     const careIssues = await careWorkflowIssues(tx, record);
-    if (careIssues.length) return refuse('validation', careIssues.join('. '));
-    const closed = await closedEncounterRefusal(tx, record);
-    if (closed) return closed;
-    if (record.step !== 'amendment' && record.pharmacyVersion !== 1 && !(REPEATABLE_STEPS as readonly string[]).includes(record.step)) {
-      const [saved] = await tx`SELECT id FROM encounter_entries WHERE facility_id = ${record.facilityId} AND encounter_id = ${record.encounterId} AND step = ${record.step} LIMIT 1`;
-      if (saved) return refuse('conflict', 'This section is already saved. Add an amendment instead');
+
+    if (careIssues.length) {
+      return refuse('validation', careIssues.join('. '));
     }
+
+    const closed = await closedEncounterRefusal(tx, record);
+
+    if (closed) {
+      return closed;
+    }
+
+    if (
+      record.step !== 'amendment' &&
+      record.pharmacyVersion !== 1 &&
+      !(REPEATABLE_STEPS as readonly string[]).includes(record.step)
+    ) {
+      const [saved] =
+        await tx`SELECT id FROM encounter_entries WHERE facility_id = ${record.facilityId} AND encounter_id = ${record.encounterId} AND step = ${record.step} LIMIT 1`;
+
+      if (saved) {
+        return refuse('conflict', 'This section is already saved. Add an amendment instead');
+      }
+    }
+
     if (record.step === 'amendment') {
       const target = await findRecord<EncounterEntry>(tx, 'encounter_entry', record.amends!);
-      if (!target || target.facilityId !== record.facilityId || target.encounterId !== record.encounterId || target.patientId !== record.patientId || target.step === 'amendment') return refuse('validation', 'An amendment must name an original entry of this encounter and patient');
+
+      if (
+        !target ||
+        target.facilityId !== record.facilityId ||
+        target.encounterId !== record.encounterId ||
+        target.patientId !== record.patientId ||
+        target.step === 'amendment'
+      ) {
+        return refuse(
+          'validation',
+          'An amendment must name an original entry of this encounter and patient',
+        );
+      }
+
       if (record.values.correctedValues) {
-        if (!['vitals', 'complaint', 'lab_results', 'diagnosis', 'prescription', 'injection_order', 'injection'].includes(target.step)) return refuse('validation', 'This step supports explanatory amendments only');
-        const corrected = ENCOUNTER_STEP_VALUES[target.step].safeParse(record.values.correctedValues);
-        if (!corrected.success) return refuse('validation', `Corrected values do not match ${target.step}`);
-        const [latest] = await tx<{ id: string; values: Record<string, unknown> }[]>`SELECT e.id, e."values" FROM encounter_entries e WHERE e.facility_id = ${record.facilityId} AND e.amends = ${target.id} AND e."values" ? 'correctedValues' AND NOT EXISTS (SELECT 1 FROM encounter_entries n WHERE n.amends = e.amends AND n."values"->>'previousAmendmentId' = e.id) LIMIT 1`;
-        if ((latest?.id ?? undefined) !== record.values.previousAmendmentId) return refuse('conflict', 'This entry has a newer correction. Review it before correcting again');
+        if (
+          ![
+            'vitals',
+            'complaint',
+            'lab_results',
+            'diagnosis',
+            'prescription',
+            'injection_order',
+            'injection',
+          ].includes(target.step)
+        ) {
+          return refuse('validation', 'This step supports explanatory amendments only');
+        }
+
+        const corrected = ENCOUNTER_STEP_VALUES[target.step].safeParse(
+          record.values.correctedValues,
+        );
+
+        if (!corrected.success) {
+          return refuse('validation', `Corrected values do not match ${target.step}`);
+        }
+
+        const [latest] = await tx<
+          { id: string; values: Record<string, unknown> }[]
+        >`SELECT e.id, e."values" FROM encounter_entries e WHERE e.facility_id = ${record.facilityId} AND e.amends = ${target.id} AND e."values" ? 'correctedValues' AND NOT EXISTS (SELECT 1 FROM encounter_entries n WHERE n.amends = e.amends AND n."values"->>'previousAmendmentId' = e.id) LIMIT 1`;
+
+        if ((latest?.id ?? undefined) !== record.values.previousAmendmentId) {
+          return refuse(
+            'conflict',
+            'This entry has a newer correction. Review it before correcting again',
+          );
+        }
+
         if (target.step === 'prescription' || target.step === 'injection_order') {
           const fulfilledStep = target.step === 'prescription' ? 'dispense' : 'injection';
-          const [fulfilled] = await tx`SELECT id FROM encounter_entries WHERE facility_id=${record.facilityId} AND encounter_id=${record.encounterId} AND step=${fulfilledStep} LIMIT 1`;
-          if (fulfilled) return refuse('validation', 'A fulfilled treatment order cannot be replaced by a correction');
+
+          const [fulfilled] =
+            await tx`SELECT id FROM encounter_entries WHERE facility_id=${record.facilityId} AND encounter_id=${record.encounterId} AND step=${fulfilledStep} LIMIT 1`;
+
+          if (fulfilled) {
+            return refuse(
+              'validation',
+              'A fulfilled treatment order cannot be replaced by a correction',
+            );
+          }
         }
+
         if (target.step === 'lab_results' && target.workflowVersion === 1) {
-          const before = ENCOUNTER_STEP_VALUES.lab_results.parse(target.values).results.map((r) => r.orderItemId ?? r.test).sort();
-          const after = ENCOUNTER_STEP_VALUES.lab_results.parse(corrected.data).results.map((r) => r.orderItemId ?? r.test).sort();
-          if (!isDeepStrictEqual(before, after)) return refuse('validation', 'A result correction cannot change its ordered investigation identity');
+          const before = ENCOUNTER_STEP_VALUES.lab_results
+            .parse(target.values)
+            .results.map((r) => r.orderItemId ?? r.test)
+            .sort();
+
+          const after = ENCOUNTER_STEP_VALUES.lab_results
+            .parse(corrected.data)
+            .results.map((r) => r.orderItemId ?? r.test)
+            .sort();
+
+          if (!isDeepStrictEqual(before, after)) {
+            return refuse(
+              'validation',
+              'A result correction cannot change its ordered investigation identity',
+            );
+          }
         }
+
         if (record.labReport) {
-          if (target.step !== 'lab_results') return refuse('validation', 'A structured result corrects only a lab result');
-          const reportIssues = await labReportUploadIssues(tx, record, record.labReport, ENCOUNTER_STEP_VALUES.lab_results.parse(corrected.data).results);
-          if (reportIssues.length) return refuse('validation', reportIssues.join('. '));
+          if (target.step !== 'lab_results') {
+            return refuse('validation', 'A structured result corrects only a lab result');
+          }
+
+          const reportIssues = await labReportUploadIssues(
+            tx,
+            record,
+            record.labReport,
+            ENCOUNTER_STEP_VALUES.lab_results.parse(corrected.data).results,
+          );
+
+          if (reportIssues.length) {
+            return refuse('validation', reportIssues.join('. '));
+          }
         }
+
         if (target.step === 'diagnosis') {
           const values = corrected.data as Record<string, unknown>;
-          if (Boolean(values.admit) !== Boolean(target.values.admit) || Boolean(values.giveInjection) !== Boolean(target.values.giveInjection)) return refuse('validation', 'Correcting a diagnosis cannot change the saved disposition');
-          const [dispensed] = await tx`SELECT id FROM encounter_entries WHERE facility_id = ${record.facilityId} AND encounter_id = ${record.encounterId} AND step = 'dispense' LIMIT 1`;
-          const current = ENCOUNTER_STEP_VALUES.diagnosis.parse(latest?.values.correctedValues ?? target.values);
-          if (dispensed && !isDeepStrictEqual(values.prescription, current.prescription)) return refuse('validation', 'Medication has been dispensed. Record the medication change in the longitudinal medication list');
+
+          if (
+            Boolean(values.admit) !== Boolean(target.values.admit) ||
+            Boolean(values.giveInjection) !== Boolean(target.values.giveInjection)
+          ) {
+            return refuse(
+              'validation',
+              'Correcting a diagnosis cannot change the saved disposition',
+            );
+          }
+
+          const [dispensed] =
+            await tx`SELECT id FROM encounter_entries WHERE facility_id = ${record.facilityId} AND encounter_id = ${record.encounterId} AND step = 'dispense' LIMIT 1`;
+
+          const current = ENCOUNTER_STEP_VALUES.diagnosis.parse(
+            latest?.values.correctedValues ?? target.values,
+          );
+
+          if (dispensed && !isDeepStrictEqual(values.prescription, current.prescription)) {
+            return refuse(
+              'validation',
+              'Medication has been dispensed. Record the medication change in the longitudinal medication list',
+            );
+          }
         }
       }
     }
   }
 
   if (record.type === 'clinical_event') {
-    if (!historical && !rolesFor(staff).includes(record.actorRole)) return refuse('authorization', 'The recorded clinical role is not held by this staff member');
+    if (!historical && !rolesFor(staff).includes(record.actorRole)) {
+      return refuse('authorization', 'The recorded clinical role is not held by this staff member');
+    }
+
     await tx`SELECT id FROM patients WHERE facility_id = ${identity.facilityId} AND id = ${record.patientId} FOR UPDATE`;
-    const versions = await tx<{ id: string; patient_id: string; kind: string }[]>`SELECT id, patient_id, kind FROM clinical_events WHERE facility_id = ${record.facilityId} AND record_id = ${record.recordId}`;
-    if (!record.previousId && versions.length) return refuse('conflict', 'This clinical record already exists. Review its current version');
+
+    const versions = await tx<
+      { id: string; patient_id: string; kind: string }[]
+    >`SELECT id, patient_id, kind FROM clinical_events WHERE facility_id = ${record.facilityId} AND record_id = ${record.recordId}`;
+
+    if (!record.previousId && versions.length) {
+      return refuse('conflict', 'This clinical record already exists. Review its current version');
+    }
+
     if (record.previousId) {
       const previous = versions.find((version) => version.id === record.previousId);
-      if (!previous || previous.patient_id !== record.patientId || previous.kind !== record.kind) return refuse('validation', 'A clinical revision must continue the same patient, kind and record');
-      const [successor] = await tx`SELECT id FROM clinical_events WHERE previous_id = ${record.previousId} LIMIT 1`;
-      if (successor) return refuse('conflict', 'This clinical record has a newer version. Review it before saving again');
+
+      if (!previous || previous.patient_id !== record.patientId || previous.kind !== record.kind) {
+        return refuse(
+          'validation',
+          'A clinical revision must continue the same patient, kind and record',
+        );
+      }
+
+      const [successor] =
+        await tx`SELECT id FROM clinical_events WHERE previous_id = ${record.previousId} LIMIT 1`;
+
+      if (successor) {
+        return refuse(
+          'conflict',
+          'This clinical record has a newer version. Review it before saving again',
+        );
+      }
     }
+
     const problemId = record.values.problemId;
+
     if (problemId) {
-      const [problem] = await tx`SELECT id FROM clinical_events WHERE facility_id = ${record.facilityId} AND patient_id = ${record.patientId} AND record_id = ${String(problemId)} AND kind = 'problem' LIMIT 1`;
-      if (!problem) return refuse('validation', 'The linked problem must belong to this patient');
+      const [problem] =
+        await tx`SELECT id FROM clinical_events WHERE facility_id = ${record.facilityId} AND patient_id = ${record.patientId} AND record_id = ${String(problemId)} AND kind = 'problem' LIMIT 1`;
+
+      if (!problem) {
+        return refuse('validation', 'The linked problem must belong to this patient');
+      }
     }
   }
 
   if (record.type === 'register_entry') {
-    const definition = await findRecord<RegisterDefinition>(tx, 'register_definition', `${record.registerId}:v${record.registerVersion}`);
-    if (!definition || definition.facilityId !== record.facilityId || definition.status !== 'published') return refuse('validation', 'A register entry must name a published version in this facility');
+    const definition = await findRecord<RegisterDefinition>(
+      tx,
+      'register_definition',
+      `${record.registerId}:v${record.registerVersion}`,
+    );
+
+    if (
+      !definition ||
+      definition.facilityId !== record.facilityId ||
+      definition.status !== 'published'
+    ) {
+      return refuse(
+        'validation',
+        'A register entry must name a published version in this facility',
+      );
+    }
+
     const issues = validateRegisterEntry(definition.fields, record.values);
-    const known = new Set(definition.fields.filter((field) => field.type !== 'section').map((field) => field.id));
-    if (Object.keys(record.values).some((field) => !known.has(field))) issues.push('The entry includes a field outside its saved register version');
+
+    const known = new Set(
+      definition.fields.filter((field) => field.type !== 'section').map((field) => field.id),
+    );
+
+    if (Object.keys(record.values).some((field) => !known.has(field))) {
+      issues.push('The entry includes a field outside its saved register version');
+    }
+
     issues.push(...registerEntryLinkIssues(definition, record));
-    if (issues.length) return refuse('validation', issues.join('; '));
+
+    if (issues.length) {
+      return refuse('validation', issues.join('; '));
+    }
+
     if (record.encounterId) {
       const encounter = await findRecord<Encounter>(tx, 'encounter', record.encounterId);
-      if (!encounter || encounter.facilityId !== record.facilityId || encounter.patientId !== record.patientId) return refuse('validation', 'A register entry must name a visit belonging to the same patient and facility');
+
+      if (
+        !encounter ||
+        encounter.facilityId !== record.facilityId ||
+        encounter.patientId !== record.patientId
+      ) {
+        return refuse(
+          'validation',
+          'A register entry must name a visit belonging to the same patient and facility',
+        );
+      }
     }
   }
 
   if (record.type === 'handoff' && record.encounterId) {
     const encounter = await findRecord<Encounter>(tx, 'encounter', record.encounterId);
-    if (!encounter || encounter.facilityId !== record.facilityId || encounter.patientId !== record.patientId) return refuse('validation', 'A handoff must name a visit belonging to the same patient and facility');
+
+    if (
+      !encounter ||
+      encounter.facilityId !== record.facilityId ||
+      encounter.patientId !== record.patientId
+    ) {
+      return refuse(
+        'validation',
+        'A handoff must name a visit belonging to the same patient and facility',
+      );
+    }
   }
 
   if (record.type === 'stock_movement') {
     const issue = stockMovementIssue(record);
-    if (issue) return refuse('validation', issue);
-    const [item] = await tx`SELECT id FROM stock_items WHERE facility_id = ${record.facilityId} AND id = ${record.itemId} FOR UPDATE`;
-    if (!item) return refuse('validation', 'The stock item must belong to this facility');
+
+    if (issue) {
+      return refuse('validation', issue);
+    }
+
+    const [item] =
+      await tx`SELECT id FROM stock_items WHERE facility_id = ${record.facilityId} AND id = ${record.itemId} FOR UPDATE`;
+
+    if (!item) {
+      return refuse('validation', 'The stock item must belong to this facility');
+    }
     // Preserve real movements reported by offline devices even if their combined
     // balance is negative. The inventory flags that discrepancy for a physical count.
   }
 
   if (record.type === 'payment') {
     const refusal = await paymentRefusal(tx, record);
-    if (refusal) return refusal;
+
+    if (refusal) {
+      return refusal;
+    }
   }
 
   if (record.type === 'service_completion') {
     const issues = await completionUploadIssues(tx, record);
-    if (issues.length) return refuse('validation', issues.join('; '));
+
+    if (issues.length) {
+      return refuse('validation', issues.join('; '));
+    }
   }
 
-  if (record.type === 'patient_cover' || record.type === 'cover_check' || record.type === 'coverage_election') {
+  if (
+    record.type === 'patient_cover' ||
+    record.type === 'cover_check' ||
+    record.type === 'coverage_election'
+  ) {
     const issues = await insuranceUploadIssues(tx, record);
-    if (issues.length) return refuse('validation', issues.join('; '));
+
+    if (issues.length) {
+      return refuse('validation', issues.join('; '));
+    }
   }
 
   if (record.type === 'patient_contact') {
     const issues = await contactUploadIssues(tx, record);
-    if (issues.length) return refuse('validation', issues.join('; '));
+
+    if (issues.length) {
+      return refuse('validation', issues.join('; '));
+    }
   }
 
   if (record.type === 'billing_adjustment') {
     const [charge] = await tx<{ patient_id: string }[]>`SELECT patient_id FROM charges
       WHERE facility_id = ${record.facilityId} AND id = ${record.chargeId} FOR UPDATE`;
-    if (!charge || charge.patient_id !== record.patientId) return refuse('validation', 'The adjustment must name this patient\'s charge');
-    if (record.amountMinor > await availableOnCharge(tx, record.facilityId, record.chargeId)) {
-      return refuse('conflict', 'The reduction exceeds the unpaid balance; refresh this patient\'s account');
+
+    if (!charge || charge.patient_id !== record.patientId) {
+      return refuse('validation', "The adjustment must name this patient's charge");
+    }
+
+    if (record.amountMinor > (await availableOnCharge(tx, record.facilityId, record.chargeId))) {
+      return refuse(
+        'conflict',
+        "The reduction exceeds the unpaid balance; refresh this patient's account",
+      );
     }
   }
 
-  if (record.type === 'encounter_entry' || record.type === 'clinical_event' || record.type === 'ward_care_event') {
+  if (
+    record.type === 'encounter_entry' ||
+    record.type === 'clinical_event' ||
+    record.type === 'ward_care_event'
+  ) {
     const denial = await clinicalAuthorityRefusal(tx, identity, record, uploadedAt);
-    if (denial) return denial;
+
+    if (denial) {
+      return denial;
+    }
   }
+
   if (record.type === 'appointment') {
     const denial = await allocationRefusal(tx, record, uploadedAt);
-    if (denial) return denial;
+
+    if (denial) {
+      return denial;
+    }
   }
+
   if (record.type === 'audit_event') {
     const denial = await clinicalAttestationRefusal(tx, identity, record, uploadedAt);
-    if (denial) return denial;
+
+    if (denial) {
+      return denial;
+    }
   }
 
   // Server clock on audit events the device recorded offline.
-  const allocation=record.type==='service_charge_allocation'?await prepareServiceAllocation(tx,record,uploadedAt,staffPermissions(staff).includes('payment:waive')):undefined;
-  if(allocation?.issue)return refuse('conflict',allocation.issue);
-  const toWrite = allocation?.record ?? (table === 'audit_event' ? { ...record, receivedOn: new Date(uploadedAt).toISOString() } : record);
-  const pharmacy = record.type === 'encounter_entry' && record.pharmacyVersion === 1 ? await pharmacyUpload(tx, record) : undefined;
-  if (pharmacy?.issues.length) return refuse('conflict', pharmacy.issues.join('; '));
+  const allocation =
+    record.type === 'service_charge_allocation'
+      ? await prepareServiceAllocation(
+          tx,
+          record,
+          uploadedAt,
+          staffPermissions(staff).includes('payment:waive'),
+        )
+      : undefined;
+
+  if (allocation?.issue) {
+    return refuse('conflict', allocation.issue);
+  }
+
+  const toWrite =
+    allocation?.record ??
+    (table === 'audit_event'
+      ? { ...record, receivedOn: new Date(uploadedAt).toISOString() }
+      : record);
+
+  const pharmacy =
+    record.type === 'encounter_entry' && record.pharmacyVersion === 1
+      ? await pharmacyUpload(tx, record)
+      : undefined;
+
+  if (pharmacy?.issues.length) {
+    return refuse('conflict', pharmacy.issues.join('; '));
+  }
+
   // Dispensing authority covers only companions derived from this exact validated
   // supply. It does not grant manual stock adjustments, charges or waivers.
-  if (pharmacy && !historical && !staffPermissions(staff).includes('clinical:dispense')) return refuse('authorization', 'This pharmacy action requires dispensing authority');
+  if (pharmacy && !historical && !staffPermissions(staff).includes('clinical:dispense')) {
+    return refuse('authorization', 'This pharmacy action requires dispensing authority');
+  }
+
   const failure = await attempt(tx, async (sp) => {
     await insertRecord(sp, table, toWrite);
-    if(allocation?.credit)await insertRecord(sp,'billing_adjustment',allocation.credit);
-    for (const child of pharmacy?.effects ?? []) await insertRecord(sp, child.type, child);
+
+    if (allocation?.credit) {
+      await insertRecord(sp, 'billing_adjustment', allocation.credit);
+    }
+
+    for (const child of pharmacy?.effects ?? []) {
+      await insertRecord(sp, child.type, child);
+    }
   });
-  if (!failure && record.type === 'referral') await routeReferral(tx, record);
-  if (!failure && record.type === 'payment') await flagInsuredOverpayment(tx, record);
-  if (!failure && record.type === 'appointment') await recordReservation(tx, record, uploadedAt);
-  if (!failure && historical && (record.type === 'encounter_entry' || record.type === 'clinical_event' || record.type === 'ward_care_event')) await completeHistoricalReview(tx, record, identity.deviceId, uploadedAt);
-  if (!failure && table === 'staff') await recordAuditEvent(tx, {
-    facilityId: identity.facilityId, deviceId: identity.deviceId, actorStaffId: record.createdBy,
-    action: 'create', entityType: 'staff', entityId: record.id,
-    metadata: { columns: 'fullName,role,additionalRoles,additionalPermissions,permission' },
-  });
+
+  if (!failure && record.type === 'referral') {
+    await routeReferral(tx, record);
+  }
+
+  if (!failure && record.type === 'payment') {
+    await flagInsuredOverpayment(tx, record);
+  }
+
+  if (!failure && record.type === 'appointment') {
+    await recordReservation(tx, record, uploadedAt);
+  }
+
+  if (
+    !failure &&
+    historical &&
+    (record.type === 'encounter_entry' ||
+      record.type === 'clinical_event' ||
+      record.type === 'ward_care_event')
+  ) {
+    await completeHistoricalReview(tx, record, identity.deviceId, uploadedAt);
+  }
+
+  if (!failure && table === 'staff') {
+    await recordAuditEvent(tx, {
+      facilityId: identity.facilityId,
+      deviceId: identity.deviceId,
+      actorStaffId: record.createdBy,
+      action: 'create',
+      entityType: 'staff',
+      entityId: record.id,
+      metadata: { columns: 'fullName,role,additionalRoles,additionalPermissions,permission' },
+    });
+  }
+
   return failure;
 };
 
-const evaluatePatch = async ({ tx, identity, uploadedAt }: Context, mutation: UploadMutation): Promise<Refusal | undefined> => {
+const evaluatePatch = async (
+  { tx, identity, uploadedAt }: Context,
+  mutation: UploadMutation,
+): Promise<Refusal | undefined> => {
   const table = mutation.table;
-  if (APPEND_ONLY.includes(table)) return refuse('validation', `${table} records are append-only`);
-  if (IMMUTABLE_PER_VERSION.includes(table)) return refuse('validation', `${table} records are immutable; publish a new version`);
-  if (SERVER_WRITTEN.includes(table) && !DEVICE_MARKABLE.includes(table)) return refuse('authorization', `${table} records are written by the server`);
+
+  if (APPEND_ONLY.includes(table)) {
+    return refuse('validation', `${table} records are append-only`);
+  }
+
+  if (IMMUTABLE_PER_VERSION.includes(table)) {
+    return refuse('validation', `${table} records are immutable; publish a new version`);
+  }
+
+  if (SERVER_WRITTEN.includes(table) && !DEVICE_MARKABLE.includes(table)) {
+    return refuse('authorization', `${table} records are written by the server`);
+  }
 
   const changes: Record<string, unknown> = { ...mutation.data, id: mutation.id };
   const owned = SERVER_OWNED_COLUMNS[table] ?? [];
   const offending = owned.find((column) => changes[column] !== undefined);
-  if (offending) return refuse('validation', `${table}.${offending} is set by the server`);
+
+  if (offending) {
+    return refuse('validation', `${table}.${offending} is set by the server`);
+  }
 
   const updatedBy = changes.updatedBy;
-  if (typeof updatedBy !== 'string' || !updatedBy) return refuse('validation', 'a change must say who made it (updatedBy)');
 
-  if (table === 'staff') await tx`SELECT id FROM facilities WHERE id = ${identity.facilityId} FOR UPDATE`;
-  if (table === 'stock_item') await tx`SELECT id FROM stock_items WHERE facility_id = ${identity.facilityId} AND id = ${mutation.id} FOR UPDATE`;
-  if (table === 'handoff') await tx`SELECT id FROM handoffs WHERE facility_id = ${identity.facilityId} AND id = ${mutation.id} FOR UPDATE`;
-  if (table === 'appointment') await tx`SELECT id FROM appointments WHERE facility_id = ${identity.facilityId} AND id = ${mutation.id} FOR UPDATE`;
+  if (typeof updatedBy !== 'string' || !updatedBy) {
+    return refuse('validation', 'a change must say who made it (updatedBy)');
+  }
+
+  if (table === 'staff') {
+    await tx`SELECT id FROM facilities WHERE id = ${identity.facilityId} FOR UPDATE`;
+  }
+
+  if (table === 'stock_item') {
+    await tx`SELECT id FROM stock_items WHERE facility_id = ${identity.facilityId} AND id = ${mutation.id} FOR UPDATE`;
+  }
+
+  if (table === 'handoff') {
+    await tx`SELECT id FROM handoffs WHERE facility_id = ${identity.facilityId} AND id = ${mutation.id} FOR UPDATE`;
+  }
+
+  if (table === 'appointment') {
+    await tx`SELECT id FROM appointments WHERE facility_id = ${identity.facilityId} AND id = ${mutation.id} FOR UPDATE`;
+  }
+
   const current = await findRecord<AnyDocument>(tx, table, mutation.id);
-  if (!current) return refuse('validation', `no ${table} ${mutation.id} exists to change`);
-  if (current.facilityId !== identity.facilityId) return refuse('identity', `${table} ${mutation.id} belongs to another facility`);
+
+  if (!current) {
+    return refuse('validation', `no ${table} ${mutation.id} exists to change`);
+  }
+
+  if (current.facilityId !== identity.facilityId) {
+    return refuse('identity', `${table} ${mutation.id} belongs to another facility`);
+  }
+
   if (table === 'patient') {
     const held = await heldForPatient(tx, identity, mutation.id);
-    if (held) return held;
+
+    if (held) {
+      return held;
+    }
   }
 
   const moved = IMMUTABLE_ENVELOPE_FIELDS.find(
     (field) => changes[field] !== undefined && !isDeepStrictEqual(changes[field], current[field]),
   );
-  if (moved) return refuse('validation', `${moved} cannot change`);
+
+  if (moved) {
+    return refuse('validation', `${moved} cannot change`);
+  }
 
   const permissions = patchPermissions(table, changes);
-  if (!permissions) return refuse('authorization', `${table} records cannot be changed this way`);
+
+  if (!permissions) {
+    return refuse('authorization', `${table} records cannot be changed this way`);
+  }
 
   const staff = await findStaffInFacility(tx, identity.facilityId, updatedBy);
-  if (!staff) return refuse('identity', describeDenial({ kind: 'not_member', staffId: updatedBy }));
-  if (!staff.active) return refuse('authorization', describeDenial({ kind: 'deactivated', staffId: updatedBy }));
+
+  if (!staff) {
+    return refuse('identity', describeDenial({ kind: 'not_member', staffId: updatedBy }));
+  }
+
+  if (!staff.active) {
+    return refuse('authorization', describeDenial({ kind: 'deactivated', staffId: updatedBy }));
+  }
+
   if (table === 'pin_setup_code') {
     const reset = await validatePinCodeClaim(tx, current as PinSetupCode, identity, uploadedAt);
-    if (reset) return refuse('authorization', reset);
+
+    if (reset) {
+      return refuse('authorization', reset);
+    }
+
     const refusal = claimRefusal(current as PinSetupCode, updatedBy, changes);
-    if (refusal) return refusal;
+
+    if (refusal) {
+      return refusal;
+    }
   } else {
     for (const permission of permissions) {
       const denial = staffDenial(staff, updatedBy, permission);
-      if (denial) return refuse('authorization', describeDenial(denial));
+
+      if (denial) {
+        return refuse('authorization', describeDenial(denial));
+      }
     }
   }
-  if (current.type === 'sync_rejection' && current.visibility === 'restricted' && !current.visibleToStaffIds?.includes(updatedBy) && !staffPermissions(staff).includes('credential:read')) return refuse('authorization', 'Restricted evidence reconciliation needs its owner or an authorized workforce reader');
+
+  if (
+    current.type === 'sync_rejection' &&
+    current.visibility === 'restricted' &&
+    !current.visibleToStaffIds?.includes(updatedBy) &&
+    !staffPermissions(staff).includes('credential:read')
+  ) {
+    return refuse(
+      'authorization',
+      'Restricted evidence reconciliation needs its owner or an authorized workforce reader',
+    );
+  }
+
   const performedOn = typeof changes.updatedOn === 'string' ? changes.updatedOn : undefined;
+
   if (isStale(permissions, performedOn, uploadedAt)) {
-    return refuse('authorization', `${permissions.join(', ')} was performed more than 24 hours before reaching the server`);
+    return refuse(
+      'authorization',
+      `${permissions.join(', ')} was performed more than 24 hours before reaching the server`,
+    );
   }
 
   const merged = parseDocument({ ...current, ...changes, type: table });
+
   if (table === 'stock_item') {
-    if ('quantityOnHand' in changes) return refuse('validation', 'The opening stock balance cannot be edited. Record an attributed stock movement');
-    if ('unitOfMeasure' in changes && current.type === 'stock_item' && changes.unitOfMeasure !== current.unitOfMeasure) {
-      const [movement] = await tx`SELECT id FROM stock_movements WHERE facility_id = ${identity.facilityId} AND item_id = ${mutation.id} LIMIT 1`;
-      if (movement) return refuse('validation', 'The unit of measure cannot change after stock movements have been recorded');
+    if ('quantityOnHand' in changes) {
+      return refuse(
+        'validation',
+        'The opening stock balance cannot be edited. Record an attributed stock movement',
+      );
+    }
+
+    if (
+      'unitOfMeasure' in changes &&
+      current.type === 'stock_item' &&
+      changes.unitOfMeasure !== current.unitOfMeasure
+    ) {
+      const [movement] =
+        await tx`SELECT id FROM stock_movements WHERE facility_id = ${identity.facilityId} AND item_id = ${mutation.id} LIMIT 1`;
+
+      if (movement) {
+        return refuse(
+          'validation',
+          'The unit of measure cannot change after stock movements have been recorded',
+        );
+      }
     }
   }
+
   if (table === 'handoff' && current.type === 'handoff' && typeof changes.status === 'string') {
     const order = ['pending', 'received', 'done'];
-    if (order.includes(changes.status) && order.indexOf(changes.status) < order.indexOf(current.status)) return refuse('conflict', 'This handoff has already progressed. Review its current state rather than reopening it');
-  }
-  if (!merged.success) return refuse('validation', `does not match the contract: ${merged.error.issues.map((issue) => issue.path.join('.') + ' ' + issue.message).join('; ')}`);
-  if(merged.data.type==='stock_item'){const issue=await stockPriceIssue(tx,merged.data,current.type==='stock_item'?current:undefined);if(issue)return refuse('validation',issue);}
-  if (current.type === 'patient' && merged.data.type === 'patient') {
-    const issues = patientIdentificationIssues(current, merged.data, updatedBy, String(changes.updatedOn ?? ''));
-    if (issues.length) return refuse('validation', issues.join('; '));
-    if (current.identityStatus === 'provisional' && merged.data.identityStatus === 'identified' && Date.parse(merged.data.identifiedOn!) > uploadedAt + 5 * 60_000) return refuse('validation', 'Identification is dated in the future. Check the device clock');
-  }
-  if (merged.data.type === 'appointment') {
-    const denial = await allocationRefusal(tx, merged.data, uploadedAt);
-    if (denial) return denial;
-  }
-  if (current.type === 'appointment' && merged.data.type === 'appointment') {
-    const allocationOnly = Object.keys(changes).filter((key) => !PATCH_METADATA.has(key)).every((key) => ['allocation', 'schemaVersion'].includes(key));
-    if (!allocationOnly) {
-    const before = current.activity ?? [], after = merged.data.activity ?? [];
-    if (after.length !== before.length + 1 || !isDeepStrictEqual(after.slice(0, -1), before)) return refuse('conflict', 'Booking history has changed. Review the current booking before trying again');
-    const action = after[after.length - 1];
-    if (action.fromAttendance !== (current.attendance ?? 'booked') || !sameAppointmentTime(action.fromScheduledFor, current.scheduledFor)) return refuse('conflict', 'This booking has changed on another device. Review it before trying again');
-    if (action.recordedBy !== updatedBy || !sameAppointmentTime(action.recordedOn, performedOn)) return refuse('validation', 'A booking action must be attributed to the staff member and time of this change');
-    if (Date.parse(action.recordedOn) > uploadedAt + 5 * 60_000) return refuse('validation', 'The booking action is dated in the future. Check the device clock');
-    if (action.action === 'rescheduled' && merged.data.status !== 'scheduled') return refuse('validation', 'A rescheduled booking must be scheduled');
-    if (action.action !== 'rescheduled' && merged.data.status !== current.status) return refuse('validation', 'Only rescheduling changes the booking mode');
-    const [visit] = await tx`SELECT id FROM encounters WHERE facility_id = ${identity.facilityId} AND appointment_id = ${mutation.id} LIMIT 1`;
-    if (visit) return refuse('conflict', 'Care has already started. Continue or review the linked visit instead of changing attendance');
-    const held = await heldForPatient(tx, identity, current.patientId);
-    if (held) return held;
+
+    if (
+      order.includes(changes.status) &&
+      order.indexOf(changes.status) < order.indexOf(current.status)
+    ) {
+      return refuse(
+        'conflict',
+        'This handoff has already progressed. Review its current state rather than reopening it',
+      );
     }
   }
-  if (table === 'patient' && typeof changes.nin === 'string' && changes.nin && !/^\d{11}$/.test(changes.nin)) return refuse('validation', 'NIN must contain 11 digits');
 
-  if (current.type === 'staff' && merged.data.type === 'staff'
-      && !(await keepsAdministrator(tx, current, merged.data as Staff))) {
-    return refuse('authorization', 'Keep at least one active facility administrator with write access');
+  if (!merged.success) {
+    return refuse(
+      'validation',
+      `does not match the contract: ${merged.error.issues.map((issue) => issue.path.join('.') + ' ' + issue.message).join('; ')}`,
+    );
+  }
+
+  if (merged.data.type === 'stock_item') {
+    const issue = await stockPriceIssue(
+      tx,
+      merged.data,
+      current.type === 'stock_item' ? current : undefined,
+    );
+
+    if (issue) {
+      return refuse('validation', issue);
+    }
+  }
+
+  if (current.type === 'patient' && merged.data.type === 'patient') {
+    const issues = patientIdentificationIssues(
+      current,
+      merged.data,
+      updatedBy,
+      String(changes.updatedOn ?? ''),
+    );
+
+    if (issues.length) {
+      return refuse('validation', issues.join('; '));
+    }
+
+    if (
+      current.identityStatus === 'provisional' &&
+      merged.data.identityStatus === 'identified' &&
+      Date.parse(merged.data.identifiedOn!) > uploadedAt + 5 * 60_000
+    ) {
+      return refuse('validation', 'Identification is dated in the future. Check the device clock');
+    }
+  }
+
+  if (merged.data.type === 'appointment') {
+    const denial = await allocationRefusal(tx, merged.data, uploadedAt);
+
+    if (denial) {
+      return denial;
+    }
+  }
+
+  if (current.type === 'appointment' && merged.data.type === 'appointment') {
+    const allocationOnly = Object.keys(changes)
+      .filter((key) => !PATCH_METADATA.has(key))
+      .every((key) => ['allocation', 'schemaVersion'].includes(key));
+
+    if (!allocationOnly) {
+      const before = current.activity ?? [];
+      const after = merged.data.activity ?? [];
+
+      if (after.length !== before.length + 1 || !isDeepStrictEqual(after.slice(0, -1), before)) {
+        return refuse(
+          'conflict',
+          'Booking history has changed. Review the current booking before trying again',
+        );
+      }
+
+      const action = after[after.length - 1];
+
+      if (
+        action.fromAttendance !== (current.attendance ?? 'booked') ||
+        !sameAppointmentTime(action.fromScheduledFor, current.scheduledFor)
+      ) {
+        return refuse(
+          'conflict',
+          'This booking has changed on another device. Review it before trying again',
+        );
+      }
+
+      if (action.recordedBy !== updatedBy || !sameAppointmentTime(action.recordedOn, performedOn)) {
+        return refuse(
+          'validation',
+          'A booking action must be attributed to the staff member and time of this change',
+        );
+      }
+
+      if (Date.parse(action.recordedOn) > uploadedAt + 5 * 60_000) {
+        return refuse(
+          'validation',
+          'The booking action is dated in the future. Check the device clock',
+        );
+      }
+
+      if (action.action === 'rescheduled' && merged.data.status !== 'scheduled') {
+        return refuse('validation', 'A rescheduled booking must be scheduled');
+      }
+
+      if (action.action !== 'rescheduled' && merged.data.status !== current.status) {
+        return refuse('validation', 'Only rescheduling changes the booking mode');
+      }
+
+      const [visit] =
+        await tx`SELECT id FROM encounters WHERE facility_id = ${identity.facilityId} AND appointment_id = ${mutation.id} LIMIT 1`;
+
+      if (visit) {
+        return refuse(
+          'conflict',
+          'Care has already started. Continue or review the linked visit instead of changing attendance',
+        );
+      }
+
+      const held = await heldForPatient(tx, identity, current.patientId);
+
+      if (held) {
+        return held;
+      }
+    }
+  }
+
+  if (
+    table === 'patient' &&
+    typeof changes.nin === 'string' &&
+    changes.nin &&
+    !/^\d{11}$/.test(changes.nin)
+  ) {
+    return refuse('validation', 'NIN must contain 11 digits');
+  }
+
+  if (
+    current.type === 'staff' &&
+    merged.data.type === 'staff' &&
+    !(await keepsAdministrator(tx, current, merged.data as Staff))
+  ) {
+    return refuse(
+      'authorization',
+      'Keep at least one active facility administrator with write access',
+    );
   }
 
   // Conflict policy: which of the changed columns has the server moved since
@@ -787,76 +1796,169 @@ const evaluatePatch = async ({ tx, identity, uploadedAt }: Context, mutation: Up
   if (current.type === 'inbound_referral') {
     const next = { ...current, ...mutation.data };
     const progress = ['received', 'arrived', 'closed'];
-    if (current.status === 'received' && next.status === 'closed') return refuse('validation', 'Record arrival before completing the referral handover');
-    if ((current.arrivedOn && next.arrivedOn !== current.arrivedOn) || (current.closedOn && next.closedOn !== current.closedOn)) return refuse('validation', 'Recorded arrival and handover times cannot be rewritten');
-    if (progress.indexOf(String(next.status)) < progress.indexOf(current.status)) return refuse('validation', 'Referral progress cannot move backwards');
-    if (current.localPatientId && next.localPatientId !== current.localPatientId) return refuse('validation', 'The receiving patient link is already recorded');
+
+    if (current.status === 'received' && next.status === 'closed') {
+      return refuse('validation', 'Record arrival before completing the referral handover');
+    }
+
+    if (
+      (current.arrivedOn && next.arrivedOn !== current.arrivedOn) ||
+      (current.closedOn && next.closedOn !== current.closedOn)
+    ) {
+      return refuse('validation', 'Recorded arrival and handover times cannot be rewritten');
+    }
+
+    if (progress.indexOf(String(next.status)) < progress.indexOf(current.status)) {
+      return refuse('validation', 'Referral progress cannot move backwards');
+    }
+
+    if (current.localPatientId && next.localPatientId !== current.localPatientId) {
+      return refuse('validation', 'The receiving patient link is already recorded');
+    }
   }
+
   const changedColumns = Object.keys(changes).filter((column) => !PATCH_METADATA.has(column));
+
   const serverMovedSince =
-    !mutation.previous && current.updatedOn !== undefined && performedOn !== undefined && current.updatedOn > performedOn;
+    !mutation.previous &&
+    current.updatedOn !== undefined &&
+    performedOn !== undefined &&
+    current.updatedOn > performedOn;
+
   const conflicts: ConflictingColumn[] = changedColumns
     .filter((column) => {
       // Handoff state is monotonic: an accepted arrival must not block a later
       // completion from an offline device. Backwards moves were refused above.
-      if (table === 'handoff' && column === 'status') return false;
-      if (table === 'appointment' && column === 'scheduledFor' && mutation.previous && column in mutation.previous) return !sameAppointmentTime(current.type === 'appointment' ? current.scheduledFor : undefined, typeof mutation.previous[column] === 'string' ? mutation.previous[column] : undefined);
+      if (table === 'handoff' && column === 'status') {
+        return false;
+      }
+
+      if (
+        table === 'appointment' &&
+        column === 'scheduledFor' &&
+        mutation.previous &&
+        column in mutation.previous
+      ) {
+        return !sameAppointmentTime(
+          current.type === 'appointment' ? current.scheduledFor : undefined,
+          typeof mutation.previous[column] === 'string' ? mutation.previous[column] : undefined,
+        );
+      }
+
       const record = current as Record<string, unknown>;
-      if (mutation.previous && column in mutation.previous) return !isDeepStrictEqual(record[column] ?? null, mutation.previous[column] ?? null);
+
+      if (mutation.previous && column in mutation.previous) {
+        return !isDeepStrictEqual(record[column] ?? null, mutation.previous[column] ?? null);
+      }
+
       return serverMovedSince;
     })
-    .map((column) => ({ column, deviceValue: changes[column], serverValue: (current as Record<string, unknown>)[column] }));
+    .map((column) => ({
+      column,
+      deviceValue: changes[column],
+      serverValue: (current as Record<string, unknown>)[column],
+    }));
 
   // A booking's time, attendance and attributed history form one fact. A partial
   // application would leave the displayed state disagreeing with its history.
-  if (table === 'appointment' && conflicts.length) return refuse('conflict', 'This booking changed on another device. Review it before trying again');
-  if (current.type === 'patient' && current.identityStatus === 'provisional' && merged.data.type === 'patient' && merged.data.identityStatus === 'identified' && conflicts.length) return refuse('conflict', 'Patient details changed on another device. Review the current record before identifying this patient');
+  if (table === 'appointment' && conflicts.length) {
+    return refuse(
+      'conflict',
+      'This booking changed on another device. Review it before trying again',
+    );
+  }
+
+  if (
+    current.type === 'patient' &&
+    current.identityStatus === 'provisional' &&
+    merged.data.type === 'patient' &&
+    merged.data.identityStatus === 'identified' &&
+    conflicts.length
+  ) {
+    return refuse(
+      'conflict',
+      'Patient details changed on another device. Review the current record before identifying this patient',
+    );
+  }
 
   // Age and its observation date describe one fact. A partial merge of those
   // columns could make a patient's age jump even when both edits were valid.
   if (table === 'patient') {
     const grouped = ['ageYears', 'ageObservedOn', 'dateOfBirth', 'dobEstimated'];
+
     if (conflicts.some((conflict) => grouped.includes(conflict.column))) {
       for (const column of changedColumns.filter((field) => grouped.includes(field))) {
-        if (!conflicts.some((conflict) => conflict.column === column)) conflicts.push({ column, deviceValue: changes[column], serverValue: (current as Record<string, unknown>)[column] });
+        if (!conflicts.some((conflict) => conflict.column === column)) {
+          conflicts.push({
+            column,
+            deviceValue: changes[column],
+            serverValue: (current as Record<string, unknown>)[column],
+          });
+        }
       }
     }
   }
 
   const lastWriteWins = ADMIN_LAST_WRITE_WINS.includes(table);
+
   const applied = Object.fromEntries(
     Object.entries(changes).filter(
-      ([column]) => column !== 'id' && (lastWriteWins || !conflicts.some((conflict) => conflict.column === column)),
+      ([column]) =>
+        column !== 'id' &&
+        (lastWriteWins || !conflicts.some((conflict) => conflict.column === column)),
     ),
   );
+
   // A signature covers the values it was made over; once one of them changes it
   // is cleared, and the signing sweep signs the shift again (SCHEMA.md §10).
-  if (table === 'roster_shift' && (ROSTER_SIGNED_FIELDS as readonly string[]).some((field) => field in applied)) {
+  if (
+    table === 'roster_shift' &&
+    (ROSTER_SIGNED_FIELDS as readonly string[]).some((field) => field in applied)
+  ) {
     applied.signature = null;
   }
+
   const nothingLeft = Object.keys(applied).every((column) => PATCH_METADATA.has(column));
 
   if (!nothingLeft) {
     const failure = await attempt(tx, async (sp) => {
       await sp`UPDATE ${sp(TABLE_FOR[table])} SET ${sp(toRow(sp, table, applied))} WHERE id = ${mutation.id} AND facility_id = ${identity.facilityId}`;
     });
-    if (failure) return failure;
+
+    if (failure) {
+      return failure;
+    }
   }
 
-  if ((table === 'staff' || table === 'patient' || table === 'appointment') && !nothingLeft && conflicts.length === 0) await recordAuditEvent(tx, {
-    facilityId: identity.facilityId, deviceId: identity.deviceId, actorStaffId: updatedBy,
-    action: 'update', entityType: table, entityId: mutation.id,
-    metadata: { columns: changedColumns.join(',') },
-  });
+  if (
+    (table === 'staff' || table === 'patient' || table === 'appointment') &&
+    !nothingLeft &&
+    conflicts.length === 0
+  ) {
+    await recordAuditEvent(tx, {
+      facilityId: identity.facilityId,
+      deviceId: identity.deviceId,
+      actorStaffId: updatedBy,
+      action: 'update',
+      entityType: table,
+      entityId: mutation.id,
+      metadata: { columns: changedColumns.join(',') },
+    });
+  }
 
   if (conflicts.length === 0) {
     if (!nothingLeft && merged.data.type === 'inbound_referral') {
       const incoming = merged.data;
       await tx`UPDATE referrals SET status=${incoming.status === 'received' ? 'sent' : incoming.status}, arrived_on=${incoming.arrivedOn ?? null}, closed_on=${incoming.closedOn ?? null} WHERE id=${incoming.sourceReferralId} AND to_facility_id=${identity.facilityId}`;
     }
-    if (!nothingLeft && merged.data.type === 'appointment') await recordReservation(tx, merged.data, uploadedAt);
+
+    if (!nothingLeft && merged.data.type === 'appointment') {
+      await recordReservation(tx, merged.data, uploadedAt);
+    }
+
     return undefined;
   }
+
   if (lastWriteWins) {
     await recordAuditEvent(tx, {
       facilityId: identity.facilityId,
@@ -865,10 +1967,15 @@ const evaluatePatch = async ({ tx, identity, uploadedAt }: Context, mutation: Up
       action: 'update',
       entityType: table,
       entityId: mutation.id,
-      metadata: { lastWriteWins: true, columns: conflicts.map((conflict) => conflict.column).join(',') },
+      metadata: {
+        lastWriteWins: true,
+        columns: conflicts.map((conflict) => conflict.column).join(','),
+      },
     });
+
     return undefined;
   }
+
   return {
     category: 'conflict',
     reason: `${conflicts.map((conflict) => conflict.column).join(', ')} changed on another device first`,
@@ -878,50 +1985,149 @@ const evaluatePatch = async ({ tx, identity, uploadedAt }: Context, mutation: Up
 
 /** The fields a patch set, without the bookkeeping every patch carries. */
 const refusedChangesOf = (mutation: UploadMutation): Record<string, unknown> | undefined => {
-  const changes = Object.fromEntries(Object.entries(mutation.data).filter(([column]) => !PATCH_METADATA.has(column)));
+  const changes = Object.fromEntries(
+    Object.entries(mutation.data).filter(([column]) => !PATCH_METADATA.has(column)),
+  );
+
   return Object.keys(changes).length > 0 ? changes : undefined;
 };
 
 const attributionOf = (mutation: UploadMutation): string | undefined => {
   const value = mutation.op === 'put' ? mutation.data.createdBy : mutation.data.updatedBy;
+
   return typeof value === 'string' ? value : undefined;
 };
 
 const occurredOnOf = (mutation: UploadMutation): string | undefined => {
   const value = mutation.op === 'put' ? mutation.data.createdOn : mutation.data.updatedOn;
+
   return typeof value === 'string' && !Number.isNaN(Date.parse(value)) ? value : undefined;
 };
 
 /** New workflow configuration/events share the existing upload, ledger, audit and reconciliation boundary. */
-const evaluateWorkforce = async ({ tx, identity, uploadedAt }: Context, mutation: UploadMutation, signer?: Signer): Promise<Refusal | undefined> => {
-  const policy = workforceType(mutation.table) ? FACILITY_DOCUMENT_POLICY[mutation.table as keyof typeof FACILITY_DOCUMENT_POLICY] : undefined;
-  if (policy?.writer === 'server') return refuse('authorization', 'This record is written only by the server');
-  if (mutation.op === 'delete') return refuse('authorization', 'Retire configuration or end work explicitly; history is not deleted');
-  const current = await findRecord(tx, mutation.table, mutation.id);
-  if (current && current.facilityId !== identity.facilityId) return refuse('identity', 'This record belongs to another facility');
-  if (mutation.op === 'patch' && !current) return refuse('validation', 'No accepted record exists to change');
-  if (current && (IMMUTABLE_ENVELOPE_FIELDS as readonly string[]).some((key) => key in mutation.data && !isDeepStrictEqual(mutation.data[key], (current as Record<string, unknown>)[key]))) return refuse('validation', 'Original identity and creation provenance cannot change');
-  const shape = SCHEMA_BY_TYPE[mutation.table].shape as Record<string,ZodType>;
-  const normalized = Object.fromEntries(Object.entries(mutation.data).map(([key,value]) => [key,value === null && shape[key]?.def.type === 'optional' ? undefined : value]));
-  const parsed = parseDocument({ ...current, ...normalized, id: mutation.id, type: mutation.table });
-  if (!parsed.success) return refuse('validation', 'Configuration does not match the shared contract');
-  const record = parsed.data;
-  if (record.facilityId !== identity.facilityId || (!current && record.deviceId !== identity.deviceId)) return refuse('identity', 'Configuration must belong to this device and facility');
-  if (current && (current.type === 'location' || current.type === 'unit') && (record.type === 'location' || record.type === 'unit')) {
-    const issues = await inpatientLocationIssues(tx, current, record);
-    if (issues.length) return refuse('conflict', issues.join('; '));
+const evaluateWorkforce = async (
+  { tx, identity, uploadedAt }: Context,
+  mutation: UploadMutation,
+  signer?: Signer,
+): Promise<Refusal | undefined> => {
+  const policy = workforceType(mutation.table)
+    ? FACILITY_DOCUMENT_POLICY[mutation.table as keyof typeof FACILITY_DOCUMENT_POLICY]
+    : undefined;
+
+  if (policy?.writer === 'server') {
+    return refuse('authorization', 'This record is written only by the server');
   }
+
+  if (mutation.op === 'delete') {
+    return refuse(
+      'authorization',
+      'Retire configuration or end work explicitly; history is not deleted',
+    );
+  }
+
+  const current = await findRecord(tx, mutation.table, mutation.id);
+
+  if (current && current.facilityId !== identity.facilityId) {
+    return refuse('identity', 'This record belongs to another facility');
+  }
+
+  if (mutation.op === 'patch' && !current) {
+    return refuse('validation', 'No accepted record exists to change');
+  }
+
+  if (
+    current &&
+    (IMMUTABLE_ENVELOPE_FIELDS as readonly string[]).some(
+      (key) =>
+        key in mutation.data &&
+        !isDeepStrictEqual(mutation.data[key], (current as Record<string, unknown>)[key]),
+    )
+  ) {
+    return refuse('validation', 'Original identity and creation provenance cannot change');
+  }
+
+  const shape = SCHEMA_BY_TYPE[mutation.table].shape as Record<string, ZodType>;
+
+  const normalized = Object.fromEntries(
+    Object.entries(mutation.data).map(([key, value]) => [
+      key,
+      value === null && shape[key]?.def.type === 'optional' ? undefined : value,
+    ]),
+  );
+
+  const parsed = parseDocument({
+    ...current,
+    ...normalized,
+    id: mutation.id,
+    type: mutation.table,
+  });
+
+  if (!parsed.success) {
+    return refuse('validation', 'Configuration does not match the shared contract');
+  }
+
+  const record = parsed.data;
+
+  if (
+    record.facilityId !== identity.facilityId ||
+    (!current && record.deviceId !== identity.deviceId)
+  ) {
+    return refuse('identity', 'Configuration must belong to this device and facility');
+  }
+
+  if (
+    current &&
+    (current.type === 'location' || current.type === 'unit') &&
+    (record.type === 'location' || record.type === 'unit')
+  ) {
+    const issues = await inpatientLocationIssues(tx, current, record);
+
+    if (issues.length) {
+      return refuse('conflict', issues.join('; '));
+    }
+  }
+
   const result = await validateWorkforceRecord(tx, identity, record, mutation, uploadedAt, current);
-  if (result.refusal) return result.refusal;
+
+  if (result.refusal) {
+    return result.refusal;
+  }
+
   return attempt(tx, async (sp) => {
-    if (!current) await insertRecord(sp, mutation.table, result.record);
-    else {
-      const changes = Object.fromEntries(Object.keys(SCHEMA_BY_TYPE[mutation.table].shape).filter((key) => key !== 'type' && !IMMUTABLE_ENVELOPE_FIELDS.includes(key as typeof IMMUTABLE_ENVELOPE_FIELDS[number]))
-        .map((key) => [key, (result.record as Record<string, unknown>)[key] ?? null]));
+    if (!current) {
+      await insertRecord(sp, mutation.table, result.record);
+    } else {
+      const changes = Object.fromEntries(
+        Object.keys(SCHEMA_BY_TYPE[mutation.table].shape)
+          .filter(
+            (key) =>
+              key !== 'type' &&
+              !IMMUTABLE_ENVELOPE_FIELDS.includes(
+                key as (typeof IMMUTABLE_ENVELOPE_FIELDS)[number],
+              ),
+          )
+          .map((key) => [key, (result.record as Record<string, unknown>)[key] ?? null]),
+      );
+
       await sp`UPDATE ${sp(TABLE_FOR[mutation.table])} SET ${sp(toRow(sp, mutation.table, changes))} WHERE facility_id=${identity.facilityId} AND id=${mutation.id}`;
     }
-    await recordAuditEvent(sp, { facilityId: identity.facilityId, deviceId: identity.deviceId, actorStaffId: attributionOf(mutation), action: current ? 'update' : 'create', entityType: mutation.table, entityId: mutation.id, metadata: { workflow: 'facility_workforce' } });
-    if (signer && ['credential','capability_decision','reviewer_delegation'].includes(mutation.table)) await refreshFacilityAuthority(sp, identity.facilityId, signer, uploadedAt);
+
+    await recordAuditEvent(sp, {
+      facilityId: identity.facilityId,
+      deviceId: identity.deviceId,
+      actorStaffId: attributionOf(mutation),
+      action: current ? 'update' : 'create',
+      entityType: mutation.table,
+      entityId: mutation.id,
+      metadata: { workflow: 'facility_workforce' },
+    });
+
+    if (
+      signer &&
+      ['credential', 'capability_decision', 'reviewer_delegation'].includes(mutation.table)
+    ) {
+      await refreshFacilityAuthority(sp, identity.facilityId, signer, uploadedAt);
+    }
   });
 };
 
@@ -941,35 +2147,82 @@ const processMutation = async (
     await tx`SELECT id FROM facilities WHERE id=${identity.facilityId} FOR UPDATE`;
     await assertWorkforceCompatibility(tx, identity.facilityId, request, uploadedAt);
     await assertCatalogueUpload(tx, identity.facilityId, request);
-    await assertIntegratedUpload(tx,identity.facilityId,request);
+    await assertIntegratedUpload(tx, identity.facilityId, request);
     const ledger = { deviceId: identity.deviceId, clientId: mutation.clientId, transactionId };
-    if (!(await claimMutation(tx, ledger, mutation.table, mutation.id, 'applied'))) return { outcome: 'duplicate' };
+
+    if (!(await claimMutation(tx, ledger, mutation.table, mutation.id, 'applied'))) {
+      return { outcome: 'duplicate' };
+    }
 
     const context: Context = { tx, identity, uploadedAt };
-    const configuration = isConfigurationWrite(mutation.table, mutation.op, Object.keys(mutation.data ?? {}));
-    const handled = workforceType(mutation.table) || ['unit','billing_department'].includes(mutation.table);
+
+    const configuration = isConfigurationWrite(
+      mutation.table,
+      mutation.op,
+      Object.keys(mutation.data ?? {}),
+    );
+
+    const handled =
+      workforceType(mutation.table) || ['unit', 'billing_department'].includes(mutation.table);
+
     // Configuration is saved online only, confirmed by the server; a queued change (made offline, or by an older app) is refused.
-    const refusal = configuration && !options.online ? refuse('authorization', 'Settings are saved online, with the server. This change was made offline or by an older version of the app, so it was not applied — make it again while connected')
-      : configuration && options.online ? (await feeCatalogueRefusal(tx, identity, mutation, options)) ?? (await staleConfiguration(tx, mutation)) ?? (handled ? await evaluateWorkforce(context, mutation, signer) : mutation.op === 'put' ? await evaluatePut(context, mutation) : await evaluatePatch(context, mutation))
-      : handled ? await evaluateWorkforce(context, mutation, signer) :
-      mutation.op === 'delete'
-        ? refuse('authorization', 'records are never deleted; retire them instead')
-        : mutation.op === 'put'
-          ? await evaluatePut(context, mutation)
-          : await evaluatePatch(context, mutation);
+    const evaluateRecord = async () => {
+      if (handled) {
+        return evaluateWorkforce(context, mutation, signer);
+      }
+
+      if (mutation.op === 'put') {
+        return evaluatePut(context, mutation);
+      }
+
+      return evaluatePatch(context, mutation);
+    };
+
+    const evaluateMutation = async () => {
+      if (configuration && !options.online) {
+        return refuse(
+          'authorization',
+          'Settings are saved online, with the server. This change was made offline or by an older version of the app, so it was not applied — make it again while connected',
+        );
+      }
+
+      if (configuration) {
+        return (
+          (await feeCatalogueRefusal(tx, identity, mutation, options)) ??
+          (await staleConfiguration(tx, mutation)) ??
+          (await evaluateRecord())
+        );
+      }
+
+      if (!handled && mutation.op === 'delete') {
+        return refuse('authorization', 'records are never deleted; retire them instead');
+      }
+
+      return evaluateRecord();
+    };
+
+    const refusal = await evaluateMutation();
 
     if (!refusal) {
-      if (signer && mutation.table === 'staff') await refreshFacilityAuthority(tx, identity.facilityId, signer, uploadedAt);
+      if (signer && mutation.table === 'staff') {
+        await refreshFacilityAuthority(tx, identity.facilityId, signer, uploadedAt);
+      }
+
       return { outcome: 'applied' };
     }
 
     // A column conflict on a merge table applied the other columns; everything else applied nothing.
     // Online configuration is all or nothing: a change that would merge only some columns is undone entirely.
-    if (options.online && (refusal.conflicts !== undefined || options.online.atomic)) throw new OnlineRefusal(refusal);
+    if (options.online && (refusal.conflicts !== undefined || options.online.atomic)) {
+      throw new OnlineRefusal(refusal);
+    }
+
     const partial = refusal.conflicts !== undefined && mutation.op === 'patch';
+
     if (!partial) {
       await tx`UPDATE applied_mutations SET outcome = 'rejected' WHERE device_id = ${identity.deviceId} AND client_id = ${mutation.clientId}`;
     }
+
     await recordRejection(tx, {
       facilityId: identity.facilityId,
       deviceId: identity.deviceId,
@@ -982,12 +2235,20 @@ const processMutation = async (
       occurredOn: occurredOnOf(mutation),
       conflicts: refusal.conflicts,
       dependencies: refusal.dependencies,
-      visibility: RESTRICTED_FACILITY_DOCUMENT_TYPES.some((type) => type === mutation.table) ? 'restricted' : undefined,
-      visibleToStaffIds: RESTRICTED_FACILITY_DOCUMENT_TYPES.some((type) => type === mutation.table) ? [attributionOf(mutation)?.trim().slice(0,200) || 'system'] : undefined,
-      refusedRecord: mutation.op === 'put' ? { ...mutation.data, id: mutation.id, type: mutation.table } : undefined,
+      visibility: RESTRICTED_FACILITY_DOCUMENT_TYPES.some((type) => type === mutation.table)
+        ? 'restricted'
+        : undefined,
+      visibleToStaffIds: RESTRICTED_FACILITY_DOCUMENT_TYPES.some((type) => type === mutation.table)
+        ? [attributionOf(mutation)?.trim().slice(0, 200) || 'system']
+        : undefined,
+      refusedRecord:
+        mutation.op === 'put'
+          ? { ...mutation.data, id: mutation.id, type: mutation.table }
+          : undefined,
       // A patch that applied nothing keeps what it tried to set; a partly applied one keeps its clash in `conflicts`.
       refusedChanges: mutation.op === 'patch' && !partial ? refusedChangesOf(mutation) : undefined,
     });
+
     await recordAuditEvent(tx, {
       facilityId: identity.facilityId,
       deviceId: identity.deviceId,
@@ -998,8 +2259,10 @@ const processMutation = async (
       result: 'rejected',
       metadata: { category: refusal.category, operation: mutation.op },
     });
+
     return { outcome: partial ? 'applied_with_conflicts' : 'rejected', refusal };
   };
+
   return existingTx ? existingTx.savepoint(write) : sql.begin(write);
 };
 
@@ -1011,26 +2274,79 @@ export const processUpload = async (
   signer?: Signer,
   options: UploadOptions = {},
 ): Promise<UploadResponse> => {
-  if(options.online?.atomic){
-    let current: UploadMutation|undefined;
-    try{return await sql.begin(async tx=>{
-      await tx`SELECT id FROM facilities WHERE id=${identity.facilityId} FOR UPDATE`;
-      await assertWorkforceCompatibility(tx,identity.facilityId,request,now);await assertIntegratedUpload(tx,identity.facilityId,request);
-      await recordClientVersion(tx,identity,{...request,pendingMutationCount:1},now);
-      let applied=0,duplicates=0;
-      for(const mutation of orderWorkforceMutations(request.mutations)){
-        current=mutation;
-        const result=await processMutation(sql,identity,request.transactionId,mutation,now,request,signer,options,tx);
-        if(result.refusal)throw new OnlineRefusal(result.refusal);
-        if(result.outcome==='duplicate')duplicates++;else applied++;
+  if (options.online?.atomic) {
+    let current: UploadMutation | undefined;
+
+    try {
+      return await sql.begin(async (tx) => {
+        await tx`SELECT id FROM facilities WHERE id=${identity.facilityId} FOR UPDATE`;
+        await assertWorkforceCompatibility(tx, identity.facilityId, request, now);
+        await assertIntegratedUpload(tx, identity.facilityId, request);
+        await recordClientVersion(tx, identity, { ...request, pendingMutationCount: 1 }, now);
+        let applied = 0;
+        let duplicates = 0;
+
+        for (const mutation of orderWorkforceMutations(request.mutations)) {
+          current = mutation;
+
+          const result = await processMutation(
+            sql,
+            identity,
+            request.transactionId,
+            mutation,
+            now,
+            request,
+            signer,
+            options,
+            tx,
+          );
+
+          if (result.refusal) {
+            throw new OnlineRefusal(result.refusal);
+          }
+
+          if (result.outcome === 'duplicate') {
+            duplicates++;
+          } else {
+            applied++;
+          }
+        }
+
+        return { applied, duplicates, rejected: [], serverTime: new Date(now).toISOString() };
+      });
+    } catch (cause) {
+      if (!(cause instanceof OnlineRefusal) || !current) {
+        throw cause;
       }
-      return {applied,duplicates,rejected:[],serverTime:new Date(now).toISOString()};
-    });}catch(cause){
-      if(!(cause instanceof OnlineRefusal)||!current)throw cause;
-      await recordAuditEvent(sql,{facilityId:identity.facilityId,deviceId:identity.deviceId,actorStaffId:options.online.staffId,action:'reject',entityType:current.table,entityId:current.id,result:'rejected',metadata:{context:'billing_import_atomic',category:cause.refusal.category}});
-      return {applied:0,duplicates:0,rejected:[{clientId:current.clientId,table:current.table,id:current.id,category:cause.refusal.category,reason:cause.refusal.reason}],serverTime:new Date(now).toISOString()};
+
+      await recordAuditEvent(sql, {
+        facilityId: identity.facilityId,
+        deviceId: identity.deviceId,
+        actorStaffId: options.online.staffId,
+        action: 'reject',
+        entityType: current.table,
+        entityId: current.id,
+        result: 'rejected',
+        metadata: { context: 'billing_import_atomic', category: cause.refusal.category },
+      });
+
+      return {
+        applied: 0,
+        duplicates: 0,
+        rejected: [
+          {
+            clientId: current.clientId,
+            table: current.table,
+            id: current.id,
+            category: cause.refusal.category,
+            reason: cause.refusal.reason,
+          },
+        ],
+        serverTime: new Date(now).toISOString(),
+      };
     }
   }
+
   let applied = 0;
   let duplicates = 0;
   const rejected: UploadRejection[] = [];
@@ -1038,22 +2354,58 @@ export const processUpload = async (
   await sql.begin(async (tx) => {
     await tx`SELECT id FROM facilities WHERE id=${identity.facilityId} FOR UPDATE`;
     await assertWorkforceCompatibility(tx, identity.facilityId, request, now);
-    await assertIntegratedUpload(tx,identity.facilityId,request);
+    await assertIntegratedUpload(tx, identity.facilityId, request);
     // Readiness must see an in-progress upload before any accepted mutation,
     // including a legacy upload following an earlier modern-client handshake.
     await recordClientVersion(tx, identity, { ...request, pendingMutationCount: 1 }, now);
   });
+
   for (const mutation of orderWorkforceMutations(request.mutations)) {
     let result: MutationResult;
-    try { result = await processMutation(sql, identity, request.transactionId, mutation, now, request, signer, options); }
-    catch (cause) {
+
+    try {
+      result = await processMutation(
+        sql,
+        identity,
+        request.transactionId,
+        mutation,
+        now,
+        request,
+        signer,
+        options,
+      );
+    } catch (cause) {
       // An online refusal rolled its transaction back entirely, ledger included, and is reported to the person directly.
-      if (!(cause instanceof OnlineRefusal)) throw cause;
-      await recordAuditEvent(sql, { facilityId: identity.facilityId, deviceId: identity.deviceId, actorStaffId: options.online?.staffId, action: 'reject', entityType: mutation.table, entityId: mutation.id, result: 'rejected', metadata: { category: cause.refusal.category, operation: mutation.op, context: 'configuration_online' } });
+      if (!(cause instanceof OnlineRefusal)) {
+        throw cause;
+      }
+
+      await recordAuditEvent(sql, {
+        facilityId: identity.facilityId,
+        deviceId: identity.deviceId,
+        actorStaffId: options.online?.staffId,
+        action: 'reject',
+        entityType: mutation.table,
+        entityId: mutation.id,
+        result: 'rejected',
+        metadata: {
+          category: cause.refusal.category,
+          operation: mutation.op,
+          context: 'configuration_online',
+        },
+      });
+
       result = { outcome: 'rejected', refusal: cause.refusal };
     }
-    if (result.outcome === 'duplicate') duplicates += 1;
-    if (result.outcome === 'applied' || result.outcome === 'applied_with_conflicts') applied += 1;
+
+    if (result.outcome === 'duplicate') {
+      duplicates += 1;
+    }
+
+    if (result.outcome === 'applied' || result.outcome === 'applied_with_conflicts') {
+      applied += 1;
+    }
+
     if (result.refusal) {
       rejected.push({
         clientId: mutation.clientId,
@@ -1066,5 +2418,13 @@ export const processUpload = async (
     }
   }
 
-  return { applied, duplicates, rejected, serverTime: new Date(now).toISOString(), ...(request.facilityContractVersion ? { facilityContractVersion: request.facilityContractVersion } : {}) };
+  return {
+    applied,
+    duplicates,
+    rejected,
+    serverTime: new Date(now).toISOString(),
+    ...(request.facilityContractVersion
+      ? { facilityContractVersion: request.facilityContractVersion }
+      : {}),
+  };
 };

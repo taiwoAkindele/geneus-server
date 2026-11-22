@@ -26,6 +26,7 @@ let checkoutReconciliation: ReturnType<typeof startCheckoutReconciliation> | und
 /** The URL carries the password; the log gets the host and database only. */
 const describeDatabase = (url: string): string => {
   const parsed = new URL(url);
+
   return `${parsed.host}${parsed.pathname}`;
 };
 
@@ -35,25 +36,41 @@ const start = async () => {
       { cause },
       `could not migrate PostgreSQL at ${describeDatabase(config.postgresUrl)} — is it running? (npm run db:up)`,
     );
+
     throw cause;
   });
+
   const applied = outcomes.filter((outcome) => outcome.outcome === 'applied');
+
   if (applied.length > 0) {
-    app.log.info({ applied: applied.map((outcome) => `${outcome.version}_${outcome.name}`) }, 'migrations applied');
+    app.log.info(
+      { applied: applied.map((outcome) => `${outcome.version}_${outcome.name}`) },
+      'migrations applied',
+    );
   }
+
   // Every facility gets the current standard tests and templates, so they can be adopted offline.
   const seeded = await ensureAllStandardCatalogues(sql);
   app.log.info({ facilities: seeded }, 'standard catalogue up to date');
+
   if (signer.isEphemeral) {
     app.log.warn(
       { fingerprint: signer.publicKeyFingerprint },
       'no SIGNING_PRIVATE_KEY: generated an ephemeral key, so signatures change on restart',
     );
   }
+
   await app.listen({ port: config.port, host: '0.0.0.0' });
   rosterSigning = startRosterSigning(sql, signer, app.log);
   // Retries bills and receipts that couldn't be sent to patients at once.
-  patientMessaging = startPatientMessaging({ sql, mailer: createMailer(config, app.log), sms: smsSenderFrom(config), appUrl: config.corsOrigins[0], log: app.log });
+  patientMessaging = startPatientMessaging({
+    sql,
+    mailer: createMailer(config, app.log),
+    sms: smsSenderFrom(config),
+    appUrl: config.corsOrigins[0],
+    log: app.log,
+  });
+
   checkoutReconciliation = startCheckoutReconciliation(sql, config, app.log);
 };
 
@@ -63,10 +80,15 @@ const start = async () => {
  * deploy never cuts an upload off halfway through its transaction.
  */
 let stopping = false;
+
 const shutdown = async (signal: string) => {
-  if (stopping) return;
+  if (stopping) {
+    return;
+  }
+
   stopping = true;
   app.log.info({ signal }, 'shutting down');
+
   try {
     await app.close();
     await rosterSigning?.stop();
@@ -79,6 +101,7 @@ const shutdown = async (signal: string) => {
     process.exit(1);
   }
 };
+
 process.once('SIGTERM', () => void shutdown('SIGTERM'));
 process.once('SIGINT', () => void shutdown('SIGINT'));
 

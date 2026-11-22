@@ -10,7 +10,12 @@ import {
   type StockItem as StockItemRecord,
 } from '#shared';
 import { camelCase, findRecord, insertRecord, snakeCase } from '../src/db/records.ts';
-import { envelopeFor, registerScratchFacility, scratchDatabase, type ScratchDatabase } from './postgres.ts';
+import {
+  envelopeFor,
+  registerScratchFacility,
+  scratchDatabase,
+  type ScratchDatabase,
+} from './postgres.ts';
 
 /**
  * The camelCase ↔ snake_case boundary is mechanical, which is exactly why it is
@@ -31,7 +36,14 @@ describe('records', () => {
   });
 
   it('renames keys both ways without losing anything', () => {
-    for (const key of ['facilityId', 'dateOfBirth', 'legacyPaperRef', 'notYetArrivedFlagged', 'tier1', 'id']) {
+    for (const key of [
+      'facilityId',
+      'dateOfBirth',
+      'legacyPaperRef',
+      'notYetArrivedFlagged',
+      'tier1',
+      'id',
+    ]) {
       assert.equal(camelCase(snakeCase(key)), key, key);
     }
   });
@@ -49,6 +61,7 @@ describe('records', () => {
       allergies: ['penicillin', 'sulfa'],
       phone: '08012345678',
     });
+
     await insertRecord(db.sql, 'patient', written);
 
     const read = await findRecord<PatientRecord>(db.sql, 'patient', written.id);
@@ -72,9 +85,14 @@ describe('records', () => {
         { id: 'f2', type: 'select', label: 'Outcome', options: ['Treated', 'Referred'] },
       ],
     });
+
     await insertRecord(db.sql, 'register_definition', written);
 
-    const read = await findRecord<RegisterDefinitionRecord>(db.sql, 'register_definition', written.id);
+    const read = await findRecord<RegisterDefinitionRecord>(
+      db.sql,
+      'register_definition',
+      written.id,
+    );
 
     assert.deepEqual(read?.fields, written.fields);
   });
@@ -89,6 +107,7 @@ describe('records', () => {
       quantityOnHand: 120.5,
       reorderLevel: 30,
     });
+
     await insertRecord(db.sql, 'stock_item', written);
 
     const read = await findRecord<StockItemRecord>(db.sql, 'stock_item', written.id);

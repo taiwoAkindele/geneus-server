@@ -37,12 +37,18 @@ describe('device credentials', () => {
   });
 
   it('refuses a device it has never heard of', async () => {
-    assert.deepEqual(await verifyCredential(db.sql, 'device-unknown.whatever'), { failure: 'unknown_device' });
+    assert.deepEqual(await verifyCredential(db.sql, 'device-unknown.whatever'), {
+      failure: 'unknown_device',
+    });
   });
 
   it('refuses anything that is not <deviceId>.<secret>', async () => {
     for (const malformed of ['', 'no-dot', '.secret', 'device.']) {
-      assert.deepEqual(await verifyCredential(db.sql, malformed), { failure: 'malformed' }, JSON.stringify(malformed));
+      assert.deepEqual(
+        await verifyCredential(db.sql, malformed),
+        { failure: 'malformed' },
+        JSON.stringify(malformed),
+      );
     }
   });
 
@@ -50,14 +56,18 @@ describe('device credentials', () => {
     const revoked = await registerScratchFacility(db.sql);
     await db.sql`UPDATE devices SET status = 'revoked', revoked_on = now() WHERE id = ${revoked.device.deviceId}`;
 
-    assert.deepEqual(await verifyCredential(db.sql, revoked.device.credential), { failure: 'revoked' });
+    assert.deepEqual(await verifyCredential(db.sql, revoked.device.credential), {
+      failure: 'revoked',
+    });
   });
 
   it('refuses a device that has been told to wipe', async () => {
     const wiped = await registerScratchFacility(db.sql);
     await db.sql`UPDATE devices SET wipe_requested = true WHERE id = ${wiped.device.deviceId}`;
 
-    assert.deepEqual(await verifyCredential(db.sql, wiped.device.credential), { failure: 'wipe_requested' });
+    assert.deepEqual(await verifyCredential(db.sql, wiped.device.credential), {
+      failure: 'wipe_requested',
+    });
   });
 
   it('cannot be revoked without saying when', async () => {

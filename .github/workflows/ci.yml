@@ -49,6 +49,8 @@ jobs:
 
       - run: npm ci
       - run: npm run typecheck
+      - run: npm run lint
+      - run: npm run format:check
       - run: npm test
 
   # The stack as devices meet it: PostgreSQL + PowerSync from docker-compose,

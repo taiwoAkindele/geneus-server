@@ -4,7 +4,17 @@ import type { FastifyInstance } from 'fastify';
 import type { FacilityRegistrationResult, PinSetupCode, Staff } from '#shared';
 import { fromRow } from '../src/db/records.ts';
 import { hashPinSetupCode } from '../src/staff/pinSetupCodes.ts';
-import { addStaff, asDevice, lastCodeSentTo, mailbox, registerScratchFacility, scratchDatabase, staffSessionFor, testApp, type ScratchDatabase } from './postgres.ts';
+import {
+  addStaff,
+  asDevice,
+  lastCodeSentTo,
+  mailbox,
+  registerScratchFacility,
+  scratchDatabase,
+  staffSessionFor,
+  testApp,
+  type ScratchDatabase,
+} from './postgres.ts';
 
 /**
  * A facility admin's recovery email, and the PIN code sent to it (SCHEMA.md
@@ -20,15 +30,40 @@ describe('admin recovery email', () => {
   let nurse: Staff;
 
   /** As the person named in `requestedBy`, in their own PIN-proven session — the only way the server accepts a recovery email. */
-  const provenAs = async (credential: string, staffId: string) => ({ ...asDevice(credential), 'x-staff-session': (await staffSessionFor(app, credential, staffId)) ?? '' });
+  const provenAs = async (credential: string, staffId: string) => ({
+    ...asDevice(credential),
+    'x-staff-session': (await staffSessionFor(app, credential, staffId)) ?? '',
+  });
+
   const requestCode = async (staffId: string, email: string, requestedBy = staffId) =>
-    app.inject({ method: 'POST', url: `/staff/${staffId}/email/code`, headers: await provenAs(a.device.credential, requestedBy), payload: { email, requestedBy } });
+    app.inject({
+      method: 'POST',
+      url: `/staff/${staffId}/email/code`,
+      headers: await provenAs(a.device.credential, requestedBy),
+      payload: { email, requestedBy },
+    });
+
   const confirm = async (staffId: string, payload: Record<string, unknown>) =>
-    app.inject({ method: 'POST', url: `/staff/${staffId}/email`, headers: await provenAs(a.device.credential, staffId), payload: { requestedBy: staffId, ...payload } });
+    app.inject({
+      method: 'POST',
+      url: `/staff/${staffId}/email`,
+      headers: await provenAs(a.device.credential, staffId),
+      payload: { requestedBy: staffId, ...payload },
+    });
+
   const emailPinCode = (staffId: string, credential = a.device.credential) =>
-    app.inject({ method: 'POST', url: `/staff/${staffId}/pin-codes/email`, headers: asDevice(credential) });
+    app.inject({
+      method: 'POST',
+      url: `/staff/${staffId}/pin-codes/email`,
+      headers: asDevice(credential),
+    });
+
   const contactOf = async (staffId: string) =>
-    (await db.sql<{ email: string }[]>`SELECT email FROM staff_contacts WHERE staff_id = ${staffId}`)[0]?.email;
+    (
+      await db.sql<
+        { email: string }[]
+      >`SELECT email FROM staff_contacts WHERE staff_id = ${staffId}`
+    )[0]?.email;
 
   before(async () => {
     db = await scratchDatabase();
@@ -49,8 +84,10 @@ describe('admin recovery email', () => {
       assert.equal(response.statusCode, 202, response.body);
       assert.equal(response.json().sentTo, 'a•••@example.org');
       const code = lastCodeSentTo('admin@example.org');
+
       const [row] = await db.sql<Record<string, unknown>[]>`
         SELECT * FROM pin_setup_codes WHERE staff_id = ${a.admin.id} AND revoked_on IS NULL AND used_on IS NULL`;
+
       const stored = fromRow<PinSetupCode>('pin_setup_code', row as Record<string, unknown>);
       assert.equal(hashPinSetupCode(code, stored.codeSalt, stored.codeIterations), stored.codeHash);
     });
@@ -64,7 +101,11 @@ describe('admin recovery email', () => {
     });
 
     it('needs an enrolled device', async () => {
-      assert.equal((await app.inject({ method: 'POST', url: `/staff/${a.admin.id}/pin-codes/email` })).statusCode, 401);
+      assert.equal(
+        (await app.inject({ method: 'POST', url: `/staff/${a.admin.id}/pin-codes/email` }))
+          .statusCode,
+        401,
+      );
     });
   });
 
@@ -80,7 +121,11 @@ describe('admin recovery email', () => {
       assert.equal(sent.json().currentSentTo, 'a•••@example.org');
 
       // A phone in the wrong hands has only the new inbox's code.
-      const withoutCurrent = await confirm(a.admin.id, { email: 'new@example.org', code: lastCodeSentTo('new@example.org') });
+      const withoutCurrent = await confirm(a.admin.id, {
+        email: 'new@example.org',
+        code: lastCodeSentTo('new@example.org'),
+      });
+
       assert.equal(withoutCurrent.statusCode, 403);
       assert.equal(withoutCurrent.json().error, 'invalid_current_code');
       assert.equal(await contactOf(a.admin.id), 'admin@example.org');
@@ -97,21 +142,34 @@ describe('admin recovery email', () => {
 
       assert.equal(response.statusCode, 204, response.body);
       assert.equal(await contactOf(a.admin.id), 'new@example.org');
-      const [audit] = await db.sql`SELECT metadata FROM audit_events WHERE entity_id = ${a.admin.id} AND action = 'update'`;
+
+      const [audit] =
+        await db.sql`SELECT metadata FROM audit_events WHERE entity_id = ${a.admin.id} AND action = 'update'`;
+
       assert.equal((audit?.metadata as Record<string, string>).recoveryEmail, 'replaced');
     });
 
-    it('adds a first email with the new address\'s code alone', async () => {
+    it("adds a first email with the new address's code alone", async () => {
       await db.sql`DELETE FROM staff_contacts WHERE staff_id = ${b.admin.id}`;
       const asB = await provenAs(b.device.credential, b.admin.id);
-      await app.inject({ method: 'POST', url: `/staff/${b.admin.id}/email/code`, headers: asB, payload: { email: 'first@example.org', requestedBy: b.admin.id } });
+      await app.inject({
+        method: 'POST',
+        url: `/staff/${b.admin.id}/email/code`,
+        headers: asB,
+        payload: { email: 'first@example.org', requestedBy: b.admin.id },
+      });
+
       const before = mailbox.length;
 
       const response = await app.inject({
         method: 'POST',
         url: `/staff/${b.admin.id}/email`,
         headers: asB,
-        payload: { email: 'first@example.org', code: lastCodeSentTo('first@example.org'), requestedBy: b.admin.id },
+        payload: {
+          email: 'first@example.org',
+          code: lastCodeSentTo('first@example.org'),
+          requestedBy: b.admin.id,
+        },
       });
 
       assert.equal(response.statusCode, 204, response.body);

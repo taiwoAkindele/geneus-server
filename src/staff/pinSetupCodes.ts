@@ -3,7 +3,12 @@ import { normalizePinSetupCode, PinSetupCode, SCHEMA_VERSION } from '#shared';
 import type { Sql, Tx } from '../db/client.ts';
 import { insertRecord } from '../db/records.ts';
 import { findRecord } from '../db/records.ts';
-import { mayApproveWorkforcePin, workforceEnforcementActive, type Facility, type Staff } from '#shared';
+import {
+  mayApproveWorkforcePin,
+  workforceEnforcementActive,
+  type Facility,
+  type Staff,
+} from '#shared';
 import { deriveAuthority, serverContext } from '../workforce/authority.ts';
 import { recordAuditEvent } from '../audit/auditEvents.ts';
 import { findStaffInFacility } from '../auth/staffAuthorization.ts';
@@ -23,16 +28,26 @@ import { findStaffInFacility } from '../auth/staffAuthorization.ts';
 /** Same alphabet as enrollment codes: no I/O/0/1, because it is read out over the phone. */
 const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const CODE_LENGTH = 8;
+
 /** Read aloud or sent as an invitation, a code lives this long. */
 export const PIN_SETUP_CODE_TTL_MS = 24 * 60 * 60 * 1000;
 
-export const newPinSetupCode = (): string => Array.from({ length: CODE_LENGTH }, () => ALPHABET[randomInt(ALPHABET.length)]).join('');
+export const newPinSetupCode = (): string =>
+  Array.from({ length: CODE_LENGTH }, () => ALPHABET[randomInt(ALPHABET.length)]).join('');
+
 /** Kept low enough that a sub-$100 phone checks a code in well under a second. */
 export const PIN_SETUP_CODE_ITERATIONS = 100_000;
+
 const HASH_BYTES = 32;
 
 export const hashPinSetupCode = (code: string, saltBase64: string, iterations: number): string =>
-  pbkdf2Sync(normalizePinSetupCode(code), Buffer.from(saltBase64, 'base64'), iterations, HASH_BYTES, 'sha256').toString('base64');
+  pbkdf2Sync(
+    normalizePinSetupCode(code),
+    Buffer.from(saltBase64, 'base64'),
+    iterations,
+    HASH_BYTES,
+    'sha256',
+  ).toString('base64');
 
 /**
  * Who asked for a code: an admin for someone else (from the Staff screen), a
@@ -57,14 +72,34 @@ export const pinAuthorityRefusal = async (
   clinicalReview: boolean,
 ): Promise<'unknown_staff' | 'clinical_review_required' | undefined> => {
   const staff = await findStaffInFacility(tx, input.facilityId, input.staffId);
-  if (!staff || !staff.active) return 'unknown_staff';
-  const facility = await findRecord<Facility>(tx, 'facility', input.facilityId);
-  if (clinicalReview && workforceEnforcementActive(facility?.workforcePolicy, Date.now())) {
-    const actor = await findRecord<Staff>(tx, 'staff', input.issuedBy), target = await findRecord<Staff>(tx, 'staff', input.staffId);
-    const now = Date.now();
-    if (!actor || !target || !mayApproveWorkforcePin(actor, serverContext(actor, input.issuedFrom, now), await deriveAuthority(tx, actor, input.issuedFrom, now), target,
-      (await deriveAuthority(tx, target, input.issuedFrom, now)).snapshot, now)) return 'clinical_review_required';
+
+  if (!staff || !staff.active) {
+    return 'unknown_staff';
   }
+
+  const facility = await findRecord<Facility>(tx, 'facility', input.facilityId);
+
+  if (clinicalReview && workforceEnforcementActive(facility?.workforcePolicy, Date.now())) {
+    const actor = await findRecord<Staff>(tx, 'staff', input.issuedBy);
+    const target = await findRecord<Staff>(tx, 'staff', input.staffId);
+    const now = Date.now();
+
+    if (
+      !actor ||
+      !target ||
+      !mayApproveWorkforcePin(
+        actor,
+        serverContext(actor, input.issuedFrom, now),
+        await deriveAuthority(tx, actor, input.issuedFrom, now),
+        target,
+        (await deriveAuthority(tx, target, input.issuedFrom, now)).snapshot,
+        now,
+      )
+    ) {
+      return 'clinical_review_required';
+    }
+  }
+
   return undefined;
 };
 
@@ -73,7 +108,10 @@ export const pinAuthorityRefusal = async (
  * the facility's devices; a device that has not synced since can still accept
  * the old code offline until it does — the documented limit of offline checks.
  */
-export const revokeOpenPinSetupCodes = async (tx: Tx, input: { facilityId: string; staffId: string; issuedBy: string }): Promise<void> => {
+export const revokeOpenPinSetupCodes = async (
+  tx: Tx,
+  input: { facilityId: string; staffId: string; issuedBy: string },
+): Promise<void> => {
   const now = new Date().toISOString();
   await tx`
     UPDATE pin_setup_codes
@@ -89,12 +127,21 @@ export const revokeOpenPinSetupCodes = async (tx: Tx, input: { facilityId: strin
  */
 export const issuePinSetupCode = async (
   sql: Sql,
-  input: { facilityId: string; staffId: string; issuedBy: string; issuedFrom: string; channel?: PinSetupCodeChannel },
+  input: {
+    facilityId: string;
+    staffId: string;
+    issuedBy: string;
+    issuedFrom: string;
+    channel?: PinSetupCodeChannel;
+  },
 ): Promise<PinSetupCodeOutcome> =>
   sql.begin(async (tx): Promise<PinSetupCodeOutcome> => {
     await tx`SELECT id FROM facilities WHERE id=${input.facilityId} FOR UPDATE`;
     const refusal = await pinAuthorityRefusal(tx, input, (input.channel ?? 'admin') === 'admin');
-    if (refusal) return { ok: false, error: refusal };
+
+    if (refusal) {
+      return { ok: false, error: refusal };
+    }
 
     const now = new Date();
     await revokeOpenPinSetupCodes(tx, input);
@@ -104,6 +151,7 @@ export const issuePinSetupCode = async (
 
     const code = newPinSetupCode();
     const codeSalt = randomBytes(16).toString('base64');
+
     const record = PinSetupCode.parse({
       id: `pin_setup_code:${randomUUID()}`,
       type: 'pin_setup_code',
@@ -118,6 +166,7 @@ export const issuePinSetupCode = async (
       codeIterations: PIN_SETUP_CODE_ITERATIONS,
       expiresOn: new Date(now.getTime() + PIN_SETUP_CODE_TTL_MS).toISOString(),
     });
+
     await insertRecord(tx, 'pin_setup_code', record);
     await recordAuditEvent(tx, {
       facilityId: input.facilityId,
@@ -128,5 +177,6 @@ export const issuePinSetupCode = async (
       entityId: record.id,
       metadata: { staffId: input.staffId, channel: input.channel ?? 'admin' },
     });
+
     return { ok: true, code, record };
   });

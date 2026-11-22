@@ -23,20 +23,30 @@ const FILE_PATTERN = /^(\d{4})_([a-z0-9_]+)\.sql$/;
 const MIGRATION_LOCK = 7_244_001;
 
 export type Migration = { version: number; name: string; sql: string };
-export type MigrationOutcome = { version: number; name: string; outcome: 'applied' | 'already_applied' };
+
+export type MigrationOutcome = {
+  version: number;
+  name: string;
+  outcome: 'applied' | 'already_applied';
+};
 
 export const loadMigrations = async (dir = MIGRATIONS_DIR): Promise<Migration[]> => {
   const files = (await readdir(dir)).filter((file) => FILE_PATTERN.test(file)).sort();
+
   const migrations = await Promise.all(
     files.map(async (file) => {
       const [, version, name] = FILE_PATTERN.exec(file) as RegExpExecArray;
+
       return { version: Number(version), name, sql: await readFile(path.join(dir, file), 'utf8') };
     }),
   );
+
   const versions = new Set(migrations.map((migration) => migration.version));
+
   if (versions.size !== migrations.length) {
     throw new Error(`two migration files share a version number in ${dir}`);
   }
+
   return migrations;
 };
 
@@ -52,15 +62,24 @@ export const migrate = async (sql: Sql, migrations?: Migration[]): Promise<Migra
         name        text NOT NULL,
         applied_on  timestamptz NOT NULL DEFAULT now()
       )`;
+
     const applied = new Set(
-      (await tx<{ version: number }[]>`SELECT version FROM schema_migrations`).map((row) => row.version),
+      (await tx<{ version: number }[]>`SELECT version FROM schema_migrations`).map(
+        (row) => row.version,
+      ),
     );
 
     for (const migration of pending) {
       if (applied.has(migration.version)) {
-        outcomes.push({ version: migration.version, name: migration.name, outcome: 'already_applied' });
+        outcomes.push({
+          version: migration.version,
+          name: migration.name,
+          outcome: 'already_applied',
+        });
+
         continue;
       }
+
       // `simple()` sends the file as one multi-statement script — what a
       // migration is — instead of a single prepared statement.
       await tx.unsafe(migration.sql).simple();

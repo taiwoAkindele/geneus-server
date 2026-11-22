@@ -3,7 +3,12 @@ import assert from 'node:assert/strict';
 import { Patient, type FacilityRegistrationResult, type SyncRejection } from '#shared';
 import { findRecord, insertRecord } from '../src/db/records.ts';
 import { claimMutation, recordRejection, wasApplied } from '../src/sync/ledger.ts';
-import { envelopeFor, registerScratchFacility, scratchDatabase, type ScratchDatabase } from './postgres.ts';
+import {
+  envelopeFor,
+  registerScratchFacility,
+  scratchDatabase,
+  type ScratchDatabase,
+} from './postgres.ts';
 
 /**
  * The ledger is what makes a retried upload harmless. The shape of the test is
@@ -30,8 +35,15 @@ describe('sync ledger', () => {
   const applyOnce = (clientId: number, sequence: string) =>
     db.sql.begin(async (tx) => {
       const identity = { deviceId: facility.device.deviceId, clientId, transactionId: 1 };
-      if (!(await claimMutation(tx, identity, 'patient', `TEST-LEDGER-${sequence}-K2`, 'applied'))) return 'duplicate';
+
+      if (
+        !(await claimMutation(tx, identity, 'patient', `TEST-LEDGER-${sequence}-K2`, 'applied'))
+      ) {
+        return 'duplicate';
+      }
+
       await insertRecord(tx, 'patient', patient(sequence));
+
       return 'applied';
     });
 
@@ -45,23 +57,41 @@ describe('sync ledger', () => {
   });
 
   it('applies a mutation once and acknowledges every retry without writing again', async () => {
-    const outcomes = [await applyOnce(1, '000001'), await applyOnce(1, '000001'), await applyOnce(1, '000001')];
+    const outcomes = [
+      await applyOnce(1, '000001'),
+      await applyOnce(1, '000001'),
+      await applyOnce(1, '000001'),
+    ];
 
     assert.deepEqual(outcomes, ['applied', 'duplicate', 'duplicate']);
     const rows = await db.sql`SELECT id FROM patients WHERE id = 'TEST-LEDGER-000001-K2'`;
     assert.equal(rows.length, 1);
-    assert.equal(await wasApplied(db.sql, { deviceId: facility.device.deviceId, clientId: 1 }), true);
+    assert.equal(
+      await wasApplied(db.sql, { deviceId: facility.device.deviceId, clientId: 1 }),
+      true,
+    );
   });
 
   it('forgets the claim when the write it guarded rolls back, so the retry is a first attempt', async () => {
     await db.sql
       .begin(async (tx) => {
-        await claimMutation(tx, { deviceId: facility.device.deviceId, clientId: 2, transactionId: 1 }, 'patient', 'x', 'applied');
+        await claimMutation(
+          tx,
+          { deviceId: facility.device.deviceId, clientId: 2, transactionId: 1 },
+          'patient',
+          'x',
+          'applied',
+        );
+
         throw new Error('the write failed');
       })
       .catch(() => undefined);
 
-    assert.equal(await wasApplied(db.sql, { deviceId: facility.device.deviceId, clientId: 2 }), false);
+    assert.equal(
+      await wasApplied(db.sql, { deviceId: facility.device.deviceId, clientId: 2 }),
+      false,
+    );
+
     assert.equal(await applyOnce(2, '000002'), 'applied');
   });
 
@@ -69,7 +99,13 @@ describe('sync ledger', () => {
     const other = await registerScratchFacility(db.sql);
 
     const claimed = await db.sql.begin((tx) =>
-      claimMutation(tx, { deviceId: other.device.deviceId, clientId: 1, transactionId: null }, 'patient', 'y', 'rejected'),
+      claimMutation(
+        tx,
+        { deviceId: other.device.deviceId, clientId: 1, transactionId: null },
+        'patient',
+        'y',
+        'rejected',
+      ),
     );
 
     assert.equal(claimed, true);
@@ -92,7 +128,10 @@ describe('sync ledger', () => {
     const stored = await findRecord<SyncRejection>(db.sql, 'sync_rejection', rejection.id);
 
     assert.equal(stored?.category, 'conflict');
-    assert.deepEqual(stored?.conflicts, [{ column: 'phone', deviceValue: '0801', serverValue: '0802' }]);
+    assert.deepEqual(stored?.conflicts, [
+      { column: 'phone', deviceValue: '0801', serverValue: '0802' },
+    ]);
+
     assert.equal(stored?.resolvedOn, undefined);
     assert.equal(stored?.createdBy, 'system');
   });

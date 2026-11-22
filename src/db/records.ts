@@ -15,8 +15,10 @@ export const TABLE_FOR: Record<DocType, string> = {
   encounter_entry: 'encounter_entries',
   ward_care_event: 'ward_care_events',
   clinical_event: 'clinical_events',
-  inpatient_event: 'inpatient_events', bed_ready_event: 'bed_ready_events',
-  library_document:'library_documents',visit_document:'visit_documents',
+  inpatient_event: 'inpatient_events',
+  bed_ready_event: 'bed_ready_events',
+  library_document: 'library_documents',
+  visit_document: 'visit_documents',
   handoff: 'handoffs',
   appointment: 'appointments',
   register_definition: 'register_definitions',
@@ -37,20 +39,40 @@ export const TABLE_FOR: Record<DocType, string> = {
   charge: 'charges',
   payment: 'payments',
   billing_adjustment: 'billing_adjustments',
-  service_charge_allocation:'service_charge_allocations',
-  coverage_financial_summary:'coverage_financial_summaries',
+  service_charge_allocation: 'service_charge_allocations',
+  coverage_financial_summary: 'coverage_financial_summaries',
   incoming_transfer: 'incoming_transfers',
   billing_department: 'billing_departments',
-  location: 'locations', service_definition: 'service_definitions', service_offering: 'service_offerings',
-  practitioner_profile: 'practitioner_profiles', credential: 'credentials', capability_decision: 'capability_decisions',
-  reviewer_delegation: 'reviewer_delegations', clinical_authority_bootstrap: 'clinical_authority_bootstraps',
-  external_clinical_reviewer: 'external_clinical_reviewers', authority_snapshot: 'authority_snapshots',
-  staff_assignment: 'staff_assignments', service_session: 'service_sessions', session_event: 'session_events',
-  work_ownership_event: 'work_ownership_events', appointment_reservation: 'appointment_reservations',
-  result_template: 'result_templates', result_part: 'result_parts', answer_list: 'answer_lists',
-  standard_test: 'standard_tests', standard_template: 'standard_templates',
-  refund: 'refunds', payer: 'payers', cover_schedule: 'cover_schedules', patient_cover: 'patient_covers', patient_contact: 'patient_contacts', patient_message: 'patient_messages',
-  cover_check: 'cover_checks', coverage_election: 'coverage_elections', coverage_allocation: 'coverage_allocations', service_completion: 'service_completions',
+  location: 'locations',
+  service_definition: 'service_definitions',
+  service_offering: 'service_offerings',
+  practitioner_profile: 'practitioner_profiles',
+  credential: 'credentials',
+  capability_decision: 'capability_decisions',
+  reviewer_delegation: 'reviewer_delegations',
+  clinical_authority_bootstrap: 'clinical_authority_bootstraps',
+  external_clinical_reviewer: 'external_clinical_reviewers',
+  authority_snapshot: 'authority_snapshots',
+  staff_assignment: 'staff_assignments',
+  service_session: 'service_sessions',
+  session_event: 'session_events',
+  work_ownership_event: 'work_ownership_events',
+  appointment_reservation: 'appointment_reservations',
+  result_template: 'result_templates',
+  result_part: 'result_parts',
+  answer_list: 'answer_lists',
+  standard_test: 'standard_tests',
+  standard_template: 'standard_templates',
+  refund: 'refunds',
+  payer: 'payers',
+  cover_schedule: 'cover_schedules',
+  patient_cover: 'patient_covers',
+  patient_contact: 'patient_contacts',
+  patient_message: 'patient_messages',
+  cover_check: 'cover_checks',
+  coverage_election: 'coverage_elections',
+  coverage_allocation: 'coverage_allocations',
+  service_completion: 'service_completions',
 };
 
 /**
@@ -59,7 +81,8 @@ export const TABLE_FOR: Record<DocType, string> = {
  * JSON explicitly — and these are the only places JSONB is used (SCHEMA.md §11).
  */
 const JSONB_COLUMNS: Partial<Record<DocType, readonly string[]>> = {
-  library_document:['file'],visit_document:['file','signature_review'],
+  library_document: ['file'],
+  visit_document: ['file', 'signature_review'],
   patient: ['identification_base'],
   facility: ['workforce_policy', 'time_zone_history'],
   appointment: ['charge_ids', 'activity', 'allocation'],
@@ -73,21 +96,40 @@ const JSONB_COLUMNS: Partial<Record<DocType, readonly string[]>> = {
   referral: ['tier1'],
   inbound_referral: ['tier1'],
   audit_event: ['metadata'],
-  sync_rejection: ['conflicts', 'refused_record', 'refused_changes', 'dependencies', 'visible_to_staff_ids'],
+  sync_rejection: [
+    'conflicts',
+    'refused_record',
+    'refused_changes',
+    'dependencies',
+    'visible_to_staff_ids',
+  ],
   fee_item: ['exemptions'],
   payment: ['allocations'],
-  service_definition: ['concept', 'investigation'], service_offering: ['location_ids', 'required_actions'],
-  practitioner_profile: ['profession', 'specialties'], capability_decision: ['scope', 'credential_revision_ids'],
-  reviewer_delegation: ['scopes'], clinical_authority_bootstrap: ['scopes'], external_clinical_reviewer: ['scopes'],
-  authority_snapshot: ['grants', 'review_scopes', 'source_decision_ids'], staff_assignment: ['location_ids', 'required_actions'],
+  service_definition: ['concept', 'investigation'],
+  service_offering: ['location_ids', 'required_actions'],
+  practitioner_profile: ['profession', 'specialties'],
+  capability_decision: ['scope', 'credential_revision_ids'],
+  reviewer_delegation: ['scopes'],
+  clinical_authority_bootstrap: ['scopes'],
+  external_clinical_reviewer: ['scopes'],
+  authority_snapshot: ['grants', 'review_scopes', 'source_decision_ids'],
+  staff_assignment: ['location_ids', 'required_actions'],
   service_session: ['participants', 'resources', 'roster_shift_ids'],
-  result_template: ['parts', 'service_definition_ids'], result_part: ['part'], answer_list: ['answers'],
-  standard_test: ['aliases', 'concept'], standard_template: ['tests', 'parts'],
-  refund: ['allocations'], cover_schedule: ['items', 'categories'], coverage_election: ['charge_ids'],
+  result_template: ['parts', 'service_definition_ids'],
+  result_part: ['part'],
+  answer_list: ['answers'],
+  standard_test: ['aliases', 'concept'],
+  standard_template: ['tests', 'parts'],
+  refund: ['allocations'],
+  cover_schedule: ['items', 'categories'],
+  coverage_election: ['charge_ids'],
 };
 
-export const snakeCase = (key: string): string => key.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`);
-export const camelCase = (key: string): string => key.replace(/_([a-z0-9])/g, (_, letter: string) => letter.toUpperCase());
+export const snakeCase = (key: string): string =>
+  key.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`);
+
+export const camelCase = (key: string): string =>
+  key.replace(/_([a-z0-9])/g, (_, letter: string) => letter.toUpperCase());
 
 type Row = Record<string, unknown>;
 
@@ -98,11 +140,16 @@ type Row = Record<string, unknown>;
 export const toRow = (sql: Sql | Tx, type: DocType, record: Record<string, unknown>): Row => {
   const jsonb = JSONB_COLUMNS[type] ?? [];
   const row: Row = {};
+
   for (const [key, value] of Object.entries(record)) {
-    if (key === 'type' || value === undefined) continue;
+    if (key === 'type' || value === undefined) {
+      continue;
+    }
+
     const column = snakeCase(key);
     row[column] = jsonb.includes(column) ? sql.json(value as never) : value;
   }
+
   return row;
 };
 
@@ -113,15 +160,30 @@ export const toRow = (sql: Sql | Tx, type: DocType, record: Record<string, unkno
  */
 export const fromRow = <T extends AnyDocument>(type: DocType, row: Row): T => {
   const record: Row = { type };
+
   for (const [column, value] of Object.entries(row)) {
-    if (type === 'authority_snapshot' && column === 'is_current') continue;
-    if (value === null) continue;
-    record[camelCase(column)] = ['quantity','unit_price_minor'].includes(column) && typeof value==='string' ? Number(value) : value;
+    if (type === 'authority_snapshot' && column === 'is_current') {
+      continue;
+    }
+
+    if (value === null) {
+      continue;
+    }
+
+    record[camelCase(column)] =
+      ['quantity', 'unit_price_minor'].includes(column) && typeof value === 'string'
+        ? Number(value)
+        : value;
   }
+
   const parsed = parseDocument(record);
+
   if (!parsed.success) {
-    throw new Error(`row ${String(row.id)} in ${TABLE_FOR[type]} does not match the contract: ${parsed.error.message}`);
+    throw new Error(
+      `row ${String(row.id)} in ${TABLE_FOR[type]} does not match the contract: ${parsed.error.message}`,
+    );
   }
+
   return parsed.data as T;
 };
 
@@ -130,11 +192,17 @@ export const fromRow = <T extends AnyDocument>(type: DocType, row: Row): T => {
  * and nothing that fails the schema can reach a table — whatever the caller
  * already checked. Validation is cheap; a malformed clinical row is not.
  */
-export const insertRecord = async (sql: Sql | Tx, type: DocType, record: Record<string, unknown>): Promise<void> => {
+export const insertRecord = async (
+  sql: Sql | Tx,
+  type: DocType,
+  record: Record<string, unknown>,
+): Promise<void> => {
   const parsed = parseDocument({ ...record, type });
+
   if (!parsed.success) {
     throw new Error(`refusing to insert ${type} ${String(record.id)}: ${parsed.error.message}`);
   }
+
   await sql`INSERT INTO ${sql(TABLE_FOR[type])} ${sql(toRow(sql, type, parsed.data))}`;
 };
 
@@ -144,5 +212,6 @@ export const findRecord = async <T extends AnyDocument>(
   id: string,
 ): Promise<T | undefined> => {
   const [row] = await sql<Row[]>`SELECT * FROM ${sql(TABLE_FOR[type])} WHERE id = ${id}`;
+
   return row ? fromRow<T>(type, row) : undefined;
 };

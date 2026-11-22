@@ -1,3 +1,5 @@
+import { readJsonBody } from './readJsonBody.ts';
+
 /**
  * Sending email, for the two things the server emails: a code proving an
  * address, and a PIN setup code for an admin who forgot their PIN. Resend's
@@ -13,13 +15,19 @@
  * via Geneus". `replyTo` sends replies elsewhere, e.g. to the hospital. Attachments are small files sent inline.
  */
 export type EmailMessage = {
-  to: string; subject: string; text: string; html?: string; fromName?: string; replyTo?: string;
+  to: string;
+  subject: string;
+  text: string;
+  html?: string;
+  fromName?: string;
+  replyTo?: string;
   attachments?: { filename: string; content: Uint8Array; contentType: string }[];
 };
 
 /** `Geneus <no-reply@example.org>` with a new display name: quotes and angle brackets are removed from the name. */
 export const withDisplayName = (from: string, name: string) => {
   const address = /<([^>]+)>/.exec(from)?.[1] ?? from.trim();
+
   return `"${name.replace(/["<>\\\r\n]/g, '').slice(0, 100)}" <${address}>`;
 };
 
@@ -51,6 +59,7 @@ export const createMailer = (
   log: Log,
 ): Mailer => {
   const { resendApiKey, emailFrom } = config;
+
   if (resendApiKey && emailFrom) {
     return {
       configured: true,
@@ -59,17 +68,34 @@ export const createMailer = (
           method: 'POST',
           headers: { authorization: `Bearer ${resendApiKey}`, 'content-type': 'application/json' },
           body: JSON.stringify({
-            from: fromName ? withDisplayName(emailFrom, fromName) : emailFrom, to: [to], subject, text,
-            ...(html ? { html } : {}), ...(replyTo ? { reply_to: replyTo } : {}),
-            ...(attachments?.length ? { attachments: attachments.map((a) => ({ filename: a.filename, content: Buffer.from(a.content).toString('base64'), content_type: a.contentType })) } : {}),
+            from: fromName ? withDisplayName(emailFrom, fromName) : emailFrom,
+            to: [to],
+            subject,
+            text,
+            ...(html ? { html } : {}),
+            ...(replyTo ? { reply_to: replyTo } : {}),
+            ...(attachments?.length
+              ? {
+                  attachments: attachments.map((a) => ({
+                    filename: a.filename,
+                    content: Buffer.from(a.content).toString('base64'),
+                    content_type: a.contentType,
+                  })),
+                }
+              : {}),
           }),
           signal: AbortSignal.timeout(20_000),
         }).catch((cause: unknown) => {
           throw new EmailNotSent(cause instanceof Error ? cause.message : 'network error');
         });
+
         // Resend's error body names the problem (a bad key, an unverified domain); it carries no message content.
-        if (!response.ok) throw new EmailNotSent(`Resend answered ${response.status}: ${await response.text()}`);
-        const accepted = (await response.json().catch(() => undefined)) as { id?: unknown } | undefined;
+        if (!response.ok) {
+          throw new EmailNotSent(`Resend answered ${response.status}: ${await response.text()}`);
+        }
+
+        const accepted = (await readJsonBody(response)) as { id?: unknown } | undefined;
+
         return typeof accepted?.id === 'string' ? { providerMessageId: accepted.id } : {};
       },
     };
@@ -78,8 +104,19 @@ export const createMailer = (
   return {
     configured: false,
     send: async (message) => {
-      if (config.isProduction) throw new EmailNotSent('RESEND_API_KEY and EMAIL_FROM are not set');
-      log.warn({ to: message.to, subject: message.subject, text: message.text, attachments: message.attachments?.map((a) => a.filename) }, 'email not configured — message written to the log instead (development only)');
+      if (config.isProduction) {
+        throw new EmailNotSent('RESEND_API_KEY and EMAIL_FROM are not set');
+      }
+
+      log.warn(
+        {
+          to: message.to,
+          subject: message.subject,
+          text: message.text,
+          attachments: message.attachments?.map((a) => a.filename),
+        },
+        'email not configured — message written to the log instead (development only)',
+      );
     },
   };
 };
@@ -87,5 +124,6 @@ export const createMailer = (
 /** `amaka@example.org` → `a•••@example.org`: enough to recognise, not enough to harvest. */
 export const maskEmail = (email: string): string => {
   const [local = '', domain = ''] = email.split('@');
+
   return `${local.slice(0, 1)}•••@${domain}`;
 };

@@ -53,8 +53,10 @@ export const createSql = (url: string): Sql =>
 
 /** PostgreSQL's SQLSTATE for a unique-constraint violation. */
 export const UNIQUE_VIOLATION = '23505';
+
 /** PostgreSQL's SQLSTATE for a foreign-key violation. */
 export const FOREIGN_KEY_VIOLATION = '23503';
+
 /** PostgreSQL's SQLSTATE for a CHECK-constraint violation. */
 export const CHECK_VIOLATION = '23514';
 

@@ -1,13 +1,39 @@
 import type { PaystackFetch } from '../paystack.ts';
 import {
-  paystackCheckAccess, paystackCreateAccount, paystackDescriptor, paystackGetAccount, paystackListAccounts, paystackMode,
-  paystackStartCheckout, paystackVerifyCheckout, paystackVerifyTransfer, paystackWebhookReference, PaystackAccountDetails, PaystackCredentials,
+  paystackCheckAccess,
+  paystackCreateAccount,
+  paystackDescriptor,
+  paystackGetAccount,
+  paystackListAccounts,
+  paystackMode,
+  paystackStartCheckout,
+  paystackVerifyCheckout,
+  paystackVerifyTransfer,
+  paystackWebhookReference,
+  PaystackAccountDetails,
+  PaystackCredentials,
 } from './paystack.ts';
 import {
-  monnifyCheckAccess, monnifyCreateAccount, monnifyDescriptor, monnifyGetAccount, monnifyMode, monnifyStartCheckout, monnifyVerifyCheckout, monnifyVerifyTransfer,
-  monnifyWebhookReference, MonnifyAccountDetails, MonnifyCredentials,
+  monnifyCheckAccess,
+  monnifyCreateAccount,
+  monnifyDescriptor,
+  monnifyGetAccount,
+  monnifyMode,
+  monnifyStartCheckout,
+  monnifyVerifyCheckout,
+  monnifyVerifyTransfer,
+  monnifyWebhookReference,
+  MonnifyAccountDetails,
+  MonnifyCredentials,
 } from './monnify.ts';
-import type { CheckoutOutcome, CheckoutRequest, ProviderDescriptor, ProviderMode, ReceivingAccount, VerifiedTransfer } from './types.ts';
+import type {
+  CheckoutOutcome,
+  CheckoutRequest,
+  ProviderDescriptor,
+  ProviderMode,
+  ReceivingAccount,
+  VerifiedTransfer,
+} from './types.ts';
 
 type Credentials = Record<string, string>;
 /**
@@ -22,58 +48,114 @@ export type PaymentProvider = {
   accountDetails: (input: unknown) => Credentials | undefined;
   mode: (credentials: Credentials) => ProviderMode;
   checkAccess: (credentials: Credentials, http: PaystackFetch) => Promise<void>;
-  createAccount: (credentials: Credentials, hospital: { id: string; name: string }, details: Credentials, http: PaystackFetch) => Promise<ReceivingAccount>;
-  getAccount: (credentials: Credentials, providerAccountId: string, http: PaystackFetch) => Promise<ReceivingAccount>;
+  createAccount: (
+    credentials: Credentials,
+    hospital: { id: string; name: string },
+    details: Credentials,
+    http: PaystackFetch,
+  ) => Promise<ReceivingAccount>;
+  getAccount: (
+    credentials: Credentials,
+    providerAccountId: string,
+    http: PaystackFetch,
+  ) => Promise<ReceivingAccount>;
   listAccounts?: (credentials: Credentials, http: PaystackFetch) => Promise<ReceivingAccount[]>;
-  verifyTransfer: (credentials: Credentials, reference: string, http: PaystackFetch) => Promise<VerifiedTransfer | undefined>;
+  verifyTransfer: (
+    credentials: Credentials,
+    reference: string,
+    http: PaystackFetch,
+  ) => Promise<VerifiedTransfer | undefined>;
   /** Header that carries the webhook signature, and the check itself. */
   webhookHeader: string;
   /** `reference`: a bank transfer to verify. `checkoutReference`: a bill checkout to settle. */
-  webhookReference: (raw: string, signature: unknown, credentials: Credentials) => { ok: false } | { ok: true; reference?: string; checkoutReference?: string };
+  webhookReference: (
+    raw: string,
+    signature: unknown,
+    credentials: Credentials,
+  ) => { ok: false } | { ok: true; reference?: string; checkoutReference?: string };
   /** A hosted checkout where a patient pays one bill online, when the provider offers one. */
   checkout?: {
-    start: (credentials: Credentials, input: CheckoutRequest, http: PaystackFetch) => Promise<{ checkoutUrl: string }>;
-    verify: (credentials: Credentials, reference: string, http: PaystackFetch) => Promise<CheckoutOutcome>;
+    start: (
+      credentials: Credentials,
+      input: CheckoutRequest,
+      http: PaystackFetch,
+    ) => Promise<{ checkoutUrl: string }>;
+    verify: (
+      credentials: Credentials,
+      reference: string,
+      http: PaystackFetch,
+    ) => Promise<CheckoutOutcome>;
   };
   /** Paystack stored a bare secret key before providers existed; others store a JSON bundle. */
   storesBareSecret?: boolean;
 };
 
-const parse = <T extends Credentials>(schema: { safeParse: (v: unknown) => { success: true; data: T } | { success: false } }) => (input: unknown) => { const r = schema.safeParse(input); return r.success ? r.data : undefined; };
+const parse =
+  <T extends Credentials>(schema: {
+    safeParse: (v: unknown) => { success: true; data: T } | { success: false };
+  }) =>
+  (input: unknown) => {
+    const r = schema.safeParse(input);
+    return r.success ? r.data : undefined;
+  };
 
 const paystack: PaymentProvider = {
-  descriptor: paystackDescriptor, storesBareSecret: true,
-  credentials: parse(PaystackCredentials), accountDetails: parse(PaystackAccountDetails),
+  descriptor: paystackDescriptor,
+  storesBareSecret: true,
+  credentials: parse(PaystackCredentials),
+  accountDetails: parse(PaystackAccountDetails),
   mode: (c) => paystackMode(c.secretKey),
   checkAccess: (c, http) => paystackCheckAccess(c.secretKey, http),
-  createAccount: (c, hospital, d, http) => paystackCreateAccount(c.secretKey, hospital, { email: d.email, phone: d.phone }, http),
+  createAccount: (c, hospital, d, http) =>
+    paystackCreateAccount(c.secretKey, hospital, { email: d.email, phone: d.phone }, http),
   getAccount: (c, id, http) => paystackGetAccount(c.secretKey, id, http),
   listAccounts: (c, http) => paystackListAccounts(c.secretKey, http),
   verifyTransfer: (c, reference, http) => paystackVerifyTransfer(c.secretKey, reference, http),
   webhookHeader: 'x-paystack-signature',
   webhookReference: (raw, signature, c) => paystackWebhookReference(raw, signature, c.secretKey),
-  checkout: { start: (c, input, http) => paystackStartCheckout(c.secretKey, input, http), verify: (c, reference, http) => paystackVerifyCheckout(c.secretKey, reference, http) },
+  checkout: {
+    start: (c, input, http) => paystackStartCheckout(c.secretKey, input, http),
+    verify: (c, reference, http) => paystackVerifyCheckout(c.secretKey, reference, http),
+  },
 };
 
 const monnify: PaymentProvider = {
   descriptor: monnifyDescriptor,
-  credentials: parse(MonnifyCredentials), accountDetails: parse(MonnifyAccountDetails),
+  credentials: parse(MonnifyCredentials),
+  accountDetails: parse(MonnifyAccountDetails),
   mode: (c) => monnifyMode({ apiKey: c.apiKey }),
   checkAccess: (c, http) => monnifyCheckAccess(c as MonnifyCredentials, http),
-  createAccount: (c, hospital, d, http) => monnifyCreateAccount(c as MonnifyCredentials, hospital, { bank: d.bank, email: d.email, bvn: d.bvn }, http),
+  createAccount: (c, hospital, d, http) =>
+    monnifyCreateAccount(
+      c as MonnifyCredentials,
+      hospital,
+      { bank: d.bank, email: d.email, bvn: d.bvn },
+      http,
+    ),
   getAccount: (c, id, http) => monnifyGetAccount(c as MonnifyCredentials, id, http),
-  verifyTransfer: (c, reference, http) => monnifyVerifyTransfer(c as MonnifyCredentials, reference, http),
+  verifyTransfer: (c, reference, http) =>
+    monnifyVerifyTransfer(c as MonnifyCredentials, reference, http),
   webhookHeader: 'monnify-signature',
-  webhookReference: (raw, signature, c) => monnifyWebhookReference(raw, signature, { secretKey: c.secretKey }),
-  checkout: { start: (c, input, http) => monnifyStartCheckout(c as MonnifyCredentials, input, http), verify: (c, reference, http) => monnifyVerifyCheckout(c as MonnifyCredentials, reference, http) },
+  webhookReference: (raw, signature, c) =>
+    monnifyWebhookReference(raw, signature, { secretKey: c.secretKey }),
+  checkout: {
+    start: (c, input, http) => monnifyStartCheckout(c as MonnifyCredentials, input, http),
+    verify: (c, reference, http) => monnifyVerifyCheckout(c as MonnifyCredentials, reference, http),
+  },
 };
 
 const REGISTRY: Record<string, PaymentProvider> = { paystack, monnify };
 /** Descriptors for the setup screen, in the order offered. */
-export const PROVIDERS: readonly ProviderDescriptor[] = Object.values(REGISTRY).map((p) => p.descriptor);
-export const providerDescriptor = (id: string): ProviderDescriptor | undefined => REGISTRY[id]?.descriptor;
-export const paymentProvider = (id: string): PaymentProvider | undefined => Object.hasOwn(REGISTRY, id) ? REGISTRY[id] : undefined;
+export const PROVIDERS: readonly ProviderDescriptor[] = Object.values(REGISTRY).map(
+  (p) => p.descriptor,
+);
+export const providerDescriptor = (id: string): ProviderDescriptor | undefined =>
+  REGISTRY[id]?.descriptor;
+export const paymentProvider = (id: string): PaymentProvider | undefined =>
+  Object.hasOwn(REGISTRY, id) ? REGISTRY[id] : undefined;
 
 /** Credentials are sealed as the bare key for Paystack (as before providers existed), or as JSON for others. */
-export const serialiseCredentials = (provider: PaymentProvider, credentials: Credentials) => provider.storesBareSecret ? credentials.secretKey : JSON.stringify(credentials);
-export const deserialiseCredentials = (provider: PaymentProvider, opened: string): Credentials => provider.storesBareSecret ? { secretKey: opened } : JSON.parse(opened) as Credentials;
+export const serialiseCredentials = (provider: PaymentProvider, credentials: Credentials) =>
+  provider.storesBareSecret ? credentials.secretKey : JSON.stringify(credentials);
+export const deserialiseCredentials = (provider: PaymentProvider, opened: string): Credentials =>
+  provider.storesBareSecret ? { secretKey: opened } : (JSON.parse(opened) as Credentials);

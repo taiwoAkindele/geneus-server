@@ -4,7 +4,9 @@ import { createPublicKey, generateKeyPairSync, verify } from 'node:crypto';
 import { createSigner } from '../src/lib/signing.ts';
 
 const privateKeyBase64 = (): string =>
-  generateKeyPairSync('ed25519').privateKey.export({ format: 'der', type: 'pkcs8' }).toString('base64');
+  generateKeyPairSync('ed25519')
+    .privateKey.export({ format: 'der', type: 'pkcs8' })
+    .toString('base64');
 
 /**
  * Verification is done the way a device does it: from the exported public key
@@ -31,13 +33,19 @@ describe('signing', () => {
     const signer = createSigner(privateKeyBase64());
     const signature = signer.sign({ now: '2026-09-08T09:30:00+01:00' });
 
-    assert.equal(verifyAsDevice({ now: '2026-09-09T09:30:00+01:00' }, signature, signer.publicKeyBase64), false);
+    assert.equal(
+      verifyAsDevice({ now: '2026-09-09T09:30:00+01:00' }, signature, signer.publicKeyBase64),
+      false,
+    );
   });
 
   it('keeps the same public key across restarts when the private key is configured', () => {
     const configured = privateKeyBase64();
 
-    assert.equal(createSigner(configured).publicKeyBase64, createSigner(configured).publicKeyBase64);
+    assert.equal(
+      createSigner(configured).publicKeyBase64,
+      createSigner(configured).publicKeyBase64,
+    );
   });
 
   /**
@@ -65,7 +73,11 @@ describe('signing', () => {
     const signer = createSigner(configured);
 
     assert.equal(signer.publicKeyFingerprint, createSigner(configured).publicKeyFingerprint);
-    assert.notEqual(signer.publicKeyFingerprint, createSigner(privateKeyBase64()).publicKeyFingerprint);
+    assert.notEqual(
+      signer.publicKeyFingerprint,
+      createSigner(privateKeyBase64()).publicKeyFingerprint,
+    );
+
     assert.match(signer.publicKeyFingerprint, /^[0-9a-f]{16}$/);
   });
 
@@ -73,6 +85,9 @@ describe('signing', () => {
     const signer = createSigner(privateKeyBase64());
     const signature = signer.sign({ now: 'a', facilityId: 'b' });
 
-    assert.equal(verifyAsDevice({ facilityId: 'b', now: 'a' }, signature, signer.publicKeyBase64), false);
+    assert.equal(
+      verifyAsDevice({ facilityId: 'b', now: 'a' }, signature, signer.publicKeyBase64),
+      false,
+    );
   });
 });

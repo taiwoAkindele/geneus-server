@@ -14,6 +14,9 @@ const outcomes = await migrate(sql);
 await sql.end();
 
 for (const outcome of outcomes) {
-  console.log(`  ${outcome.outcome.padEnd(16)} ${String(outcome.version).padStart(4, '0')}_${outcome.name}`);
+  console.log(
+    `  ${outcome.outcome.padEnd(16)} ${String(outcome.version).padStart(4, '0')}_${outcome.name}`,
+  );
 }
+
 console.log(`\n  ${outcomes.filter((outcome) => outcome.outcome === 'applied').length} applied\n`);

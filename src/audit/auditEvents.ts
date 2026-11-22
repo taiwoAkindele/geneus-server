@@ -21,8 +21,12 @@ export type ServerAuditEvent = {
   metadata?: AuditEvent['metadata'];
 };
 
-export const recordAuditEvent = async (sql: Sql | Tx, event: ServerAuditEvent): Promise<AuditEvent> => {
+export const recordAuditEvent = async (
+  sql: Sql | Tx,
+  event: ServerAuditEvent,
+): Promise<AuditEvent> => {
   const now = new Date().toISOString();
+
   const record = AuditEvent.parse({
     id: `audit_event:${randomUUID()}`,
     type: 'audit_event',
@@ -40,6 +44,8 @@ export const recordAuditEvent = async (sql: Sql | Tx, event: ServerAuditEvent): 
     receivedOn: now,
     metadata: event.metadata,
   });
+
   await insertRecord(sql, 'audit_event', record);
+
   return record;
 };

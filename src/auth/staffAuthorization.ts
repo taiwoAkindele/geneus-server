@@ -7,7 +7,10 @@ import type { Sql, Tx } from '../db/client.ts';
  * applies is the shared one, so the answer matches what the device decided
  * offline; the difference is that this copy of the facts is the one that counts.
  */
-export type StaffRecord = Pick<Staff, 'id' | 'role' | 'additionalRoles' | 'additionalPermissions' | 'permission' | 'active'>;
+export type StaffRecord = Pick<
+  Staff,
+  'id' | 'role' | 'additionalRoles' | 'additionalPermissions' | 'permission' | 'active'
+>;
 
 export type StaffDenial =
   | { kind: 'not_member'; staffId: string }
@@ -23,6 +26,7 @@ export const findStaffInFacility = async (
   const [row] = await sql<StaffRecord[]>`
     SELECT id, role, additional_roles AS "additionalRoles", additional_permissions AS "additionalPermissions", permission, active
     FROM staff WHERE facility_id = ${facilityId} AND id = ${staffId}`;
+
   return row;
 };
 
@@ -31,9 +35,18 @@ export const staffDenial = (
   staffId: string,
   permission: Permission,
 ): StaffDenial | undefined => {
-  if (!staff) return { kind: 'not_member', staffId };
-  if (!staff.active) return { kind: 'deactivated', staffId };
-  if (!staffPermissions(staff).includes(permission)) return { kind: 'not_granted', staffId, permission };
+  if (!staff) {
+    return { kind: 'not_member', staffId };
+  }
+
+  if (!staff.active) {
+    return { kind: 'deactivated', staffId };
+  }
+
+  if (!staffPermissions(staff).includes(permission)) {
+    return { kind: 'not_granted', staffId, permission };
+  }
+
   return undefined;
 };
 
@@ -61,5 +74,6 @@ export const authorizeStaff = async (
 ): Promise<{ staff: StaffRecord } | { denial: StaffDenial }> => {
   const staff = await findStaffInFacility(sql, facilityId, staffId);
   const denial = staffDenial(staff, staffId, permission);
+
   return denial ? { denial } : { staff: staff as StaffRecord };
 };

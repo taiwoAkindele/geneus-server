@@ -1,10 +1,22 @@
 import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { Patient, RegisterDefinition, Role, type Encounter, type FacilityRegistrationResult } from '#shared';
+import {
+  Patient,
+  RegisterDefinition,
+  Role,
+  type Encounter,
+  type FacilityRegistrationResult,
+} from '#shared';
 import { CHECK_VIOLATION, FOREIGN_KEY_VIOLATION, UNIQUE_VIOLATION } from '../src/db/client.ts';
 import { findRecord, insertRecord } from '../src/db/records.ts';
 import { recordAuditEvent } from '../src/audit/auditEvents.ts';
-import { envelopeFor, refusal, registerScratchFacility, scratchDatabase, type ScratchDatabase } from './postgres.ts';
+import {
+  envelopeFor,
+  refusal,
+  registerScratchFacility,
+  scratchDatabase,
+  type ScratchDatabase,
+} from './postgres.ts';
 
 /**
  * Invariants that belong in the database are tested in the database. The point
@@ -29,7 +41,11 @@ describe('schema constraints', () => {
       allergies: ['penicillin'],
     });
 
-  const definitionFor = (facility: FacilityRegistrationResult, registerId: string, version: number) =>
+  const definitionFor = (
+    facility: FacilityRegistrationResult,
+    registerId: string,
+    version: number,
+  ) =>
     RegisterDefinition.parse({
       ...envelopeFor(facility),
       id: `${registerId}:v${version}`,
@@ -112,15 +128,25 @@ describe('schema constraints', () => {
 
   describe('audit trail', () => {
     it('cannot be updated', async () => {
-      const event = await recordAuditEvent(db.sql, { facilityId: a.facility.id, deviceId: a.device.deviceId, action: 'sync' });
+      const event = await recordAuditEvent(db.sql, {
+        facilityId: a.facility.id,
+        deviceId: a.device.deviceId,
+        action: 'sync',
+      });
 
-      const error = await refusal(db.sql`UPDATE audit_events SET action = 'view' WHERE id = ${event.id}`);
+      const error = await refusal(
+        db.sql`UPDATE audit_events SET action = 'view' WHERE id = ${event.id}`,
+      );
 
       assert.match(error.message ?? '', /append-only/);
     });
 
     it('cannot be deleted', async () => {
-      const event = await recordAuditEvent(db.sql, { facilityId: a.facility.id, deviceId: a.device.deviceId, action: 'sync' });
+      const event = await recordAuditEvent(db.sql, {
+        facilityId: a.facility.id,
+        deviceId: a.device.deviceId,
+        action: 'sync',
+      });
 
       const error = await refusal(db.sql`DELETE FROM audit_events WHERE id = ${event.id}`);
 
@@ -129,8 +155,15 @@ describe('schema constraints', () => {
     });
 
     it('stamps the server clock on arrival', async () => {
-      const event = await recordAuditEvent(db.sql, { facilityId: a.facility.id, deviceId: a.device.deviceId, action: 'sync' });
-      const [row] = await db.sql<{ received_on: string }[]>`SELECT received_on FROM audit_events WHERE id = ${event.id}`;
+      const event = await recordAuditEvent(db.sql, {
+        facilityId: a.facility.id,
+        deviceId: a.device.deviceId,
+        action: 'sync',
+      });
+
+      const [row] = await db.sql<
+        { received_on: string }[]
+      >`SELECT received_on FROM audit_events WHERE id = ${event.id}`;
 
       assert.ok(Date.parse(row.received_on) > 0);
     });
@@ -139,7 +172,10 @@ describe('schema constraints', () => {
   describe('registers', () => {
     it('refuses a second definition of the same version, so two offline publishes cannot both win', async () => {
       const error = await refusal(
-        insertRecord(db.sql, 'register_definition', { ...definitionFor(a, 'register:opd', 1), createdOn: new Date().toISOString() }),
+        insertRecord(db.sql, 'register_definition', {
+          ...definitionFor(a, 'register:opd', 1),
+          createdOn: new Date().toISOString(),
+        }),
       );
 
       assert.equal(error.code, UNIQUE_VIOLATION);
@@ -153,7 +189,10 @@ describe('schema constraints', () => {
 
     it('holds the id to the `${registerId}:v${version}` convention', async () => {
       const error = await refusal(
-        insertRecord(db.sql, 'register_definition', { ...definitionFor(a, 'register:anc', 1), id: 'register:anc:v9' }),
+        insertRecord(db.sql, 'register_definition', {
+          ...definitionFor(a, 'register:anc', 1),
+          id: 'register:anc:v9',
+        }),
       );
 
       assert.equal(error.code, CHECK_VIOLATION);
@@ -162,11 +201,28 @@ describe('schema constraints', () => {
 
   describe('value constraints', () => {
     it('keeps what a visit is for, and refuses a visit type outside the contract', async () => {
-      const visit = (id: string, visitType: string) => ({ ...envelopeFor(a), id, type: 'encounter', patientId: `${a.facility.id}-000001-K2`, openedOn: '2026-11-04T09:00:00Z', setting: 'facility', visitType });
+      const visit = (id: string, visitType: string) => ({
+        ...envelopeFor(a),
+        id,
+        type: 'encounter',
+        patientId: `${a.facility.id}-000001-K2`,
+        openedOn: '2026-11-04T09:00:00Z',
+        setting: 'facility',
+        visitType,
+      });
+
       await insertRecord(db.sql, 'encounter', visit('encounter:anc', 'antenatal'));
-      assert.equal((await findRecord<Encounter>(db.sql, 'encounter', 'encounter:anc'))?.visitType, 'antenatal');
+      assert.equal(
+        (await findRecord<Encounter>(db.sql, 'encounter', 'encounter:anc'))?.visitType,
+        'antenatal',
+      );
+
       await assert.rejects(insertRecord(db.sql, 'encounter', visit('encounter:odd', 'surgery')));
-      const error = await refusal(db.sql`INSERT INTO encounters (id, facility_id, schema_version, created_by, created_on, device_id, patient_id, opened_on, visit_type) VALUES ('encounter:raw', ${a.facility.id}, 1, ${a.admin.id}, now(), ${a.device.deviceId}, ${`${a.facility.id}-000001-K2`}, now(), 'surgery')`);
+
+      const error = await refusal(
+        db.sql`INSERT INTO encounters (id, facility_id, schema_version, created_by, created_on, device_id, patient_id, opened_on, visit_type) VALUES ('encounter:raw', ${a.facility.id}, 1, ${a.admin.id}, now(), ${a.device.deviceId}, ${`${a.facility.id}-000001-K2`}, now(), 'surgery')`,
+      );
+
       assert.equal(error.code, CHECK_VIOLATION);
     });
 
@@ -203,6 +259,7 @@ describe('schema constraints', () => {
       const error = await refusal(
         db.sql`UPDATE staff SET role = 'janitor' WHERE id = 'staff:nurse'`,
       );
+
       assert.equal(error.code, CHECK_VIOLATION);
     });
 

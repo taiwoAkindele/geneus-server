@@ -14,13 +14,32 @@ import { smsNumber } from '../src/messaging/patientMessages.ts';
 const config = loadConfig();
 const sender = smsSenderFrom(config);
 const to = smsNumber(process.argv[2] ?? '');
-if (!sender) { console.error('SENDAR_API_KEY and SENDAR_SENDER_ID are not set.'); process.exit(1); }
-if (!to) { console.error('Give a phone number to send to, e.g. 08031234567.'); process.exit(1); }
+
+if (!sender) {
+  console.error('SENDAR_API_KEY and SENDAR_SENDER_ID are not set.');
+  process.exit(1);
+}
+
+if (!to) {
+  console.error('Give a phone number to send to, e.g. 08031234567.');
+  process.exit(1);
+}
+
 try {
-  const receipt = await sender.send(to, `Geneus test message from ${config.sendarSenderId}. If you received this, SMS is working.`);
-  console.log(`Sent to ${to.slice(0, 6)}***${to.slice(-3)} through ${config.sendarBaseUrl}.`, receipt.providerMessageId ? `Sendar message id: ${receipt.providerMessageId}` : '');
+  const receipt = await sender.send(
+    to,
+    `Geneus test message from ${config.sendarSenderId}. If you received this, SMS is working.`,
+  );
+
+  console.log(
+    `Sent to ${to.slice(0, 6)}***${to.slice(-3)} through ${config.sendarBaseUrl}.`,
+    receipt.providerMessageId ? `Sendar message id: ${receipt.providerMessageId}` : '',
+  );
 } catch (cause) {
   const detail = cause as { providerStatus?: number; providerReason?: string };
-  console.error(`Not sent. Sendar answered ${detail.providerStatus ?? 'nothing'}${detail.providerReason ? `: ${detail.providerReason}` : ''}`);
+  console.error(
+    `Not sent. Sendar answered ${detail.providerStatus ?? 'nothing'}${detail.providerReason ? `: ${detail.providerReason}` : ''}`,
+  );
+
   process.exit(1);
 }

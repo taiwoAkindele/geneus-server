@@ -3,7 +3,14 @@ import assert from 'node:assert/strict';
 import type { FastifyInstance, InjectOptions } from 'fastify';
 import { FacilityRegistrationResult } from '#shared';
 import { createInvite } from '../src/facilities/invites.ts';
-import { lastCodeSentTo, scratchDatabase, scratchFacilityCode, testApp, verifiedEmailFor, type ScratchDatabase } from './postgres.ts';
+import {
+  lastCodeSentTo,
+  scratchDatabase,
+  scratchFacilityCode,
+  testApp,
+  verifiedEmailFor,
+  type ScratchDatabase,
+} from './postgres.ts';
 
 /**
  * Registration through the HTTP contract, the way the PWA does it. What comes
@@ -16,6 +23,7 @@ describe('POST /facilities', () => {
 
   const registration = async (overrides: Record<string, unknown> = {}) => {
     const invite = await createInvite(db.sql, 'Test PHC', 1);
+
     return {
       code: scratchFacilityCode(),
       name: 'Test PHC',
@@ -30,7 +38,8 @@ describe('POST /facilities', () => {
     };
   };
 
-  const post = (payload: InjectOptions['payload']) => app.inject({ method: 'POST', url: '/facilities', payload });
+  const post = (payload: InjectOptions['payload']) =>
+    app.inject({ method: 'POST', url: '/facilities', payload });
 
   before(async () => {
     db = await scratchDatabase();
@@ -99,9 +108,11 @@ describe('POST /facilities', () => {
 
     assert.equal(response.statusCode, 409);
     assert.equal(response.json().error, 'facility_code_taken');
+
     // The whole registration is one transaction: the failed one rolled its claim back.
     const [invite] = await db.sql<{ claimed_on: string | null }[]>`
       SELECT claimed_on FROM facility_invites WHERE token = ${second.inviteToken}`;
+
     assert.equal(invite.claimed_on, null);
   });
 
@@ -156,8 +167,17 @@ describe('POST /facilities', () => {
     it('emails a code to prove the address, only for a valid invite', async () => {
       const invite = await createInvite(db.sql, 'Test PHC', 1);
 
-      const sent = await app.inject({ method: 'POST', url: '/email-verifications', payload: { email: ' Ngozi@Example.ORG ', inviteToken: invite.token } });
-      const refused = await app.inject({ method: 'POST', url: '/email-verifications', payload: { email: 'ngozi@example.org', inviteToken: 'NOTANINVITE' } });
+      const sent = await app.inject({
+        method: 'POST',
+        url: '/email-verifications',
+        payload: { email: ' Ngozi@Example.ORG ', inviteToken: invite.token },
+      });
+
+      const refused = await app.inject({
+        method: 'POST',
+        url: '/email-verifications',
+        payload: { email: 'ngozi@example.org', inviteToken: 'NOTANINVITE' },
+      });
 
       assert.equal(sent.statusCode, 202, sent.body);
       assert.equal(sent.json().sentTo, 'n•••@example.org');
@@ -167,7 +187,11 @@ describe('POST /facilities', () => {
 
     it('registers with the code that was emailed', async () => {
       const body = { ...(await registration()), adminEmail: 'ngozi@example.org' };
-      await app.inject({ method: 'POST', url: '/email-verifications', payload: { email: 'ngozi@example.org', inviteToken: body.inviteToken } });
+      await app.inject({
+        method: 'POST',
+        url: '/email-verifications',
+        payload: { email: 'ngozi@example.org', inviteToken: body.inviteToken },
+      });
 
       const response = await post({ ...body, emailCode: lastCodeSentTo('ngozi@example.org') });
 
@@ -189,7 +213,10 @@ describe('POST /facilities', () => {
     it('stops accepting a code after five wrong guesses, even the right one', async () => {
       const body = await registration();
       const wrong = body.emailCode === '000000' ? '000001' : '000000';
-      for (let attempt = 0; attempt < 5; attempt += 1) await post({ ...body, emailCode: wrong });
+
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        await post({ ...body, emailCode: wrong });
+      }
 
       assert.equal((await post(body)).statusCode, 403);
     });
@@ -198,10 +225,16 @@ describe('POST /facilities', () => {
       const body = await registration();
       const result = FacilityRegistrationResult.parse((await post(body)).json());
 
-      const [contact] = await db.sql<{ email: string }[]>`SELECT email FROM staff_contacts WHERE staff_id = ${result.admin.id}`;
+      const [contact] = await db.sql<
+        { email: string }[]
+      >`SELECT email FROM staff_contacts WHERE staff_id = ${result.admin.id}`;
+
       assert.equal(contact?.email, 'amaka@example.org');
       assert.equal(JSON.stringify(result.admin).includes('@'), false);
-      const published = await db.sql`SELECT 1 FROM pg_publication_tables WHERE tablename = 'staff_contacts'`;
+
+      const published =
+        await db.sql`SELECT 1 FROM pg_publication_tables WHERE tablename = 'staff_contacts'`;
+
       assert.equal(published.length, 0);
     });
   });

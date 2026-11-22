@@ -9,6 +9,7 @@ export const nextReceiptNumber = async (tx: Tx, facilityId: string): Promise<str
   const [receiptSequence] = await tx<{ n: number }[]>`
     SELECT COALESCE(MAX(substring(receipt_number FROM char_length(${facilityId}) + 4 FOR 6)::int), 0) + 1 AS n
     FROM payments WHERE facility_id = ${facilityId}`;
+
   const next = receiptSequence.n;
 
   if (next > 999999) {
