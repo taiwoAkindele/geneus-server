@@ -6,7 +6,9 @@ import type { Tx } from '../db/client.ts';
  * records the payment, after locking the facility row, so two server payments never take the same number.
  */
 export const nextReceiptNumber = async (tx: Tx, facilityId: string): Promise<string> => {
-  const [receiptSequence] = await tx<{ n: number }[]>`SELECT COALESCE(MAX(substring(receipt_number FROM char_length(${facilityId}) + 4 FOR 6)::int), 0) + 1 AS n FROM payments WHERE facility_id = ${facilityId}`;
+  const [receiptSequence] = await tx<{ n: number }[]>`
+    SELECT COALESCE(MAX(substring(receipt_number FROM char_length(${facilityId}) + 4 FOR 6)::int), 0) + 1 AS n
+    FROM payments WHERE facility_id = ${facilityId}`;
   const next = receiptSequence.n;
 
   if (next > 999999) {

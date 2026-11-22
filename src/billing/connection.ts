@@ -7,14 +7,40 @@ const conflict = (message: string) => Object.assign(new Error(message), { status
 type ConnectionRow = { encrypted_secret: string; mode: 'test' | 'live'; provider: string };
 
 /** The hospital's connected payment provider with its opened credentials. Throws a 409 with a safe message when there is none. */
-export const providerConnection = async (sql: Sql | Tx, config: Pick<Config, 'billingEncryptionKey'>, facilityId: string) => {
-  if (!config.billingEncryptionKey) throw conflict('Payment setup isn\'t finished on the server. Ask your system administrator.');
+export const providerConnection = async (
+  sql: Sql | Tx,
+  config: Pick<Config, 'billingEncryptionKey'>,
+  facilityId: string,
+) => {
+  if (!config.billingEncryptionKey) {
+    throw conflict('Payment setup isn\'t finished on the server. Ask your system administrator.');
+  }
+
   const [row] = await sql<ConnectionRow[]>`SELECT encrypted_secret, mode, provider FROM billing_connections WHERE facility_id = ${facilityId}`;
-  if (!row) throw conflict('Connect the hospital\'s payment provider first');
+
+  if (!row) {
+    throw conflict('Connect the hospital\'s payment provider first');
+  }
+
   const provider = paymentProvider(row.provider);
-  if (!provider) throw conflict('The hospital\'s payment provider is no longer supported. Connect a supported provider.');
-  const credentials = deserialiseCredentials(provider, openPaystackSecret(row.encrypted_secret, config.billingEncryptionKey, facilityId));
-  return { provider, providerId: row.provider, credentials, mode: row.mode, encryptedSecret: row.encrypted_secret };
+
+  if (!provider) {
+    throw conflict('The hospital\'s payment provider is no longer supported. Connect a supported provider.');
+  }
+
+  const credentials = deserialiseCredentials(provider, openPaystackSecret(
+    row.encrypted_secret,
+    config.billingEncryptionKey,
+    facilityId,
+  ));
+
+  return {
+    provider,
+    providerId: row.provider,
+    credentials,
+    mode: row.mode,
+    encryptedSecret: row.encrypted_secret,
+  };
 };
 export type ProviderConnection = Awaited<ReturnType<typeof providerConnection>>;
 

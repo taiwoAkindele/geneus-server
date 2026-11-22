@@ -7,7 +7,7 @@ import { createDocumentLink, patientPagePath, stopDocumentLinks } from '../patie
 import { sendDocumentToPatient, type MessagingDeps } from '../messaging/patientMessages.ts';
 import { providerConnection } from '../billing/connection.ts';
 import { nextReceiptNumber } from '../billing/receipts.ts';
-import { confirmCheckout } from '../billing/checkout.ts';
+import { acceptCheckoutWebhook } from '../billing/checkout.ts';
 import { loadBill, loadReceipt } from '../patientDocuments/documentData.ts';
 import { authenticateDevice } from '../auth/deviceAuth.ts';
 import { verifiedRequestStaff } from '../auth/staffSessions.ts';
@@ -304,16 +304,25 @@ export const registerBillingRoutes = (app: FastifyInstance, sql: Sql, config: Co
   app.post<{ Params: { provider: string; facilityId: string } }>('/billing/:provider/:facilityId/webhook', async (request, reply) => {
     const provider = paymentProvider(request.params.provider);
     if (!provider) return reply.code(404).send({ error: 'unknown_provider' });
+    const checkoutAccepted = await acceptCheckoutWebhook(
+      sql,
+      config,
+      { facilityId: request.params.facilityId, provider: request.params.provider },
+      billingRawBodies.get(request) ?? '',
+      request.headers[provider.webhookHeader],
+      fetcher,
+    );
+
+    if (checkoutAccepted !== undefined) {
+      return checkoutAccepted
+        ? { received: true }
+        : reply.code(401).send({ error: 'invalid_signature' });
+    }
+
     const key = await connection(request.params.facilityId);
     if (key.providerId !== request.params.provider) return reply.code(409).send({ error: 'inactive_provider' });
     const result = key.provider.webhookReference(billingRawBodies.get(request) ?? '', request.headers[key.provider.webhookHeader], key.credentials);
     if (!result.ok) return reply.code(401).send({ error: 'invalid_signature' });
-    if (result.checkoutReference) {
-      await confirmCheckout(sql, config, result.checkoutReference, fetcher, {
-        facilityId: request.params.facilityId,
-        provider: request.params.provider,
-      });
-    }
     if (result.reference) await ingest(request.params.facilityId, result.reference, key);
     return { received: true };
   });

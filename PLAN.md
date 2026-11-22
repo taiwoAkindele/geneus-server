@@ -10,6 +10,16 @@
 
 **Version:** 2.0 · **Owner:** Solo founder-builder · **Supersedes:** 1.1 (CouchDB)
 
+### Patient bill checkout (22 November 2026)
+
+Patient bill links now start Paystack or Monnify checkout from accepted balances.
+The server verifies payments directly and settles each once under existing
+financial locks. Cash collected during checkout reduces the allocation; excess
+money remains an incoming receipt for staff. Sandbox payments never settle live
+bills. Migration 0047 adds checkout sessions, source metadata and the automatic
+receipt queue without editing an applied migration. An in-process reconciliation
+pass recovers missed callbacks. See [implementation and validation](../docs/PATIENT-CHECKOUT-IMPLEMENTATION-2026-11-22.md).
+
 ### Billing design adoption (19 November 2026)
 
 The approved Bills / Payments prototype is applied locally. New manual bills use optional charge billId metadata; existing history is untouched. Price upload uses verified fee-only atomic configuration batches. Billing setup reuses existing catalogue and receiving-account settings. Migration 0043 and canonical shared contract promotion must precede new clients; no Git promotion or deployment has been performed. See [implementation and validation](../docs/billing-design-implementation-2026-11-19/README.md).

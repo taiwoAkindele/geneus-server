@@ -156,26 +156,75 @@ export const monnifyWebhookReference = (raw: string, signature: unknown, c: Pick
 const Started = z.object({ checkoutUrl: z.string().url(), paymentReference: z.string().min(1) });
 export const monnifyStartCheckout = async (c: MonnifyCredentials, input: CheckoutRequest, http: ProviderHttp) => {
   const body = providerReply(Started, await call(c, http, '/api/v1/merchant/transactions/init-transaction', {
-    amount: (input.amountMinor / 100).toFixed(2), customerName: input.name, customerEmail: input.email, paymentReference: input.reference,
-    paymentDescription: input.description, currencyCode: input.currency, contractCode: c.contractCode, redirectUrl: input.returnUrl,
+    amount: (input.amountMinor / 100).toFixed(2),
+    customerName: input.name,
+    customerEmail: input.email,
+    paymentReference: input.reference,
+    paymentDescription: input.description,
+    currencyCode: input.currency,
+    contractCode: c.contractCode,
+    redirectUrl: input.returnUrl,
     paymentMethods: ['CARD', 'ACCOUNT_TRANSFER', 'USSD'],
   }), 'checkout');
-  if (body.paymentReference !== input.reference) throw new ProviderUnexpectedReply('checkout: payment reference changed');
+
+  if (body.paymentReference !== input.reference) {
+    throw new ProviderUnexpectedReply('checkout: payment reference changed');
+  }
+
   return { checkoutUrl: body.checkoutUrl };
 };
-const Queried = z.object({ paymentReference: z.string().min(1), paymentStatus: z.string(), amountPaid: z.union([z.number(), z.string()]).optional(),
-  currencyCode: z.string().optional(), paidOn: z.string().nullable().optional(), completedOn: z.string().nullable().optional(), customerName: z.string().optional() });
+
+const Queried = z.object({
+  paymentReference: z.string().min(1),
+  paymentStatus: z.string(),
+  amountPaid: z.union([z.number(), z.string()]).optional(),
+  currencyCode: z.string().optional(),
+  currency: z.string().optional(),
+  paidOn: z.string().nullable().optional(),
+  completedOn: z.string().nullable().optional(),
+  customerName: z.string().optional(),
+});
+
 export const monnifyVerifyCheckout = async (c: MonnifyCredentials, reference: string, http: ProviderHttp): Promise<CheckoutOutcome> => {
   let raw: unknown;
-  try { raw = await call(c, http, `/api/v2/merchant/transactions/query?paymentReference=${encodeURIComponent(reference)}`); }
-  catch (cause) { if (cause instanceof ProviderRefused && cause.providerStatus === 404) return { status: 'pending' }; throw cause; }
-  const t = providerReply(Queried, raw, 'checkout query');
-  if (t.paymentReference !== reference) return { status: 'pending' };
-  const status = t.paymentStatus.toUpperCase();
-  if (status === 'PAID' || status === 'OVERPAID') {
-    const amountMinor = toMinor(t.amountPaid), paidAt = isoDate(t.paidOn ?? t.completedOn ?? undefined);
-    if (!amountMinor || !paidAt) throw new ProviderUnexpectedReply(`checkout query: ${!amountMinor ? 'amountPaid' : 'paidOn'} not understood`);
-    return { status: 'paid', reference, mode: monnifyMode(c), amountMinor, currency: t.currencyCode ?? 'NGN', paidAt, ...(t.customerName ? { payerName: t.customerName } : {}) };
+
+  try {
+    raw = await call(c, http, `/api/v2/merchant/transactions/query?paymentReference=${encodeURIComponent(reference)}`);
+  } catch (cause) {
+    if (cause instanceof ProviderRefused && cause.providerStatus === 404) {
+      return { status: 'pending' };
+    }
+
+    throw cause;
   }
+
+  const transaction = providerReply(Queried, raw, 'checkout query');
+
+  if (transaction.paymentReference !== reference) {
+    return { status: 'pending' };
+  }
+
+  const status = transaction.paymentStatus.toUpperCase();
+
+  if (status === 'PAID' || status === 'OVERPAID') {
+    const amountMinor = toMinor(transaction.amountPaid);
+    const paidAt = isoDate(transaction.paidOn ?? transaction.completedOn ?? undefined);
+    const currency = transaction.currencyCode ?? transaction.currency;
+
+    if (!amountMinor || !paidAt || !currency) {
+      throw new ProviderUnexpectedReply('checkout query: amountPaid, paidOn or currency missing or invalid');
+    }
+
+    return {
+      status: 'paid',
+      reference,
+      mode: monnifyMode(c),
+      amountMinor,
+      currency,
+      paidAt,
+      ...(transaction.customerName ? { payerName: transaction.customerName } : {}),
+    };
+  }
+
   return ['FAILED', 'CANCELLED', 'EXPIRED', 'REVERSED'].includes(status) ? { status: 'failed' } : { status: 'pending' };
 };

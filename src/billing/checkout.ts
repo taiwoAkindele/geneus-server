@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { z } from 'zod';
 import {
   billKey,
   IncomingTransfer,
@@ -55,6 +56,73 @@ const withinScope = (session: CheckoutSession, scope: CheckoutScope): boolean =>
   }
 
   return session.facility_id === scope.facilityId && session.provider === scope.provider;
+};
+
+const WebhookReferences = z.object({
+  data: z.object({ reference: z.string().optional() }).optional(),
+  eventData: z.object({
+    paymentReference: z.string().optional(),
+    product: z.object({ reference: z.string().optional() }).optional(),
+  }).optional(),
+});
+
+/** Identify the encrypted connection, then authenticate the exact webhook bytes before using its reference. */
+export const acceptCheckoutWebhook = async (
+  sql: Sql,
+  config: Config,
+  scope: { facilityId: string; provider: string },
+  raw: string,
+  signature: unknown,
+  http: PaystackFetch,
+): Promise<boolean | undefined> => {
+  let payload: unknown;
+
+  try {
+    payload = JSON.parse(raw);
+  } catch {
+    return undefined;
+  }
+
+  const parsed = WebhookReferences.safeParse(payload);
+
+  if (!parsed.success) {
+    return undefined;
+  }
+
+  const reference = parsed.data.data?.reference
+    ?? parsed.data.eventData?.paymentReference
+    ?? parsed.data.eventData?.product?.reference;
+
+  if (!reference || !CHECKOUT_REFERENCE.test(reference)) {
+    return undefined;
+  }
+
+  const [session] = await sql<CheckoutSession[]>`SELECT * FROM checkout_sessions WHERE reference = ${reference}`;
+
+  if (!session || !withinScope(session, scope) || !config.billingEncryptionKey) {
+    return false;
+  }
+
+  const provider = paymentProvider(session.provider);
+
+  if (!provider) {
+    return false;
+  }
+
+  const credentials = deserialiseCredentials(provider, openPaystackSecret(
+    session.encrypted_secret,
+    config.billingEncryptionKey,
+    session.facility_id,
+  ));
+  const authenticated = provider.webhookReference(raw, signature, credentials);
+
+  if (!authenticated.ok || authenticated.checkoutReference !== reference) {
+    return false;
+  }
+
+  await confirmCheckout(sql, config, reference, http, scope);
+
+  return true;
 };
 
 const publicState = (session: CheckoutSession): CheckoutState => {
