@@ -128,8 +128,10 @@ export const acceptCheckoutWebhook = async (
 const publicState = (session: CheckoutSession): CheckoutState => {
   let status: CheckoutState['status'] = session.status;
 
-  // Sandbox receipts remain visible to staff, but must never tell a patient their real bill was paid.
-  if (session.status === 'paid' && session.mode === 'test') {
+  // A sandbox payment counts as paid only when it settled the bill (the hospital was in test mode and something
+  // was applied); otherwise the patient is never told their bill was paid.
+  const testNotApplied = session.mode === 'test' && session.held_minor !== null && session.held_minor >= session.amount_minor;
+  if (session.status === 'paid' && testNotApplied) {
     status = 'failed';
   } else if (session.status === 'pending' && Date.parse(session.expires_on) <= Date.now()) {
     status = 'expired';
@@ -139,7 +141,7 @@ const publicState = (session: CheckoutSession): CheckoutState => {
     status,
     amountMinor: session.amount_minor,
     currency: session.currency,
-    ...(session.mode === 'live' && session.held_minor !== null ? { heldMinor: session.held_minor } : {}),
+    ...(!testNotApplied && session.held_minor !== null ? { heldMinor: session.held_minor } : {}),
   };
 };
 
@@ -318,8 +320,12 @@ export const confirmCheckout = async (
     await insertRecord(tx, 'incoming_transfer', source);
 
     let heldMinor = outcome.amountMinor;
+    // Test money settles a bill only while the hospital is still connected in test mode, so the whole flow can be
+    // tried before going live. Once it is live, a late sandbox payment never marks a real bill paid.
+    const [connected] = await tx<{ mode: 'test' | 'live' }[]>`SELECT mode FROM billing_connections WHERE facility_id = ${current.facility_id}`;
+    const settles = current.mode === 'live' || connected?.mode === 'test';
 
-    if (current.mode === 'live') {
+    if (settles) {
       // Lock in the same ID order as device uploads, then allocate in issue order.
       const rows = await tx<Record<string, unknown>[]>`
         SELECT * FROM charges WHERE facility_id = ${current.facility_id}
@@ -344,7 +350,7 @@ export const confirmCheckout = async (
       const appliedMinor = outcome.amountMinor - heldMinor;
 
       if (appliedMinor > 0) {
-        await reserveSource(tx, current.facility_id, source.id, appliedMinor, current.currency);
+        await reserveSource(tx, current.facility_id, source.id, appliedMinor, current.currency, { allowTest: current.mode === 'test' });
         const receiptNumber = await nextReceiptNumber(tx, current.facility_id);
         const payment = Payment.parse({
           ...envelope,

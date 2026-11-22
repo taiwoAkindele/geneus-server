@@ -89,9 +89,12 @@ export const loadReceipt = async (sql: Sql | Tx, facilityId: string, paymentId: 
   const billCharges = all.filter((c) => keys.includes(billKey(c)));
   const positions = await chargePositions(sql, facilityId, billCharges);
   const staff = payment.createdBy === 'system' ? undefined : await findRecord<Staff>(sql, 'staff', payment.createdBy);
+  // A sandbox payment is always marked, so it can never pass for real money.
+  const [source] = payment.incomingTransferId ? await sql<{ mode: string }[]>`SELECT mode FROM incoming_transfers WHERE facility_id = ${facilityId} AND id = ${payment.incomingTransferId}` : [];
+  const test = source?.mode === 'test';
   return {
     paymentId: payment.id, number: payment.receiptNumber, currency: payment.currency, receivedOn: payment.createdOn,
-    method: METHOD[payment.method] ?? payment.method, reference: payment.reference, reversal: Boolean(payment.reverses),
+    method: `${METHOD[payment.method] ?? payment.method}${test ? ' (TEST, not real money)' : ''}`, reference: payment.reference, reversal: Boolean(payment.reverses),
     receivedBy: receivedBy(payment, staff),
     hospital, patient, amountMinor: payment.amountMinor,
     applied: payment.allocations.flatMap((a) => { const c = byId.get(a.chargeId); return c ? [{ bill: billReference(billKey(c)), item: c.description, amountMinor: a.amountMinor }] : []; }),

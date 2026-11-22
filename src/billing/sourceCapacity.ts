@@ -24,9 +24,10 @@ export const sourceCapacity=async(tx:Tx,facilityId:string,id:string)=>{
   return {source,amountMinor,patientMinor,payerMinor,availableMinor:amountMinor-patientMinor-payerMinor};
 };
 
-export const reserveSource=async(tx:Tx,facilityId:string,id:string,amountMinor:number,currency:string)=>{
+/** `allowTest`: only for a checkout paid while the hospital itself is in test mode, so the whole flow can be tried. */
+export const reserveSource=async(tx:Tx,facilityId:string,id:string,amountMinor:number,currency:string,options:{allowTest?:boolean}={})=>{
   const capacity=await sourceCapacity(tx,facilityId,id);
-  if(capacity.source.mode!=='live')throw new SourceCapacityRefusal('Test receipts cannot settle real patient or payer obligations');
+  if(capacity.source.mode!=='live'&&!options.allowTest)throw new SourceCapacityRefusal('Test receipts cannot settle real patient or payer obligations');
   if(capacity.source.currency!==currency)throw new SourceCapacityRefusal('The receipt and transaction currencies must agree');
   if(amountMinor<=0 || !Number.isSafeInteger(amountMinor) || amountMinor>capacity.availableMinor)
     throw new SourceCapacityRefusal('This verified receipt has insufficient unrecognized money across patient and insurer collections');
