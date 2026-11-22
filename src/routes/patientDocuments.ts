@@ -124,7 +124,7 @@ export const registerPatientDocumentRoutes = (
 
       const [session] = await sql<{ reference: string }[]>`
         SELECT reference FROM checkout_sessions WHERE reference = ${request.params.reference}
-          AND link_id = ${link.id} AND status = 'paid' AND mode = 'live'`;
+          AND link_id = ${link.id} AND status = 'paid'`;
       const receipt = session
         ? await loadReceipt(sql, link.facilityId, `payment:${session.reference}`)
         : undefined;

@@ -8,7 +8,7 @@ import { confirmCheckout, reconcileCheckouts } from '../src/billing/checkout.ts'
 import { sealPaystackSecret } from '../src/billing/paystack.ts';
 import { insertRecord } from '../src/db/records.ts';
 import { createDocumentLink } from '../src/patientDocuments/links.ts';
-import { loadBill } from '../src/patientDocuments/documentData.ts';
+import { loadBill, loadReceipt } from '../src/patientDocuments/documentData.ts';
 import { config, envelopeFor, registerScratchFacility, scratchDatabase, signer, type ScratchDatabase } from './postgres.ts';
 
 const masterKey = '12'.repeat(32);
@@ -308,18 +308,31 @@ describe('patient bill checkout', () => {
     }
   });
 
-  it('records sandbox money separately and leaves real charges unpaid', async () => {
+  it('settles a sandbox payment while the hospital is in test mode, marked as not real money', async () => {
     await connect('test');
     const bill = await makeBill();
     const checkout = await start(bill.api);
     markPaid(checkout, { domain: 'test' });
+    // While the hospital is in test mode, a sandbox payment settles the bill so the whole flow can be tried.
     const state = await confirmCheckout(db.sql, checkoutConfig, checkout.reference, http);
-    assert.equal(state?.status, 'failed');
-    assert.equal((await loadBill(db.sql, facility.facility.id, bill.key))?.totals.dueMinor, checkout.amountMinor);
-    assert.equal((await db.sql`SELECT id FROM payments WHERE reference = ${checkout.reference}`).length, 0);
+    assert.equal(state?.status, 'paid');
+    assert.equal((await loadBill(db.sql, facility.facility.id, bill.key))?.totals.dueMinor, 0);
     const [source] = await db.sql`SELECT mode FROM incoming_transfers WHERE provider_reference = ${checkout.reference}`;
     assert.equal(source.mode, 'test');
-    await connect();
+    // …and its receipt says it is not real money.
+    const receipt = await app.inject({ method: 'GET', url: `${bill.api}/checkout/${checkout.reference}/receipt` });
+    assert.equal(receipt.statusCode, 200);
+    assert.match((await loadReceipt(db.sql, facility.facility.id, `payment:${checkout.reference}`))!.method, /TEST, not real money/);
+
+    // Once the hospital is live, a late sandbox payment never marks a real bill paid.
+    const later = await makeBill();
+    const lateCheckout = await start(later.api);
+    await connect('live');
+    markPaid(lateCheckout, { domain: 'test' });
+    await db.sql`UPDATE checkout_sessions SET mode = 'test' WHERE reference = ${lateCheckout.reference}`;
+    assert.equal((await confirmCheckout(db.sql, checkoutConfig, lateCheckout.reference, http))?.status, 'failed');
+    assert.equal((await loadBill(db.sql, facility.facility.id, later.key))?.totals.dueMinor, lateCheckout.amountMinor);
+    assert.equal((await db.sql`SELECT id FROM payments WHERE reference = ${lateCheckout.reference}`).length, 0);
   });
 
   it('uses the original encrypted connection even after hospital settings change', async () => {
