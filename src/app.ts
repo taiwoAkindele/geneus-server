@@ -34,7 +34,14 @@ import { createMailer, EmailNotSent, type Mailer } from './lib/email.ts';
  */
 /** `mailer` defaults to one built from the config; tests pass one that records what was sent. */
 /** `smsSender` replaces the Sendar sender built from the configuration (tests use a stand-in). */
-export type AppDependencies = { config: Config; sql: Sql; signer: Signer; mailer?: Mailer; paystackFetch?: PaystackFetch; smsSender?: SmsSender };
+export type AppDependencies = {
+  config: Config;
+  sql: Sql;
+  signer: Signer;
+  mailer?: Mailer;
+  paystackFetch?: PaystackFetch;
+  smsSender?: SmsSender;
+};
 /**
  * `rateLimit: false` is for tests that make many requests from one injected
  * address on purpose; tests/hardening.test.ts keeps it on to prove the limit.
@@ -45,9 +52,10 @@ export type AppOptions = { logger?: boolean; rateLimit?: boolean };
  * An invite token in a URL is as good as the invite until it is claimed, so it
  * never reaches the log. Everything else about the request is kept.
  */
-const redactUrl = (url: string): string => url
-  .replace(/^\/invites\/[^/?#]+/, '/invites/[redacted]')
-  .replace(/^(\/public\/documents\/[^/]+\/)[^/?#]+/, '$1[redacted]');
+const redactUrl = (url: string): string =>
+  url
+    .replace(/^\/invites\/[^/?#]+/, '/invites/[redacted]')
+    .replace(/^(\/public\/documents\/[^/]+\/)[^/?#]+/, '$1[redacted]');
 
 const serializers = {
   req: (request: FastifyRequest) => ({
@@ -85,7 +93,10 @@ const RATE_LIMITED_ROUTES = new Set([
 ]);
 const RATE_LIMIT_PER_MINUTE = 10;
 
-export const buildApp = ({ config, sql, signer, mailer: givenMailer, paystackFetch, smsSender }: AppDependencies, options: AppOptions = {}): FastifyInstance => {
+export const buildApp = (
+  { config, sql, signer, mailer: givenMailer, paystackFetch, smsSender }: AppDependencies,
+  options: AppOptions = {},
+): FastifyInstance => {
   /**
    * Pretty printing is a terminal convenience, and `pino-pretty` is a dev
    * dependency the production image does not install — asking for it there
@@ -108,8 +119,12 @@ export const buildApp = ({ config, sql, signer, mailer: givenMailer, paystackFet
    */
   app.addContentTypeParser('application/json', { parseAs: 'string' }, (request, body, done) => {
     // Every provider's webhook (/billing/<provider>/<facility>/webhook) is signed over the exact bytes received.
-    if (/^\/billing\/[a-z][a-z0-9_]{1,31}\/[^/]+\/webhook(\?|$)/.test(request.url)) billingRawBodies.set(request, body as string);
-    if (body === '') return done(null, undefined);
+    if (/^\/billing\/[a-z][a-z0-9_]{1,31}\/[^/]+\/webhook(\?|$)/.test(request.url)) {
+      billingRawBodies.set(request, body as string);
+    }
+    if (body === '') {
+      return done(null, undefined);
+    }
     try {
       done(null, JSON.parse(body as string));
     } catch (cause) {
@@ -127,24 +142,36 @@ export const buildApp = ({ config, sql, signer, mailer: givenMailer, paystackFet
     if (origin && config.corsOrigins.includes(origin)) {
       reply.header('access-control-allow-origin', origin);
       reply.header('vary', 'origin');
-      reply.header('access-control-allow-headers', 'content-type, authorization, x-workforce-access, x-actor-staff-id, x-file-mime, x-file-sha256, x-document-meta, x-operator-session, x-staff-session, x-billing-catalogue-version, x-integrated-billing-version');
+      reply.header(
+        'access-control-allow-headers',
+        'content-type, authorization, x-workforce-access, x-actor-staff-id, x-file-mime, x-file-sha256, x-document-meta, x-operator-session, x-staff-session, x-billing-catalogue-version, x-integrated-billing-version',
+      );
       reply.header('access-control-allow-methods', 'GET, POST, OPTIONS');
     }
-    if (request.method === 'OPTIONS') return reply.code(204).send();
+    if (request.method === 'OPTIONS') {
+      return reply.code(204).send();
+    }
   });
 
   if (options.rateLimit !== false) {
     const limiter = createRateLimiter(RATE_LIMIT_PER_MINUTE, 60_000);
     app.addHook('onRequest', async (request, reply) => {
       const route = `${request.method} ${request.routeOptions.url ?? ''}`;
-      if (!RATE_LIMITED_ROUTES.has(route)) return;
+      if (!RATE_LIMITED_ROUTES.has(route)) {
+        return;
+      }
       const retryAfter = limiter.hit(`${route} ${request.ip}`);
-      if (retryAfter === undefined) return;
+      if (retryAfter === undefined) {
+        return;
+      }
       request.log.warn({ route }, 'rate limited');
       return reply
         .code(429)
         .header('retry-after', String(retryAfter))
-        .send({ error: 'rate_limited', message: `Too many attempts — try again in ${retryAfter} seconds` } satisfies ApiErrorBody);
+        .send({
+          error: 'rate_limited',
+          message: `Too many attempts — try again in ${retryAfter} seconds`,
+        } satisfies ApiErrorBody);
     });
   }
 
@@ -158,7 +185,9 @@ export const buildApp = ({ config, sql, signer, mailer: givenMailer, paystackFet
     reply.header('referrer-policy', 'no-referrer');
     reply.header('content-security-policy', "default-src 'none'; frame-ancestors 'none'");
     reply.header('cache-control', 'no-store');
-    if (config.isProduction) reply.header('strict-transport-security', 'max-age=31536000; includeSubDomains');
+    if (config.isProduction) {
+      reply.header('strict-transport-security', 'max-age=31536000; includeSubDomains');
+    }
   });
 
   /**
@@ -170,32 +199,62 @@ export const buildApp = ({ config, sql, signer, mailer: givenMailer, paystackFet
     // The mail provider refused or could not be reached: the caller can try again.
     if (error instanceof EmailNotSent) {
       request.log.error({ err: error }, 'email not sent');
-      return reply.code(502).send({ error: 'email_not_sent', message: 'The email could not be sent — try again in a minute' } satisfies ApiErrorBody);
+      return reply.code(502).send({
+        error: 'email_not_sent',
+        message: 'The email could not be sent — try again in a minute',
+      } satisfies ApiErrorBody);
     }
     // A payment provider refused, was unreachable or answered unexpectedly. The message is already safe to show
     // (it never names the provider or carries keys); the provider's own detail goes to the log only.
     if (error.code && PROVIDER_ERROR_CODES.includes(error.code)) {
-      const detail = error as Error & { providerStatus?: number; providerReason?: string; providerCall?: string; detail?: string };
-      request.log.warn({ code: error.code, providerStatus: detail.providerStatus, providerReason: detail.providerReason, providerCall: detail.providerCall, route: request.routeOptions.url, detail: detail.detail }, 'payment provider error');
-      return reply.code(502).send({ error: error.code, message: error.message } satisfies ApiErrorBody);
+      const detail = error as Error & {
+        providerStatus?: number;
+        providerReason?: string;
+        providerCall?: string;
+        detail?: string;
+      };
+      request.log.warn(
+        {
+          code: error.code,
+          providerStatus: detail.providerStatus,
+          providerReason: detail.providerReason,
+          providerCall: detail.providerCall,
+          route: request.routeOptions.url,
+          detail: detail.detail,
+        },
+        'payment provider error',
+      );
+      return reply
+        .code(502)
+        .send({ error: error.code, message: error.message } satisfies ApiErrorBody);
     }
     const status = error.statusCode && error.statusCode >= 400 ? error.statusCode : 500;
     if (status >= 500) {
       request.log.error({ err: error }, 'request failed');
-      return reply.code(status).send({ error: 'internal_error', message: 'Something went wrong on the server — try again' } satisfies ApiErrorBody);
+      return reply.code(status).send({
+        error: 'internal_error',
+        message: 'Something went wrong on the server — try again',
+      } satisfies ApiErrorBody);
     }
-    return reply.code(status).send({ error: error.code ?? 'bad_request', message: error.message || 'The request was not valid' } satisfies ApiErrorBody);
+    return reply.code(status).send({
+      error: error.code ?? 'bad_request',
+      message: error.message || 'The request was not valid',
+    } satisfies ApiErrorBody);
   });
 
   registerPatientRoutes(app, sql);
-  registerDocumentRoutes(app,sql);
+  registerDocumentRoutes(app, sql);
   registerWorkforceRoutes(app, sql, mailer);
   registerInsuranceRoutes(app, sql);
   registerSelfServiceRoutes(app, sql, mailer);
   registerStaffSessionRoutes(app, sql, signer);
   registerOperatorRoutes(app, sql, mailer);
   // The deployment's first Geneus operators; the operator console manages the rest.
-  app.addHook('onReady', async () => { if (config.bootstrapOperators.length) await ensureBootstrapOperators(sql, config.bootstrapOperators); });
+  app.addHook('onReady', async () => {
+    if (config.bootstrapOperators.length) {
+      await ensureBootstrapOperators(sql, config.bootstrapOperators);
+    }
+  });
   const startedOn = new Date().toISOString();
 
   /**
@@ -213,16 +272,23 @@ export const buildApp = ({ config, sql, signer, mailer: givenMailer, paystackFet
         () => 'reachable' as const,
         () => 'unreachable' as const,
       ),
-      fetch(`${config.powerSyncInternalUrl}/probes/liveness`, { signal: AbortSignal.timeout(2000) }).then(
+      fetch(`${config.powerSyncInternalUrl}/probes/liveness`, {
+        signal: AbortSignal.timeout(2000),
+      }).then(
         (response) => (response.ok ? ('reachable' as const) : ('unhealthy' as const)),
         () => 'unreachable' as const,
       ),
-      sql<{ n: number }[]>`SELECT count(*)::int AS n FROM sync_rejections WHERE resolved_on IS NULL`.then(
+      sql<
+        { n: number }[]
+      >`SELECT count(*)::int AS n FROM sync_rejections WHERE resolved_on IS NULL`.then(
         ([row]) => row?.n ?? 0,
         () => undefined,
       ),
     ]);
-    const degraded = postgres !== 'reachable' || powerSync !== 'reachable' || (config.isProduction && signer.isEphemeral);
+    const degraded =
+      postgres !== 'reachable' ||
+      powerSync !== 'reachable' ||
+      (config.isProduction && signer.isEphemeral);
 
     // 503 when degraded, so an uptime check that only reads the status code still notices.
     return reply.code(degraded ? 503 : 200).send({
@@ -261,7 +327,13 @@ export const buildApp = ({ config, sql, signer, mailer: givenMailer, paystackFet
   registerInvitationLinkRoutes(app, sql, config);
   registerSyncRoutes(app, sql, config, signer);
   // Bills and receipts sent to patients link to the web app, like invitation links.
-  registerBillingRoutes(app, sql, config, paystackFetch, { sql, mailer, sms: smsSender ?? smsSenderFrom(config), appUrl: config.corsOrigins[0], log: app.log });
+  registerBillingRoutes(app, sql, config, paystackFetch, {
+    sql,
+    mailer,
+    sms: smsSender ?? smsSenderFrom(config),
+    appUrl: config.corsOrigins[0],
+    log: app.log,
+  });
   // Patient links open in the web app, like invitation links.
   registerPatientDocumentRoutes(app, sql, config.corsOrigins[0], {
     rateLimit: options.rateLimit,

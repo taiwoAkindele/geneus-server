@@ -12,11 +12,16 @@ import { verifyCredential, type DeviceIdentity } from '../devices/credentials.ts
  * The client learns only that it was refused. The reason — wrong secret,
  * revoked, wipe requested — goes to the log, where the debug map wants it.
  */
-const UNAUTHORIZED: ApiErrorBody = { error: 'unauthorized', message: 'This device is not enrolled or its access has been revoked' };
+const UNAUTHORIZED: ApiErrorBody = {
+  error: 'unauthorized',
+  message: 'This device is not enrolled or its access has been revoked',
+};
 
 const bearerOf = (request: FastifyRequest): string | undefined => {
   const header = request.headers.authorization;
-  if (!header) return undefined;
+  if (!header) {
+    return undefined;
+  }
   const [scheme, token, ...rest] = header.trim().split(/\s+/);
   return scheme?.toLowerCase() === 'bearer' && token && rest.length === 0 ? token : undefined;
 };
@@ -36,7 +41,10 @@ export const authenticateDevice = async (
   if ('failure' in outcome) {
     // The device id is the part before the dot; logging it (and never the
     // secret) is what lets a refused device be found in `devices`.
-    request.log.warn({ deviceId: credential.split('.')[0], failure: outcome.failure }, 'device credential refused');
+    request.log.warn(
+      { deviceId: credential.split('.')[0], failure: outcome.failure },
+      'device credential refused',
+    );
     await reply.code(401).send(UNAUTHORIZED);
     return undefined;
   }

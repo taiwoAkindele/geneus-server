@@ -1,0 +1,10 @@
+node_modules
+/shared
+/powersync
+/context
+/docker
+*.md
+*.yaml
+*.yml
+package-lock.json
+tsconfig*.json

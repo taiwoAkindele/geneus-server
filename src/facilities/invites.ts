@@ -40,13 +40,22 @@ const fromRow = (row: InviteRow): Invite => ({
   label: row.label,
   createdOn: row.created_on,
   expiresOn: row.expires_on,
-  ...(row.claimed_on ? { claimedOn: row.claimed_on, claimedFor: row.claimed_for ?? undefined } : {}),
+  ...(row.claimed_on
+    ? { claimedOn: row.claimed_on, claimedFor: row.claimed_for ?? undefined }
+    : {}),
 });
 
 const normalise = (token: string) => token.trim().toUpperCase();
 
-export const createInvite = async (sql: Sql, label: string, validForDays: number): Promise<Invite> => {
-  const token = Array.from({ length: TOKEN_LENGTH }, () => ALPHABET[randomInt(ALPHABET.length)]).join('');
+export const createInvite = async (
+  sql: Sql,
+  label: string,
+  validForDays: number,
+): Promise<Invite> => {
+  const token = Array.from(
+    { length: TOKEN_LENGTH },
+    () => ALPHABET[randomInt(ALPHABET.length)],
+  ).join('');
   const expiresOn = new Date(Date.now() + validForDays * DAY_MS)?.toISOString();
   const [row] = await sql<InviteRow[]>`
     INSERT INTO facility_invites (token, label, expires_on)
@@ -56,14 +65,22 @@ export const createInvite = async (sql: Sql, label: string, validForDays: number
 };
 
 export const findInvite = async (sql: Sql | Tx, token: string): Promise<Invite | undefined> => {
-  const [row] = await sql<InviteRow[]>`SELECT * FROM facility_invites WHERE token = ${normalise(token)}`;
+  const [row] = await sql<
+    InviteRow[]
+  >`SELECT * FROM facility_invites WHERE token = ${normalise(token)}`;
   return row ? fromRow(row) : undefined;
 };
 
 export const rejectionFor = (invite: Invite | undefined): InviteRejection | undefined => {
-  if (!invite) return 'unknown';
-  if (invite.claimedOn) return 'already_used';
-  if (new Date(invite.expiresOn).getTime() < Date.now()) return 'expired';
+  if (!invite) {
+    return 'unknown';
+  }
+  if (invite.claimedOn) {
+    return 'already_used';
+  }
+  if (new Date(invite.expiresOn).getTime() < Date.now()) {
+    return 'expired';
+  }
   return undefined;
 };
 
@@ -74,7 +91,11 @@ export const rejectionFor = (invite: Invite | undefined): InviteRejection | unde
  * later in that transaction releases the invite by rollback — there is no
  * separate "release" step to forget.
  */
-export const claimInvite = async (sql: Sql | Tx, token: string, facilityCode: string): Promise<boolean> => {
+export const claimInvite = async (
+  sql: Sql | Tx,
+  token: string,
+  facilityCode: string,
+): Promise<boolean> => {
   const claimed = await sql`
     UPDATE facility_invites
     SET claimed_on = now(), claimed_for = ${facilityCode}

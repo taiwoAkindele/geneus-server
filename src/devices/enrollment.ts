@@ -25,7 +25,9 @@ export const issueEnrollmentCode = async (
   issuedBy: string,
   issuedFrom: string,
 ): Promise<EnrollmentCodeRecord> => {
-  const code = Array.from({ length: CODE_LENGTH }, () => ALPHABET[randomInt(ALPHABET.length)]).join('');
+  const code = Array.from({ length: CODE_LENGTH }, () => ALPHABET[randomInt(ALPHABET.length)]).join(
+    '',
+  );
   const expiresOn = new Date(Date.now() + CODE_TTL_MS).toISOString();
   await sql`
     INSERT INTO enrollment_codes (code, facility_id, issued_by, issued_from, expires_on)
@@ -52,7 +54,9 @@ export const enrollDevice = async (
   try {
     return await sql.begin((tx) => claimCodeAndEnroll(tx, request, syncEndpoint));
   } catch (cause) {
-    if (isPostgresError(cause, UNIQUE_VIOLATION)) return { ok: false, error: 'device_already_enrolled' };
+    if (isPostgresError(cause, UNIQUE_VIOLATION)) {
+      return { ok: false, error: 'device_already_enrolled' };
+    }
     throw cause;
   }
 };
@@ -74,7 +78,9 @@ export const claimCodeAndEnroll = async (
       AND claimed_on IS NULL
       AND expires_on >= now()
     RETURNING facility_id, issued_by, issued_from`;
-  if (!claimed) return { ok: false, error: 'invalid_code' };
+  if (!claimed) {
+    return { ok: false, error: 'invalid_code' };
+  }
 
   const now = new Date().toISOString();
   const device = Device.parse({
@@ -109,7 +115,8 @@ export const claimCodeAndEnroll = async (
   };
 };
 
-export type RevocationOutcome = { ok: true; device: Device } | { ok: false; error: 'unknown_device' };
+export type RevocationOutcome =
+  { ok: true; device: Device } | { ok: false; error: 'unknown_device' };
 
 /**
  * De-enrolls a device of the caller's facility. Sync stops at the device's next
@@ -131,7 +138,9 @@ export const revokeDevice = async (
       UPDATE devices
       SET status = 'revoked', revoked_on = now(), wipe_requested = ${wipe}, updated_by = ${revokedBy}, updated_on = now()
       WHERE id = ${targetDeviceId} AND facility_id = ${facilityId}`;
-    if (updated.count !== 1) return { ok: false, error: 'unknown_device' };
+    if (updated.count !== 1) {
+      return { ok: false, error: 'unknown_device' };
+    }
 
     await recordAuditEvent(tx, {
       facilityId,

@@ -9,11 +9,18 @@ test('hospital billing migration creates immutable ledgers and private connectio
   const admin = createSql(config.postgresUrl);
   const name = `geneus_test_billing_${randomBytes(4).toString('hex')}`;
   await admin.unsafe(`CREATE DATABASE ${name}`);
-  const url = new URL(config.postgresUrl); url.pathname = `/${name}`;
+  const url = new URL(config.postgresUrl);
+  url.pathname = `/${name}`;
   const sql = createSql(url.toString());
-  t.after(async () => { await sql.end(); await admin.unsafe(`DROP DATABASE ${name} WITH (FORCE)`); await admin.end(); });
+  t.after(async () => {
+    await sql.end();
+    await admin.unsafe(`DROP DATABASE ${name} WITH (FORCE)`);
+    await admin.end();
+  });
   await migrate(sql);
-  const tables = await sql<{ tablename: string }[]>`SELECT tablename FROM pg_publication_tables WHERE pubname = 'powersync'`;
+  const tables = await sql<
+    { tablename: string }[]
+  >`SELECT tablename FROM pg_publication_tables WHERE pubname = 'powersync'`;
   assert(tables.some((row) => row.tablename === 'incoming_transfers'));
   assert(tables.some((row) => row.tablename === 'billing_departments'));
   assert(!tables.some((row) => row.tablename === 'billing_connections'));

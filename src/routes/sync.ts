@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import {negotiateIntegrated} from '../billing/integrated.ts';
+import { negotiateIntegrated } from '../billing/integrated.ts';
 import { negotiateCatalogue } from '../billing/catalogue.ts';
 import { billingPeriods } from '../insurance/billingPeriods.ts';
 import { UploadRequest, type ApiErrorBody, type SyncTokenResponse } from '#shared';
@@ -21,57 +21,250 @@ import { ensureStandardCatalogueOnce } from '../clinical/standardCatalogue.ts';
  * Both device calls authenticate with the device credential; the token they
  * get, and the mutations they send, are bound to that device's facility here.
  */
-export const registerSyncRoutes = (app: FastifyInstance, sql: Sql, config: Config, signer: Signer) => {
+export const registerSyncRoutes = (
+  app: FastifyInstance,
+  sql: Sql,
+  config: Config,
+  signer: Signer,
+) => {
   /** Transport receipts reveal outcomes only for this device, never refused evidence. */
   app.post('/sync/receipts', async (request, reply) => {
-    const identity = await authenticateDevice(sql, request, reply); if (!identity) return;
-    const parsed = z.strictObject({ clientIds: z.array(z.number().int().nonnegative()).min(1).max(1000) }).safeParse(request.body);
-    if (!parsed.success) return reply.code(400).send({ error: 'invalid_request', message: 'Provide between one and one thousand mutation identities' } satisfies ApiErrorBody);
-    const rows = await sql`SELECT client_id,outcome FROM applied_mutations WHERE device_id=${identity.deviceId} AND client_id IN ${sql(parsed.data.clientIds)}`;
-    reply.header('cache-control','no-store');
-    return { applied: rows.filter((r)=>r.outcome==='applied').map((r)=>Number(r.client_id)), rejected: rows.filter((r)=>r.outcome==='rejected').map((r)=>Number(r.client_id)) };
+    const identity = await authenticateDevice(sql, request, reply);
+    if (!identity) {
+      return;
+    }
+    const parsed = z
+      .strictObject({ clientIds: z.array(z.number().int().nonnegative()).min(1).max(1000) })
+      .safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({
+        error: 'invalid_request',
+        message: 'Provide between one and one thousand mutation identities',
+      } satisfies ApiErrorBody);
+    }
+    const rows =
+      await sql`SELECT client_id,outcome FROM applied_mutations WHERE device_id=${identity.deviceId} AND client_id IN ${sql(parsed.data.clientIds)}`;
+    reply.header('cache-control', 'no-store');
+    return {
+      applied: rows.filter((r) => r.outcome === 'applied').map((r) => Number(r.client_id)),
+      rejected: rows.filter((r) => r.outcome === 'rejected').map((r) => Number(r.client_id)),
+    };
   });
   /** PowerSync fetches this to verify sync tokens (configured as `jwks_uri`). */
   app.get('/.well-known/jwks.json', async () => {
     const rows = await sql`SELECT public_jwk FROM workforce_signing_keys WHERE trusted`;
-    return { keys: [...new Map([signer.publicJwk(), ...rows.map((r) => r.public_jwk as ReturnType<Signer['publicJwk']>)].map((key) => [key.kid,key])).values()] };
+    return {
+      keys: [
+        ...new Map(
+          [
+            signer.publicJwk(),
+            ...rows.map((r) => r.public_jwk as ReturnType<Signer['publicJwk']>),
+          ].map((key) => [key.kid, key]),
+        ).values(),
+      ],
+    };
   });
 
   app.post('/sync/token', async (request, reply) => {
     const identity = await authenticateDevice(sql, request, reply);
-    if (!identity) return;
+    if (!identity) {
+      return;
+    }
 
-    const version = z.object({ integratedBillingVersion:z.literal(1).optional(), billingCatalogueVersion: z.literal(1).optional(), careServiceVersion: z.literal(1).optional(), insuranceWorkflowVersion: z.literal(1).optional(), pharmacyWorkflowVersion: z.literal(1).optional(), wardCareVersion: z.literal(1).optional(), resultTemplateWorkflowVersion: z.literal(1).optional(), documentWorkflowVersion:z.literal(1).optional(),inpatientWorkflowVersion: z.literal(1).optional(), clinicalWorkflowVersion: z.literal(1).optional(), facilityContractVersion: z.number().int().optional(), schemaVersion: z.number().int().optional(), policyVersion: z.number().int().optional(), pendingMutationCount: z.number().int().nonnegative().optional() }).safeParse(request.body ?? {});
-    if (!version.success) return reply.code(400).send({ error: 'invalid_request', message: 'Invalid client compatibility metadata' } satisfies ApiErrorBody);
-    if(version.data.billingCatalogueVersion===1 && ((version.data.schemaVersion??0)<6 || version.data.facilityContractVersion!==1))return reply.code(409).send({error:'upgrade_required',message:'The central Billing catalogue requires schema 6 and facility contract 1'} satisfies ApiErrorBody);
-    if (version.data.pharmacyWorkflowVersion === 1 && (version.data.clinicalWorkflowVersion !== 1 || version.data.facilityContractVersion !== 1 || (version.data.schemaVersion ?? 0) < 5 || (version.data.policyVersion ?? 0) < 13)) return reply.code(409).send({ error: 'upgrade_required', message: 'Pharmacy requires the current clinical contract' });
-    if (version.data.wardCareVersion === 1 && (version.data.inpatientWorkflowVersion !== 1 || version.data.clinicalWorkflowVersion !== 1 || version.data.facilityContractVersion !== 1 || (version.data.schemaVersion ?? 0) < 5 || (version.data.policyVersion ?? 0) < 13)) return reply.code(409).send({ error: 'upgrade_required', message: 'Ward care requires the current inpatient and clinical contracts' });
-    if(version.data.documentWorkflowVersion===1 && (version.data.facilityContractVersion!==1 || (version.data.schemaVersion??0)<5 || (version.data.policyVersion??0)<11))return reply.code(409).send({error:'upgrade_required',message:'Documents require facility contract 1, schema 5 and policy 11'} satisfies ApiErrorBody);
-    if (version.data.inpatientWorkflowVersion === 1 && (version.data.facilityContractVersion !== 1 || (version.data.schemaVersion ?? 0) < 5 || (version.data.policyVersion ?? 0) < 11)) return reply.code(409).send({ error: 'upgrade_required', message: 'Admissions require facility contract 1, schema 5 and policy 11' } satisfies ApiErrorBody);
-    if (version.data.resultTemplateWorkflowVersion === 1 && (version.data.clinicalWorkflowVersion !== 1 || version.data.facilityContractVersion !== 1 || (version.data.schemaVersion ?? 0) < 5 || (version.data.policyVersion ?? 0) < 13)) return reply.code(409).send({ error: 'upgrade_required', message: 'Result templates require the current clinical workflow, facility contract 1, schema 5 and policy 13' } satisfies ApiErrorBody);
-    if (version.data.clinicalWorkflowVersion === 1 && (version.data.facilityContractVersion !== 1 || (version.data.schemaVersion ?? 0) < 4 || (version.data.policyVersion ?? 0) < 10)) return reply.code(409).send({ error: 'upgrade_required', message: 'The current clinical workflow requires facility contract 1, schema 4 and policy 10' } satisfies ApiErrorBody);
-    if (version.data.insuranceWorkflowVersion === 1 && (version.data.facilityContractVersion !== 1 || (version.data.schemaVersion ?? 0) < 5 || (version.data.policyVersion ?? 0) < 14)) return reply.code(409).send({ error: 'upgrade_required', message: 'Insurance requires facility contract 1, schema 5 and policy 14' } satisfies ApiErrorBody);
-    if (version.data.careServiceVersion === 1 && (version.data.facilityContractVersion !== 1 || (version.data.schemaVersion ?? 0) < 4)) return reply.code(409).send({ error: 'upgrade_required', message: 'Care services require facility contract 1 and schema 4' } satisfies ApiErrorBody);
-    if (version.data.facilityContractVersion !== undefined && version.data.facilityContractVersion !== 1) return reply.code(409).send({ error: 'upgrade_required', message: 'This server supports facility contract version one' } satisfies ApiErrorBody);
-    if(version.data.integratedBillingVersion===1 && ((version.data.schemaVersion??0)<7 || (version.data.policyVersion??0)<17 || version.data.billingCatalogueVersion!==1))return reply.code(409).send({error:'upgrade_required',message:'Integrated billing requires schema 7, policy 17 and catalogue 1'});
-    const tokenIssuedAt=Date.now();
+    const version = z
+      .object({
+        integratedBillingVersion: z.literal(1).optional(),
+        billingCatalogueVersion: z.literal(1).optional(),
+        careServiceVersion: z.literal(1).optional(),
+        insuranceWorkflowVersion: z.literal(1).optional(),
+        pharmacyWorkflowVersion: z.literal(1).optional(),
+        wardCareVersion: z.literal(1).optional(),
+        resultTemplateWorkflowVersion: z.literal(1).optional(),
+        documentWorkflowVersion: z.literal(1).optional(),
+        inpatientWorkflowVersion: z.literal(1).optional(),
+        clinicalWorkflowVersion: z.literal(1).optional(),
+        facilityContractVersion: z.number().int().optional(),
+        schemaVersion: z.number().int().optional(),
+        policyVersion: z.number().int().optional(),
+        pendingMutationCount: z.number().int().nonnegative().optional(),
+      })
+      .safeParse(request.body ?? {});
+    if (!version.success) {
+      return reply.code(400).send({
+        error: 'invalid_request',
+        message: 'Invalid client compatibility metadata',
+      } satisfies ApiErrorBody);
+    }
+    if (
+      version.data.billingCatalogueVersion === 1 &&
+      ((version.data.schemaVersion ?? 0) < 6 || version.data.facilityContractVersion !== 1)
+    ) {
+      return reply.code(409).send({
+        error: 'upgrade_required',
+        message: 'The central Billing catalogue requires schema 6 and facility contract 1',
+      } satisfies ApiErrorBody);
+    }
+    if (
+      version.data.pharmacyWorkflowVersion === 1 &&
+      (version.data.clinicalWorkflowVersion !== 1 ||
+        version.data.facilityContractVersion !== 1 ||
+        (version.data.schemaVersion ?? 0) < 5 ||
+        (version.data.policyVersion ?? 0) < 13)
+    ) {
+      return reply.code(409).send({
+        error: 'upgrade_required',
+        message: 'Pharmacy requires the current clinical contract',
+      });
+    }
+    if (
+      version.data.wardCareVersion === 1 &&
+      (version.data.inpatientWorkflowVersion !== 1 ||
+        version.data.clinicalWorkflowVersion !== 1 ||
+        version.data.facilityContractVersion !== 1 ||
+        (version.data.schemaVersion ?? 0) < 5 ||
+        (version.data.policyVersion ?? 0) < 13)
+    ) {
+      return reply.code(409).send({
+        error: 'upgrade_required',
+        message: 'Ward care requires the current inpatient and clinical contracts',
+      });
+    }
+    if (
+      version.data.documentWorkflowVersion === 1 &&
+      (version.data.facilityContractVersion !== 1 ||
+        (version.data.schemaVersion ?? 0) < 5 ||
+        (version.data.policyVersion ?? 0) < 11)
+    ) {
+      return reply.code(409).send({
+        error: 'upgrade_required',
+        message: 'Documents require facility contract 1, schema 5 and policy 11',
+      } satisfies ApiErrorBody);
+    }
+    if (
+      version.data.inpatientWorkflowVersion === 1 &&
+      (version.data.facilityContractVersion !== 1 ||
+        (version.data.schemaVersion ?? 0) < 5 ||
+        (version.data.policyVersion ?? 0) < 11)
+    ) {
+      return reply.code(409).send({
+        error: 'upgrade_required',
+        message: 'Admissions require facility contract 1, schema 5 and policy 11',
+      } satisfies ApiErrorBody);
+    }
+    if (
+      version.data.resultTemplateWorkflowVersion === 1 &&
+      (version.data.clinicalWorkflowVersion !== 1 ||
+        version.data.facilityContractVersion !== 1 ||
+        (version.data.schemaVersion ?? 0) < 5 ||
+        (version.data.policyVersion ?? 0) < 13)
+    ) {
+      return reply.code(409).send({
+        error: 'upgrade_required',
+        message:
+          'Result templates require the current clinical workflow, facility contract 1, schema 5 and policy 13',
+      } satisfies ApiErrorBody);
+    }
+    if (
+      version.data.clinicalWorkflowVersion === 1 &&
+      (version.data.facilityContractVersion !== 1 ||
+        (version.data.schemaVersion ?? 0) < 4 ||
+        (version.data.policyVersion ?? 0) < 10)
+    ) {
+      return reply.code(409).send({
+        error: 'upgrade_required',
+        message:
+          'The current clinical workflow requires facility contract 1, schema 4 and policy 10',
+      } satisfies ApiErrorBody);
+    }
+    if (
+      version.data.insuranceWorkflowVersion === 1 &&
+      (version.data.facilityContractVersion !== 1 ||
+        (version.data.schemaVersion ?? 0) < 5 ||
+        (version.data.policyVersion ?? 0) < 14)
+    ) {
+      return reply.code(409).send({
+        error: 'upgrade_required',
+        message: 'Insurance requires facility contract 1, schema 5 and policy 14',
+      } satisfies ApiErrorBody);
+    }
+    if (
+      version.data.careServiceVersion === 1 &&
+      (version.data.facilityContractVersion !== 1 || (version.data.schemaVersion ?? 0) < 4)
+    ) {
+      return reply.code(409).send({
+        error: 'upgrade_required',
+        message: 'Care services require facility contract 1 and schema 4',
+      } satisfies ApiErrorBody);
+    }
+    if (
+      version.data.facilityContractVersion !== undefined &&
+      version.data.facilityContractVersion !== 1
+    ) {
+      return reply.code(409).send({
+        error: 'upgrade_required',
+        message: 'This server supports facility contract version one',
+      } satisfies ApiErrorBody);
+    }
+    if (
+      version.data.integratedBillingVersion === 1 &&
+      ((version.data.schemaVersion ?? 0) < 7 ||
+        (version.data.policyVersion ?? 0) < 17 ||
+        version.data.billingCatalogueVersion !== 1)
+    ) {
+      return reply.code(409).send({
+        error: 'upgrade_required',
+        message: 'Integrated billing requires schema 7, policy 17 and catalogue 1',
+      });
+    }
+    const tokenIssuedAt = Date.now();
     const negotiated = await sql.begin(async (tx) => {
       await tx`SELECT id FROM facilities WHERE id=${identity.facilityId} FOR UPDATE`;
-      await assertWorkforceCompatibility(tx, identity.facilityId, { transactionId: null, mutations: [], ...version.data, facilityContractVersion: version.data.facilityContractVersion === 1 ? 1 : undefined }, Date.now());
+      await assertWorkforceCompatibility(
+        tx,
+        identity.facilityId,
+        {
+          transactionId: null,
+          mutations: [],
+          ...version.data,
+          facilityContractVersion: version.data.facilityContractVersion === 1 ? 1 : undefined,
+        },
+        Date.now(),
+      );
       await recordClientVersion(tx, identity, version.data, Date.now());
-      const catalogue=await negotiateCatalogue(tx,identity,version.data.billingCatalogueVersion,config.syncTokenTtlSeconds,tokenIssuedAt);
-      const integrated=await negotiateIntegrated(tx,identity,version.data.integratedBillingVersion,config.syncTokenTtlSeconds,tokenIssuedAt);
-      return {catalogue,integrated};
+      const catalogue = await negotiateCatalogue(
+        tx,
+        identity,
+        version.data.billingCatalogueVersion,
+        config.syncTokenTtlSeconds,
+        tokenIssuedAt,
+      );
+      const integrated = await negotiateIntegrated(
+        tx,
+        identity,
+        version.data.integratedBillingVersion,
+        config.syncTokenTtlSeconds,
+        tokenIssuedAt,
+      );
+      return { catalogue, integrated };
     });
 
     // A device that adopts standard tests and templates offline needs this facility's copy of the lists.
-    if (version.data.resultTemplateWorkflowVersion === 1) await ensureStandardCatalogueOnce(sql, identity.facilityId);
+    if (version.data.resultTemplateWorkflowVersion === 1) {
+      await ensureStandardCatalogueOnce(sql, identity.facilityId);
+    }
 
     // A capable device is recorded for readiness above; it receives insurance records only once an operator enables the hospital.
-    const state = version.data.insuranceWorkflowVersion === 1 ? await insuranceState(sql, identity.facilityId) : 'off';
+    const state =
+      version.data.insuranceWorkflowVersion === 1
+        ? await insuranceState(sql, identity.facilityId)
+        : 'off';
     // A hospital that ever billed insurance keeps its insurance records after turning billing off: those obligations stand.
-    const periods = version.data.insuranceWorkflowVersion === 1 ? await billingPeriods(sql, identity.facilityId) : [];
-    const insurance = state === 'setup' || state === 'active' || periods.length ? 1 as const : undefined;
+    const periods =
+      version.data.insuranceWorkflowVersion === 1
+        ? await billingPeriods(sql, identity.facilityId)
+        : [];
+    const insurance =
+      state === 'setup' || state === 'active' || periods.length ? (1 as const) : undefined;
     const minted = mintSyncToken(signer, {
       deviceId: identity.deviceId,
       facilityId: identity.facilityId,
@@ -88,13 +281,16 @@ export const registerSyncRoutes = (app: FastifyInstance, sql: Sql, config: Confi
       resultTemplateWorkflowVersion: version.data.resultTemplateWorkflowVersion,
       insuranceWorkflowVersion: insurance,
       careServiceVersion: version.data.careServiceVersion,
-      integratedBillingVersion:version.data.integratedBillingVersion,
+      integratedBillingVersion: version.data.integratedBillingVersion,
       billingCatalogueVersion: version.data.billingCatalogueVersion,
     });
     await touchDevice(sql, identity.deviceId);
 
     const response: SyncTokenResponse = {
-      billingCatalogueVersion: version.data.billingCatalogueVersion, billingCatalogueEnabled: negotiated.catalogue, integratedBillingVersion:version.data.integratedBillingVersion,integratedBillingEnabled:negotiated.integrated,
+      billingCatalogueVersion: version.data.billingCatalogueVersion,
+      billingCatalogueEnabled: negotiated.catalogue,
+      integratedBillingVersion: version.data.integratedBillingVersion,
+      integratedBillingEnabled: negotiated.integrated,
       token: minted.token,
       expiresOn: minted.expiresOn,
       syncEndpoint: config.powerSyncPublicUrl,
@@ -107,7 +303,12 @@ export const registerSyncRoutes = (app: FastifyInstance, sql: Sql, config: Confi
       resultTemplateWorkflowVersion: version.data.resultTemplateWorkflowVersion,
       insuranceWorkflowVersion: insurance,
       careServiceVersion: version.data.careServiceVersion,
-      ...(insurance ? { insuranceBillingActive: state === 'active', insuranceBillingPeriods: periods.slice(-200) } : {}),
+      ...(insurance
+        ? {
+            insuranceBillingActive: state === 'active',
+            insuranceBillingPeriods: periods.slice(-200),
+          }
+        : {}),
     };
     return response;
   });
@@ -121,11 +322,16 @@ export const registerSyncRoutes = (app: FastifyInstance, sql: Sql, config: Confi
    */
   app.post('/sync/upload', async (request, reply) => {
     const identity = await authenticateDevice(sql, request, reply);
-    if (!identity) return;
+    if (!identity) {
+      return;
+    }
 
     const parsed = UploadRequest.safeParse(request.body);
     if (!parsed.success) {
-      request.log.error({ deviceId: identity.deviceId, issues: parsed.error.issues }, 'malformed upload — client bug');
+      request.log.error(
+        { deviceId: identity.deviceId, issues: parsed.error.issues },
+        'malformed upload — client bug',
+      );
       return reply.code(400).send({
         error: 'invalid_upload',
         message: 'The upload is malformed',
@@ -141,13 +347,22 @@ export const registerSyncRoutes = (app: FastifyInstance, sql: Sql, config: Confi
         {
           deviceId: identity.deviceId,
           facilityId: identity.facilityId,
-          rejected: response.rejected.map(({ clientId, table, category }) => ({ clientId, table, category })),
+          rejected: response.rejected.map(({ clientId, table, category }) => ({
+            clientId,
+            table,
+            category,
+          })),
         },
         'upload mutations rejected',
       );
     }
     request.log.info(
-      { deviceId: identity.deviceId, applied: response.applied, duplicates: response.duplicates, rejected: response.rejected.length },
+      {
+        deviceId: identity.deviceId,
+        applied: response.applied,
+        duplicates: response.duplicates,
+        rejected: response.rejected.length,
+      },
       'upload processed',
     );
     return response;

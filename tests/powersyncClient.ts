@@ -15,7 +15,10 @@ export type SyncedRow = { table: string; id: string; data: Record<string, unknow
 export type CheckpointResult = { status: number; rows: SyncedRow[]; buckets: string[] };
 
 type DataLine = {
-  data?: { bucket: string; data: { op: string; object_type: string; object_id: string; data: string | null }[] };
+  data?: {
+    bucket: string;
+    data: { op: string; object_type: string; object_id: string; data: string | null }[];
+  };
   checkpoint?: { buckets: { bucket: string }[] };
   checkpoint_complete?: unknown;
 };
@@ -40,7 +43,9 @@ export const readFirstCheckpoint = async (
       }),
       signal: controller.signal,
     });
-    if (!response.ok || !response.body) return { status: response.status, rows: [], buckets: [] };
+    if (!response.ok || !response.body) {
+      return { status: response.status, rows: [], buckets: [] };
+    }
 
     const rows: SyncedRow[] = [];
     const buckets: string[] = [];
@@ -50,18 +55,28 @@ export const readFirstCheckpoint = async (
 
     for (;;) {
       const { value, done } = await reader.read();
-      if (done) break;
+      if (done) {
+        break;
+      }
       buffered += decoder.decode(value, { stream: true });
       let newline: number;
       while ((newline = buffered.indexOf('\n')) >= 0) {
         const line = buffered.slice(0, newline).trim();
         buffered = buffered.slice(newline + 1);
-        if (!line) continue;
+        if (!line) {
+          continue;
+        }
         const parsed = JSON.parse(line) as DataLine;
-        if (parsed.checkpoint) buckets.push(...parsed.checkpoint.buckets.map((bucket) => bucket.bucket));
+        if (parsed.checkpoint) {
+          buckets.push(...parsed.checkpoint.buckets.map((bucket) => bucket.bucket));
+        }
         for (const entry of parsed.data?.data ?? []) {
           if (entry.op === 'PUT' && entry.data) {
-            rows.push({ table: entry.object_type, id: entry.object_id, data: JSON.parse(entry.data) as Record<string, unknown> });
+            rows.push({
+              table: entry.object_type,
+              id: entry.object_id,
+              data: JSON.parse(entry.data) as Record<string, unknown>,
+            });
           }
         }
         if (parsed.checkpoint_complete !== undefined) {
@@ -87,7 +102,9 @@ export const waitForRow = async (
   for (let attempt = 0; attempt < attempts; attempt++) {
     last = await readFirstCheckpoint(endpoint, token);
     const found = last.rows.find(predicate);
-    if (found) return { found, last };
+    if (found) {
+      return { found, last };
+    }
     await new Promise((resolve) => setTimeout(resolve, 1000));
   }
   return { found: undefined, last };

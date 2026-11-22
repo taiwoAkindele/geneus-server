@@ -10,8 +10,14 @@ import { chargePositions, chargesById } from '../insurance/coverage.ts';
  * payments, plus refunds. A payer's part is never available to reduce or to
  * collect from the patient.
  */
-export const availableOnCharge = async (tx: Tx, facilityId: string, chargeId: string): Promise<number> => {
+export const availableOnCharge = async (
+  tx: Tx,
+  facilityId: string,
+  chargeId: string,
+): Promise<number> => {
   const [charge] = await chargesById(tx, facilityId, [chargeId]);
-  if (!charge) throw new Error('Charge not found');
+  if (!charge) {
+    throw new Error('Charge not found');
+  }
   return (await chargePositions(tx, facilityId, [charge])).get(chargeId)!.balanceMinor;
 };

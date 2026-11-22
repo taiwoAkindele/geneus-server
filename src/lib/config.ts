@@ -44,7 +44,10 @@ const Config = z
     emailFrom: z.string().min(1).optional(),
     isProduction: z.boolean(),
     /** 32-byte hex master key for per-hospital Paystack credentials. Never synced. */
-    billingEncryptionKey: z.string().regex(/^[a-fA-F0-9]{64}$/).optional(),
+    billingEncryptionKey: z
+      .string()
+      .regex(/^[a-fA-F0-9]{64}$/)
+      .optional(),
     /**
      * The first Geneus platform operators, provisioned with the deployment. Only ever adds:
      * further operators are added and removed in the operator console, never here.
@@ -52,16 +55,21 @@ const Config = z
     /** Geneus's one Sendar account for patient SMS (not per hospital). Without it, SMS is reported as not set up. */
     sendarApiKey: z.string().min(1).optional(),
     /** The sender name registered with Sendar, up to 11 letters or digits. */
-    sendarSenderId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9 ]{1,10}$/, 'SENDAR_SENDER_ID: up to 11 letters or digits').optional(),
+    sendarSenderId: z
+      .string()
+      .regex(/^[A-Za-z0-9][A-Za-z0-9 ]{1,10}$/, 'SENDAR_SENDER_ID: up to 11 letters or digits')
+      .optional(),
     sendarBaseUrl: z.url().default('https://sms-submit.sendar.io'),
     bootstrapOperators: z.array(z.email()).default([]),
   })
   .refine((config) => !config.sendarApiKey || Boolean(config.sendarSenderId), {
-    message: 'SENDAR_SENDER_ID is required when SENDAR_API_KEY is set: messages need the registered sender name',
+    message:
+      'SENDAR_SENDER_ID is required when SENDAR_API_KEY is set: messages need the registered sender name',
     path: ['sendarSenderId'],
   })
   .refine((config) => !config.resendApiKey || Boolean(config.emailFrom), {
-    message: 'EMAIL_FROM is required when RESEND_API_KEY is set: Resend refuses a message with no sender',
+    message:
+      'EMAIL_FROM is required when RESEND_API_KEY is set: Resend refuses a message with no sender',
     path: ['emailFrom'],
   })
   .refine((config) => !config.isProduction || Boolean(config.signingPrivateKey), {
@@ -76,7 +84,10 @@ export const loadConfig = (): Config =>
   Config.parse({
     postgresUrl: process.env.POSTGRES_URL ?? 'postgres://geneus:devpassword@127.0.0.1:5433/geneus',
     powerSyncPublicUrl: process.env.POWERSYNC_PUBLIC_URL ?? 'http://127.0.0.1:8090',
-    powerSyncInternalUrl: process.env.POWERSYNC_INTERNAL_URL ?? process.env.POWERSYNC_PUBLIC_URL ?? 'http://127.0.0.1:8090',
+    powerSyncInternalUrl:
+      process.env.POWERSYNC_INTERNAL_URL ??
+      process.env.POWERSYNC_PUBLIC_URL ??
+      'http://127.0.0.1:8090',
     powerSyncAudience: process.env.POWERSYNC_JWT_AUDIENCE ?? 'powersync',
     syncTokenTtlSeconds: process.env.SYNC_TOKEN_TTL_SECONDS ?? 3600,
     port: process.env.PORT ?? 8080,
@@ -89,7 +100,10 @@ export const loadConfig = (): Config =>
     emailFrom: process.env.EMAIL_FROM || undefined,
     isProduction: process.env.NODE_ENV === 'production',
     billingEncryptionKey: process.env.BILLING_ENCRYPTION_KEY || undefined,
-    bootstrapOperators: (process.env.PLATFORM_OPERATOR_EMAILS ?? '').split(',').map((e) => e.trim().toLowerCase()).filter(Boolean),
+    bootstrapOperators: (process.env.PLATFORM_OPERATOR_EMAILS ?? '')
+      .split(',')
+      .map((e) => e.trim().toLowerCase())
+      .filter(Boolean),
     sendarApiKey: process.env.SENDAR_API_KEY || undefined,
     sendarSenderId: process.env.SENDAR_SENDER_ID || undefined,
     sendarBaseUrl: process.env.SENDAR_BASE_URL || undefined,

@@ -6,24 +6,66 @@ import { loadMigrations, migrate } from '../src/db/migrate.ts';
 import { findRecord, insertRecord, toRow } from '../src/db/records.ts';
 import { envelopeFor, registerScratchFacility, scratchDatabase } from './postgres.ts';
 test('workforce upgrade preserves legacy identities and financial links without inventing classifications or credentials', async (t) => {
-  const migrations = await loadMigrations(), db = await scratchDatabase(migrations.filter((m) => m.version <= 14));
+  const migrations = await loadMigrations();
+  const db = await scratchDatabase(migrations.filter((m) => m.version <= 14));
   t.after(() => db.drop());
-  const facility = await registerScratchFacility(db.sql), env = { ...envelopeFor(facility), schemaVersion: 3 as const }, id = `unit:${randomUUID()}`;
-  const unit = Unit.parse({ ...env, id, type: 'unit', unitId: id, name: 'Legacy consulting room', active: true });
-  const department = BillingDepartment.parse({ ...env, id: `billing-department:${randomUUID()}`, type: 'billing_department', name: 'Legacy consultation fees', active: true });
+  const facility = await registerScratchFacility(db.sql);
+  const env = { ...envelopeFor(facility), schemaVersion: 3 as const };
+  const id = `unit:${randomUUID()}`;
+  const unit = Unit.parse({
+    ...env,
+    id,
+    type: 'unit',
+    unitId: id,
+    name: 'Legacy consulting room',
+    active: true,
+  });
+  const department = BillingDepartment.parse({
+    ...env,
+    id: `billing-department:${randomUUID()}`,
+    type: 'billing_department',
+    name: 'Legacy consultation fees',
+    active: true,
+  });
   const patientId = `${facility.facility.code}-000001-A1`;
-  const patient = Patient.parse({ ...env, id: patientId, type: 'patient', patientId, fullName: 'Synthetic legacy patient', address: 'Synthetic address', sex: 'female', ageYears: 40 });
+  const patient = Patient.parse({
+    ...env,
+    id: patientId,
+    type: 'patient',
+    patientId,
+    fullName: 'Synthetic legacy patient',
+    address: 'Synthetic address',
+    sex: 'female',
+    ageYears: 40,
+  });
   await insertRecord(db.sql, 'unit', unit);
   await insertRecord(db.sql, 'billing_department', department);
   // Seed the actual pre-0020 shape; the current parser now adds identityStatus.
   const { identityStatus: _identityStatus, ...legacyPatient } = patient;
   await db.sql`INSERT INTO patients ${db.sql(toRow(db.sql, 'patient', legacyPatient))}`;
-  const before = await Promise.all([findRecord(db.sql, 'unit', unit.id), findRecord(db.sql, 'billing_department', department.id), findRecord(db.sql, 'patient', patient.id), findRecord(db.sql, 'staff', facility.admin.id)]);
+  const before = await Promise.all([
+    findRecord(db.sql, 'unit', unit.id),
+    findRecord(db.sql, 'billing_department', department.id),
+    findRecord(db.sql, 'patient', patient.id),
+    findRecord(db.sql, 'staff', facility.admin.id),
+  ]);
   const outcomes = await migrate(db.sql, migrations);
-  assert.deepEqual(outcomes.filter((m) => m.outcome === 'applied').map((m) => m.version), [15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47]);
-  const after = await Promise.all([findRecord(db.sql, 'unit', unit.id), findRecord(db.sql, 'billing_department', department.id), findRecord(db.sql, 'patient', patient.id), findRecord(db.sql, 'staff', facility.admin.id)]);
+  assert.deepEqual(
+    outcomes.filter((m) => m.outcome === 'applied').map((m) => m.version),
+    [
+      15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37,
+      38, 39, 40, 41, 42, 43, 44, 45, 46, 47,
+    ],
+  );
+  const after = await Promise.all([
+    findRecord(db.sql, 'unit', unit.id),
+    findRecord(db.sql, 'billing_department', department.id),
+    findRecord(db.sql, 'patient', patient.id),
+    findRecord(db.sql, 'staff', facility.admin.id),
+  ]);
   assert.deepEqual(after, before);
-  const [unseeded] = await db.sql`SELECT (SELECT count(*) FROM locations) AS places,(SELECT count(*) FROM credentials) AS credentials,(SELECT count(*) FROM service_offerings) AS services`;
+  const [unseeded] =
+    await db.sql`SELECT (SELECT count(*) FROM locations) AS places,(SELECT count(*) FROM credentials) AS credentials,(SELECT count(*) FROM service_offerings) AS services`;
   assert.equal(Number(unseeded.places), 0);
   assert.equal(Number(unseeded.credentials), 0);
   assert.equal(Number(unseeded.services), 0);

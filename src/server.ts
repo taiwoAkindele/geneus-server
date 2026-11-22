@@ -39,7 +39,10 @@ const start = async () => {
   });
   const applied = outcomes.filter((outcome) => outcome.outcome === 'applied');
   if (applied.length > 0) {
-    app.log.info({ applied: applied.map((outcome) => `${outcome.version}_${outcome.name}`) }, 'migrations applied');
+    app.log.info(
+      { applied: applied.map((outcome) => `${outcome.version}_${outcome.name}`) },
+      'migrations applied',
+    );
   }
   // Every facility gets the current standard tests and templates, so they can be adopted offline.
   const seeded = await ensureAllStandardCatalogues(sql);
@@ -53,7 +56,13 @@ const start = async () => {
   await app.listen({ port: config.port, host: '0.0.0.0' });
   rosterSigning = startRosterSigning(sql, signer, app.log);
   // Retries bills and receipts that couldn't be sent to patients at once.
-  patientMessaging = startPatientMessaging({ sql, mailer: createMailer(config, app.log), sms: smsSenderFrom(config), appUrl: config.corsOrigins[0], log: app.log });
+  patientMessaging = startPatientMessaging({
+    sql,
+    mailer: createMailer(config, app.log),
+    sms: smsSenderFrom(config),
+    appUrl: config.corsOrigins[0],
+    log: app.log,
+  });
   checkoutReconciliation = startCheckoutReconciliation(sql, config, app.log);
 };
 
@@ -64,7 +73,9 @@ const start = async () => {
  */
 let stopping = false;
 const shutdown = async (signal: string) => {
-  if (stopping) return;
+  if (stopping) {
+    return;
+  }
   stopping = true;
   app.log.info({ signal }, 'shutting down');
   try {

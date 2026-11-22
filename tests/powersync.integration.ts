@@ -39,13 +39,17 @@ type Facility = FacilityRegistrationResult;
 
 const json = async <T>(response: Response, parse: (input: unknown) => T): Promise<T> => {
   const body = await response.json();
-  if (!response.ok) throw new Error(`${response.status}: ${JSON.stringify(body)}`);
+  if (!response.ok) {
+    throw new Error(`${response.status}: ${JSON.stringify(body)}`);
+  }
   return parse(body);
 };
 
 const serverIsUp = async (): Promise<boolean> =>
   fetch(`${SERVER_URL}/health`).then(
-    async (response) => response.ok && typeof ((await response.json()) as { schemaVersion?: unknown }).schemaVersion === 'number',
+    async (response) =>
+      response.ok &&
+      typeof ((await response.json()) as { schemaVersion?: unknown }).schemaVersion === 'number',
     () => false,
   );
 
@@ -53,21 +57,82 @@ describe('PowerSync stack', { timeout: 120_000 }, () => {
   it('gates workforce downloads by negotiated tokens and keeps evidence/private refusals out of every general replica', async () => {
     const f = await setupWorkforce(sql);
     try {
-      const privateRefusal = put({...f.decision,id:`private-refusal:${randomBytes(4).toString('hex')}`,staffId:f.facility.admin.id},{expectedPreviousId:null});
+      const privateRefusal = put(
+        {
+          ...f.decision,
+          id: `private-refusal:${randomBytes(4).toString('hex')}`,
+          staffId: f.facility.admin.id,
+        },
+        { expectedPreviousId: null },
+      );
       await f.send([privateRefusal]);
-      const modern = await json(await fetch(`${SERVER_URL}/sync/token`,{method:'POST',headers:{authorization:`Bearer ${f.facility.device.credential}`,'content-type':'application/json'},body:JSON.stringify({...versions,pendingMutationCount:0})}),SyncTokenResponse.parse);
+      const modern = await json(
+        await fetch(`${SERVER_URL}/sync/token`, {
+          method: 'POST',
+          headers: {
+            authorization: `Bearer ${f.facility.device.credential}`,
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({ ...versions, pendingMutationCount: 0 }),
+        }),
+        SyncTokenResponse.parse,
+      );
       const legacy = await tokenFor(f.facility);
-      const ready=await waitForRow(POWERSYNC_URL,modern.token,(r)=>r.table==='audit_events' && r.data.entityId===privateRefusal.id);
-      assert.ok(ready.found,'Public audit metadata reaches the modern replica after the private refusal is committed');
-      assert.ok(ready.last.rows.some((r)=>r.table==='locations' && r.id===f.location.id));
-      assert.ok(ready.last.rows.some((r)=>r.table==='authority_snapshots' && r.data.staffId===f.worker.id));
-      assert.equal(ready.last.rows.some((r)=>['credentials','capability_decisions','reviewer_delegations','clinical_authority_bootstraps','external_clinical_reviewers'].includes(r.table)),false);
-      assert.equal(ready.last.rows.some((r)=>r.table==='sync_rejections' && r.data.entityId===privateRefusal.id),false);
-      const old=await readFirstCheckpoint(POWERSYNC_URL,legacy.token);
-      assert.equal(old.status,200);assert.ok(old.rows.some((r)=>r.table==='patients' && r.id===f.patientId));
-      assert.equal(old.rows.some((r)=>['locations','service_offerings','authority_snapshots','service_sessions','staff_assignments'].includes(r.table)),false);
-      assert.equal(old.rows.find((r)=>r.table==='units' && r.id===f.unit.id)?.data.kind,undefined);
-    } finally { await f.app.close(); }
+      const ready = await waitForRow(
+        POWERSYNC_URL,
+        modern.token,
+        (r) => r.table === 'audit_events' && r.data.entityId === privateRefusal.id,
+      );
+      assert.ok(
+        ready.found,
+        'Public audit metadata reaches the modern replica after the private refusal is committed',
+      );
+      assert.ok(ready.last.rows.some((r) => r.table === 'locations' && r.id === f.location.id));
+      assert.ok(
+        ready.last.rows.some(
+          (r) => r.table === 'authority_snapshots' && r.data.staffId === f.worker.id,
+        ),
+      );
+      assert.equal(
+        ready.last.rows.some((r) =>
+          [
+            'credentials',
+            'capability_decisions',
+            'reviewer_delegations',
+            'clinical_authority_bootstraps',
+            'external_clinical_reviewers',
+          ].includes(r.table),
+        ),
+        false,
+      );
+      assert.equal(
+        ready.last.rows.some(
+          (r) => r.table === 'sync_rejections' && r.data.entityId === privateRefusal.id,
+        ),
+        false,
+      );
+      const old = await readFirstCheckpoint(POWERSYNC_URL, legacy.token);
+      assert.equal(old.status, 200);
+      assert.ok(old.rows.some((r) => r.table === 'patients' && r.id === f.patientId));
+      assert.equal(
+        old.rows.some((r) =>
+          [
+            'locations',
+            'service_offerings',
+            'authority_snapshots',
+            'service_sessions',
+            'staff_assignments',
+          ].includes(r.table),
+        ),
+        false,
+      );
+      assert.equal(
+        old.rows.find((r) => r.table === 'units' && r.id === f.unit.id)?.data.kind,
+        undefined,
+      );
+    } finally {
+      await f.app.close();
+    }
   });
   const sql = createSql(config.postgresUrl);
   let server: ChildProcess | undefined;
@@ -91,7 +156,13 @@ describe('PowerSync stack', { timeout: 120_000 }, () => {
           level: 'phc',
           adminFullName: 'Stack Admin',
           adminEmail: 'stack@example.org',
-          emailCode: (await createVerificationCode(sql, { purpose: 'registration', subject: registrationSubject(invite.token), email: 'stack@example.org' })).code,
+          emailCode: (
+            await createVerificationCode(sql, {
+              purpose: 'registration',
+              subject: registrationSubject(invite.token),
+              email: 'stack@example.org',
+            })
+          ).code,
           deviceId: `device-${code}`,
           inviteToken: invite.token,
         }),
@@ -102,21 +173,34 @@ describe('PowerSync stack', { timeout: 120_000 }, () => {
 
   const tokenFor = async (facility: Facility): Promise<SyncTokenResponse> =>
     json(
-      await fetch(`${SERVER_URL}/sync/token`, { method: 'POST', headers: { authorization: `Bearer ${facility.device.credential}` } }),
+      await fetch(`${SERVER_URL}/sync/token`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${facility.device.credential}` },
+      }),
       SyncTokenResponse.parse,
     );
 
-  const uploadAs = async (facility: Facility, ...mutations: UploadMutation[]): Promise<UploadResponse> =>
+  const uploadAs = async (
+    facility: Facility,
+    ...mutations: UploadMutation[]
+  ): Promise<UploadResponse> =>
     json(
       await fetch(`${SERVER_URL}/sync/upload`, {
         method: 'POST',
-        headers: { authorization: `Bearer ${facility.device.credential}`, 'content-type': 'application/json' },
+        headers: {
+          authorization: `Bearer ${facility.device.credential}`,
+          'content-type': 'application/json',
+        },
         body: JSON.stringify({ transactionId: 1, mutations }),
       }),
       UploadResponse.parse,
     );
 
-  const patientOf = (facility: Facility, sequence: string, overrides: Record<string, unknown> = {}): UploadMutation => {
+  const patientOf = (
+    facility: Facility,
+    sequence: string,
+    overrides: Record<string, unknown> = {},
+  ): UploadMutation => {
     const id = `${facility.facility.id}-${sequence}-K2`;
     return {
       clientId: Math.floor(Math.random() * 1_000_000),
@@ -141,7 +225,8 @@ describe('PowerSync stack', { timeout: 120_000 }, () => {
     };
   };
 
-  const belongsTo = (facility: Facility) => (row: SyncedRow) => row.data.facilityId === facility.facility.id;
+  const belongsTo = (facility: Facility) => (row: SyncedRow) =>
+    row.data.facilityId === facility.facility.id;
 
   before(async () => {
     if (!(await serverIsUp())) {
@@ -155,7 +240,10 @@ describe('PowerSync stack', { timeout: 120_000 }, () => {
       assert.ok(await serverIsUp(), `geneus-server did not come up at ${SERVER_URL}`);
     }
     assert.ok(
-      await fetch(`${POWERSYNC_URL}/probes/liveness`).then((response) => response.ok, () => false),
+      await fetch(`${POWERSYNC_URL}/probes/liveness`).then(
+        (response) => response.ok,
+        () => false,
+      ),
       `PowerSync is not reachable at ${POWERSYNC_URL} — run: docker compose up -d`,
     );
 
@@ -169,40 +257,70 @@ describe('PowerSync stack', { timeout: 120_000 }, () => {
     await sql.end();
   });
 
-  it('delivers facility A its own facility, admin and device — and every bucket is A\'s', async () => {
-    const { found, last } = await waitForRow(POWERSYNC_URL, tokenA.token, (row) => row.table === 'facilities' && row.id === a.facility.id);
+  it("delivers facility A its own facility, admin and device — and every bucket is A's", async () => {
+    const { found, last } = await waitForRow(
+      POWERSYNC_URL,
+      tokenA.token,
+      (row) => row.table === 'facilities' && row.id === a.facility.id,
+    );
 
-    assert.ok(found, `facility ${a.facility.id} never arrived; got ${JSON.stringify(last.rows.map((row) => `${row.table}/${row.id}`))}`);
+    assert.ok(
+      found,
+      `facility ${a.facility.id} never arrived; got ${JSON.stringify(last.rows.map((row) => `${row.table}/${row.id}`))}`,
+    );
     assert.ok(last.rows.every(belongsTo(a)), 'a row from another facility was delivered');
     assert.ok(last.buckets.length > 0);
-    assert.ok(last.buckets.every((bucket) => bucket.includes(`["${a.facility.id}"]`)), `buckets not partitioned by facility: ${last.buckets[0]}`);
+    assert.ok(
+      last.buckets.every((bucket) => bucket.includes(`["${a.facility.id}"]`)),
+      `buckets not partitioned by facility: ${last.buckets[0]}`,
+    );
     assert.ok(last.rows.some((row) => row.table === 'staff' && row.id === a.admin.id));
     assert.ok(last.rows.some((row) => row.table === 'devices' && row.id === a.device.deviceId));
   });
 
-  it('never delivers facility B\'s rows to facility A\'s device, nor A\'s to B\'s', async () => {
-    const [forA, forB] = await Promise.all([readFirstCheckpoint(POWERSYNC_URL, tokenA.token), readFirstCheckpoint(POWERSYNC_URL, tokenB.token)]);
+  it("never delivers facility B's rows to facility A's device, nor A's to B's", async () => {
+    const [forA, forB] = await Promise.all([
+      readFirstCheckpoint(POWERSYNC_URL, tokenA.token),
+      readFirstCheckpoint(POWERSYNC_URL, tokenB.token),
+    ]);
 
-    assert.equal(forA.rows.some((row) => row.id === b.facility.id || row.data.facilityId === b.facility.id), false);
-    assert.equal(forB.rows.some((row) => row.id === a.facility.id || row.data.facilityId === a.facility.id), false);
+    assert.equal(
+      forA.rows.some((row) => row.id === b.facility.id || row.data.facilityId === b.facility.id),
+      false,
+    );
+    assert.equal(
+      forB.rows.some((row) => row.id === a.facility.id || row.data.facilityId === a.facility.id),
+      false,
+    );
     assert.ok(forB.rows.some((row) => row.table === 'facilities' && row.id === b.facility.id));
   });
 
-  it('carries a patient uploaded from A to A\'s device, through PostgreSQL and PowerSync, and not to B\'s', async () => {
+  it("carries a patient uploaded from A to A's device, through PostgreSQL and PowerSync, and not to B's", async () => {
     const patient = patientOf(a, '000001');
     const uploaded = await uploadAs(a, patient);
     assert.deepEqual(uploaded.rejected, []);
 
-    const { found } = await waitForRow(POWERSYNC_URL, tokenA.token, (row) => row.table === 'patients' && row.id === patient.id);
+    const { found } = await waitForRow(
+      POWERSYNC_URL,
+      tokenA.token,
+      (row) => row.table === 'patients' && row.id === patient.id,
+    );
     const forB = await readFirstCheckpoint(POWERSYNC_URL, tokenB.token);
 
     assert.ok(found, 'the uploaded patient never reached the stream');
     assert.equal(found.data.fullName, 'Amaka Okoro');
-    assert.equal(forB.rows.some((row) => row.id === patient.id), false);
+    assert.equal(
+      forB.rows.some((row) => row.id === patient.id),
+      false,
+    );
   });
 
   it('delivers rows under their contract names, with lists as JSON text', async () => {
-    const { found } = await waitForRow(POWERSYNC_URL, tokenA.token, (row) => row.table === 'patients');
+    const { found } = await waitForRow(
+      POWERSYNC_URL,
+      tokenA.token,
+      (row) => row.table === 'patients',
+    );
     assert.ok(found);
 
     assert.ok('facilityId' in found.data && 'createdOn' in found.data && 'patientId' in found.data);
@@ -216,11 +334,18 @@ describe('PowerSync stack', { timeout: 120_000 }, () => {
     const response = await uploadAs(a, forged);
 
     assert.equal(response.rejected[0]?.category, 'identity');
-    const { found } = await waitForRow(POWERSYNC_URL, tokenA.token, (row) => row.table === 'sync_rejections' && row.data.entityId === forged.id);
+    const { found } = await waitForRow(
+      POWERSYNC_URL,
+      tokenA.token,
+      (row) => row.table === 'sync_rejections' && row.data.entityId === forged.id,
+    );
     assert.ok(found, 'the rejection never synced back to the device');
     assert.equal(found.data.category, 'identity');
     const forB = await readFirstCheckpoint(POWERSYNC_URL, tokenB.token);
-    assert.equal(forB.rows.some((row) => row.id === forged.id), false);
+    assert.equal(
+      forB.rows.some((row) => row.id === forged.id),
+      false,
+    );
   });
 
   it('refuses a token signed by anyone but geneus-server', async () => {

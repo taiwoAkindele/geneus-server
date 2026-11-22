@@ -1,6 +1,17 @@
-import { createCipheriv, createDecipheriv, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import { readJsonBody } from '../lib/readJsonBody.ts';
+import {
+  createCipheriv,
+  createDecipheriv,
+  createHmac,
+  randomBytes,
+  timingSafeEqual,
+} from 'node:crypto';
 import { z } from 'zod';
-import { providerFailure, ProviderUnavailable, ProviderUnexpectedReply } from './providers/types.ts';
+import {
+  providerFailure,
+  ProviderUnavailable,
+  ProviderUnexpectedReply,
+} from './providers/types.ts';
 
 export const sealPaystackSecret = (secret: string, master: string, facilityId: string): string => {
   const iv = randomBytes(12);
@@ -12,12 +23,22 @@ export const sealPaystackSecret = (secret: string, master: string, facilityId: s
 export const openPaystackSecret = (sealed: string, master: string, facilityId: string): string => {
   const [iv, tag, encrypted] = sealed.split('.').map((v) => Buffer.from(v, 'base64'));
   const decipher = createDecipheriv('aes-256-gcm', Buffer.from(master, 'hex'), iv);
-  decipher.setAAD(Buffer.from(facilityId)); decipher.setAuthTag(tag);
+  decipher.setAAD(Buffer.from(facilityId));
+  decipher.setAuthTag(tag);
   return Buffer.concat([decipher.update(encrypted), decipher.final()]).toString('utf8');
 };
-export const validPaystackSignature = (raw: string, signature: unknown, secret: string): boolean => {
-  if (typeof signature !== 'string' || !/^[a-f0-9]{128}$/i.test(signature)) return false;
-  return timingSafeEqual(createHmac('sha512', secret).update(raw).digest(), Buffer.from(signature, 'hex'));
+export const validPaystackSignature = (
+  raw: string,
+  signature: unknown,
+  secret: string,
+): boolean => {
+  if (typeof signature !== 'string' || !/^[a-f0-9]{128}$/i.test(signature)) {
+    return false;
+  }
+  return timingSafeEqual(
+    createHmac('sha512', secret).update(raw).digest(),
+    Buffer.from(signature, 'hex'),
+  );
 };
 
 export type PaystackFetch = typeof fetch;
@@ -25,41 +46,95 @@ export type PaystackFetch = typeof fetch;
  * One Paystack API call. A refusal keeps Paystack's own reason (filtered, never naming the provider)
  * so staff can act on it; an unreachable or garbled reply is reported as such, not as a server fault.
  */
-export const callPaystack = async (secret: string, path: string, fetcher: PaystackFetch = fetch, body?: unknown): Promise<unknown> => {
+export const callPaystack = async (
+  secret: string,
+  path: string,
+  fetcher: PaystackFetch = fetch,
+  body?: unknown,
+): Promise<unknown> => {
   let response: Response;
   try {
     response = await fetcher(`https://api.paystack.co${path}`, {
       method: body === undefined ? 'GET' : 'POST',
-      headers: { authorization: `Bearer ${secret}`, accept: 'application/json', ...(body === undefined ? {} : { 'content-type': 'application/json' }) },
-      body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(15_000),
+      headers: {
+        authorization: `Bearer ${secret}`,
+        accept: 'application/json',
+        ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+      },
+      body: body === undefined ? undefined : JSON.stringify(body),
+      signal: AbortSignal.timeout(15_000),
     });
-  } catch { throw new ProviderUnavailable(); }
-  const payload = await response.json().catch(() => undefined) as { status?: boolean; message?: unknown; data?: unknown } | undefined;
-  if (!payload) throw new ProviderUnexpectedReply(`HTTP ${response.status} without JSON`);
-  if (!response.ok || !payload.status) throw providerFailure(typeof payload.message === 'string' ? payload.message : undefined, response.status, path.split('?')[0]);
+  } catch {
+    throw new ProviderUnavailable();
+  }
+  const payload = (await readJsonBody(response)) as
+    { status?: boolean; message?: unknown; data?: unknown } | undefined;
+  if (!payload) {
+    throw new ProviderUnexpectedReply(`HTTP ${response.status} without JSON`);
+  }
+  if (!response.ok || !payload.status) {
+    throw providerFailure(
+      typeof payload.message === 'string' ? payload.message : undefined,
+      response.status,
+      path.split('?')[0],
+    );
+  }
   return payload.data;
 };
 
 export const PaystackAccount = z.object({
-  id: z.union([z.string(), z.number()]), account_number: z.string().min(1), account_name: z.string().min(1),
-  active: z.boolean(), currency: z.string(), bank: z.object({ name: z.string() }),
+  id: z.union([z.string(), z.number()]),
+  account_number: z.string().min(1),
+  account_name: z.string().min(1),
+  active: z.boolean(),
+  currency: z.string(),
+  bank: z.object({ name: z.string() }),
 });
 export const PaystackTerminal = z.object({
-  code: z.string().regex(/^VT_[A-Za-z0-9]+$/), active: z.boolean(), currency: z.string(),
-  paymentMethods: z.array(z.object({ type: z.string(), account_number: z.string().optional(), account_name: z.string().optional(), bank: z.string().optional() })),
+  code: z.string().regex(/^VT_[A-Za-z0-9]+$/),
+  active: z.boolean(),
+  currency: z.string(),
+  paymentMethods: z.array(
+    z.object({
+      type: z.string(),
+      account_number: z.string().optional(),
+      account_name: z.string().optional(),
+      bank: z.string().optional(),
+    }),
+  ),
 });
 export const accountFromTerminal = (value: unknown) => {
   const terminal = PaystackTerminal.parse(value);
-  const method = terminal.paymentMethods.find((m) => m.type === 'dedicated_nuban' && m.account_number && m.account_name && m.bank);
-  if (!terminal.active || terminal.currency !== 'NGN' || !method) throw Object.assign(new Error(`Paystack terminal ${terminal.code} has no active NGN bank details yet. Complete its setup in Paystack, then link its code here.`), { statusCode: 409 });
-  return PaystackAccount.parse({ id: terminal.code, active: true, currency: terminal.currency, account_number: method.account_number, account_name: method.account_name, bank: { name: method.bank } });
+  const method = terminal.paymentMethods.find(
+    (m) => m.type === 'dedicated_nuban' && m.account_number && m.account_name && m.bank,
+  );
+  if (!terminal.active || terminal.currency !== 'NGN' || !method) {
+    throw Object.assign(
+      new Error(
+        `Paystack terminal ${terminal.code} has no active NGN bank details yet. Complete its setup in Paystack, then link its code here.`,
+      ),
+      { statusCode: 409 },
+    );
+  }
+  return PaystackAccount.parse({
+    id: terminal.code,
+    active: true,
+    currency: terminal.currency,
+    account_number: method.account_number,
+    account_name: method.account_name,
+    bank: { name: method.bank },
+  });
 };
 export const VerifiedPaystackTransfer = z.object({
-  reference: z.string().min(1), status: z.literal('success'),
-  amount: z.number().int().positive().max(2_147_483_647), currency: z.literal('NGN'),
-  domain: z.enum(['test', 'live']), paid_at: z.string().datetime({ offset: true }),
+  reference: z.string().min(1),
+  status: z.literal('success'),
+  amount: z.number().int().positive().max(2_147_483_647),
+  currency: z.literal('NGN'),
+  domain: z.enum(['test', 'live']),
+  paid_at: z.string().datetime({ offset: true }),
   authorization: z.object({
     channel: z.enum(['dedicated_nuban', 'bank_transfer']),
-    receiver_bank_account_number: z.string().min(1), sender_name: z.string().optional(),
+    receiver_bank_account_number: z.string().min(1),
+    sender_name: z.string().optional(),
   }),
 });

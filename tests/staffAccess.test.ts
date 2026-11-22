@@ -1,26 +1,70 @@
 import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import type { FastifyInstance } from 'fastify';
-import { staffPermissions, type FacilityRegistrationResult, type Staff, type UploadMutation } from '#shared';
+import {
+  staffPermissions,
+  type FacilityRegistrationResult,
+  type Staff,
+  type UploadMutation,
+} from '#shared';
 import { findRecord } from '../src/db/records.ts';
 import { findStaffInFacility, staffDenial } from '../src/auth/staffAuthorization.ts';
-import { addStaff, clientId, envelopeFor, registerScratchFacility, scratchDatabase, staffSessionFor, testApp, upload, type ScratchDatabase } from './postgres.ts';
+import {
+  addStaff,
+  clientId,
+  envelopeFor,
+  registerScratchFacility,
+  scratchDatabase,
+  staffSessionFor,
+  testApp,
+  upload,
+  type ScratchDatabase,
+} from './postgres.ts';
 
 describe('staff editing and combined authorization', () => {
-  let db: ScratchDatabase, app: FastifyInstance, facility: FacilityRegistrationResult;
-  before(async () => { db = await scratchDatabase(); app = testApp(db.sql); facility = await registerScratchFacility(db.sql); });
-  after(async () => { await app?.close(); await db?.drop(); });
-  const send = (f: FacilityRegistrationResult, ...mutations: UploadMutation[]) => upload(app, f.device.credential, { transactionId: 1, mutations });
+  let db: ScratchDatabase;
+  let app: FastifyInstance;
+  let facility: FacilityRegistrationResult;
+  before(async () => {
+    db = await scratchDatabase();
+    app = testApp(db.sql);
+    facility = await registerScratchFacility(db.sql);
+  });
+  after(async () => {
+    await app?.close();
+    await db?.drop();
+  });
+  const send = (f: FacilityRegistrationResult, ...mutations: UploadMutation[]) =>
+    upload(app, f.device.credential, { transactionId: 1, mutations });
   const patch = (id: string, by: Staff, data: Record<string, unknown>): UploadMutation => ({
-    clientId: clientId(), op: 'patch', table: 'staff', id,
+    clientId: clientId(),
+    op: 'patch',
+    table: 'staff',
+    id,
     data: { ...data, updatedBy: by.id, updatedOn: new Date().toISOString() },
   });
-  const put = (table: UploadMutation['table'], id: string, data: Record<string, unknown>): UploadMutation => ({
-    clientId: clientId(), op: 'put', table, id, data: { ...data, id, type: table },
+  const put = (
+    table: UploadMutation['table'],
+    id: string,
+    data: Record<string, unknown>,
+  ): UploadMutation => ({
+    clientId: clientId(),
+    op: 'put',
+    table,
+    id,
+    data: { ...data, id, type: table },
   });
   const patient = (by: Staff, seq: string) => {
     const id = `${facility.facility.id}-${seq}-K2`;
-    return put('patient', id, { ...envelopeFor(facility), createdBy: by.id, patientId: id, fullName: 'Synthetic Patient', address: 'Test Road', sex: 'female', ageYears: 30 });
+    return put('patient', id, {
+      ...envelopeFor(facility),
+      createdBy: by.id,
+      patientId: id,
+      fullName: 'Synthetic Patient',
+      address: 'Test Road',
+      sex: 'female',
+      ageYears: 30,
+    });
   };
 
   it('preserves legacy staff and reads optional grants from real PostgreSQL', async () => {
@@ -30,24 +74,68 @@ describe('staff editing and combined authorization', () => {
     assert.ok(staff && staffPermissions(staff).includes('staff:permission'));
   });
   it('grants and revokes chart reading independently of front-desk and read-only access', async () => {
-    const member=await addStaff(db.sql,facility,{role:'records_officer',permission:'read_only'});
-    assert.equal(staffDenial(await findStaffInFacility(db.sql,facility.facility.id,member.id),member.id,'patient_chart:read')?.kind,'not_granted');
-    assert.equal((await send(facility,patch(member.id,facility.admin,{additionalPermissions:['patient_chart:read']}))).applied,1);
-    const allowed=await findStaffInFacility(db.sql,facility.facility.id,member.id);
-    assert.equal(staffDenial(allowed,member.id,'patient_chart:read'),undefined);
-    assert.equal(staffDenial(allowed,member.id,'encounter:record')?.kind,'not_granted');
-    assert.equal((await send(facility,patch(member.id,facility.admin,{additionalPermissions:[]}))).applied,1);
-    assert.equal(staffDenial(await findStaffInFacility(db.sql,facility.facility.id,member.id),member.id,'patient_chart:read')?.kind,'not_granted');
+    const member = await addStaff(db.sql, facility, {
+      role: 'records_officer',
+      permission: 'read_only',
+    });
+    assert.equal(
+      staffDenial(
+        await findStaffInFacility(db.sql, facility.facility.id, member.id),
+        member.id,
+        'patient_chart:read',
+      )?.kind,
+      'not_granted',
+    );
+    assert.equal(
+      (
+        await send(
+          facility,
+          patch(member.id, facility.admin, { additionalPermissions: ['patient_chart:read'] }),
+        )
+      ).applied,
+      1,
+    );
+    const allowed = await findStaffInFacility(db.sql, facility.facility.id, member.id);
+    assert.equal(staffDenial(allowed, member.id, 'patient_chart:read'), undefined);
+    assert.equal(staffDenial(allowed, member.id, 'encounter:record')?.kind, 'not_granted');
+    assert.equal(
+      (await send(facility, patch(member.id, facility.admin, { additionalPermissions: [] })))
+        .applied,
+      1,
+    );
+    assert.equal(
+      staffDenial(
+        await findStaffInFacility(db.sql, facility.facility.id, member.id),
+        member.id,
+        'patient_chart:read',
+      )?.kind,
+      'not_granted',
+    );
   });
 
   it('creates and edits combined staff access, with an attributed audit event', async () => {
     const id = 'staff:combined';
-    const created = await send(facility, put('staff', id, {
-      ...envelopeFor(facility), staffId: id, fullName: 'Original Name', role: 'nurse',
-      additionalRoles: ['cashier'], additionalPermissions: ['fee_item:manage'], permission: 'read_write', active: true,
-    }));
+    const created = await send(
+      facility,
+      put('staff', id, {
+        ...envelopeFor(facility),
+        staffId: id,
+        fullName: 'Original Name',
+        role: 'nurse',
+        additionalRoles: ['cashier'],
+        additionalPermissions: ['fee_item:manage'],
+        permission: 'read_write',
+        active: true,
+      }),
+    );
     assert.equal(created.applied, 1);
-    const changed = await send(facility, patch(id, facility.admin, { fullName: 'Updated Name', additionalRoles: ['cashier', 'supervisor'] }));
+    const changed = await send(
+      facility,
+      patch(id, facility.admin, {
+        fullName: 'Updated Name',
+        additionalRoles: ['cashier', 'supervisor'],
+      }),
+    );
     assert.equal(changed.applied, 1);
     const saved = await findRecord<Staff>(db.sql, 'staff', id);
     assert.equal(saved?.fullName, 'Updated Name');
@@ -58,44 +146,97 @@ describe('staff editing and combined authorization', () => {
     assert.equal(staffDenial(server, id, 'roster:extend'), undefined);
     assert.equal(staffDenial(server, id, 'fee_item:manage'), undefined);
     assert.equal(staffDenial(server, id, 'staff:permission')?.kind, 'not_granted');
-    const [audit] = await db.sql`SELECT actor_staff_id FROM audit_events WHERE entity_id = ${id} AND action = 'update'`;
+    const [audit] =
+      await db.sql`SELECT actor_staff_id FROM audit_events WHERE entity_id = ${id} AND action = 'update'`;
     assert.equal(audit.actor_staff_id, facility.admin.id);
   });
 
   it('uses and then revokes an individual grant from server state on the next upload', async () => {
-    const staff = await addStaff(db.sql, facility, { role: 'cashier', additionalPermissions: ['patient:create'] });
+    const staff = await addStaff(db.sql, facility, {
+      role: 'cashier',
+      additionalPermissions: ['patient:create'],
+    });
     assert.equal((await send(facility, patient(staff, '000801'))).applied, 1);
-    assert.equal((await send(facility, patch(staff.id, facility.admin, { additionalPermissions: [] }))).applied, 1);
+    assert.equal(
+      (await send(facility, patch(staff.id, facility.admin, { additionalPermissions: [] })))
+        .applied,
+      1,
+    );
     const refused = await send(facility, patient(staff, '000802'));
     assert.equal(refused.rejected[0]?.category, 'authorization');
-    assert.equal(await findRecord(db.sql, 'patient', `${facility.facility.id}-000802-K2`), undefined);
+    assert.equal(
+      await findRecord(db.sql, 'patient', `${facility.facility.id}-000802-K2`),
+      undefined,
+    );
   });
 
   it('keeps read-only stronger than any selected roles or extra grants', async () => {
-    const staff = await addStaff(db.sql, facility, { role: 'nurse', additionalRoles: ['facility_admin'], additionalPermissions: ['payment:receive'], permission: 'read_only' });
+    const staff = await addStaff(db.sql, facility, {
+      role: 'nurse',
+      additionalRoles: ['facility_admin'],
+      additionalPermissions: ['payment:receive'],
+      permission: 'read_only',
+    });
     const result = await send(facility, patient(staff, '000803'));
     assert.equal(result.rejected[0]?.category, 'authorization');
   });
 
   it('lets a delegate rename staff but refuses access changes and privileged account creation', async () => {
-    const delegate = await addStaff(db.sql, facility, { role: 'nurse', additionalPermissions: ['staff:manage'] });
+    const delegate = await addStaff(db.sql, facility, {
+      role: 'nurse',
+      additionalPermissions: ['staff:manage'],
+    });
     const target = await addStaff(db.sql, facility, { role: 'cashier' });
-    assert.equal((await send(facility, patch(target.id, delegate, { fullName: 'Allowed Rename' }))).applied, 1);
-    const denied = await send(facility, patch(target.id, delegate, { additionalRoles: ['facility_admin'] }));
+    assert.equal(
+      (await send(facility, patch(target.id, delegate, { fullName: 'Allowed Rename' }))).applied,
+      1,
+    );
+    const denied = await send(
+      facility,
+      patch(target.id, delegate, { additionalRoles: ['facility_admin'] }),
+    );
     assert.equal(denied.rejected[0]?.category, 'authorization');
     assert.deepEqual((await findRecord<Staff>(db.sql, 'staff', target.id))?.additionalRoles, []);
     const id = 'staff:unauthorized-admin';
-    const create = await send(facility, put('staff', id, { ...envelopeFor(facility), createdBy: delegate.id, staffId: id, fullName: 'Must Not Exist', role: 'facility_admin' }));
+    const create = await send(
+      facility,
+      put('staff', id, {
+        ...envelopeFor(facility),
+        createdBy: delegate.id,
+        staffId: id,
+        fullName: 'Must Not Exist',
+        role: 'facility_admin',
+      }),
+    );
     assert.equal(create.rejected[0]?.category, 'authorization');
     assert.equal(await findRecord(db.sql, 'staff', id), undefined);
-    const pin = await app.inject({ method: 'POST', url: `/staff/${facility.admin.id}/pin-codes`, headers: { authorization: `Bearer ${facility.device.credential}`, 'x-staff-session': (await staffSessionFor(app, facility.device.credential, delegate.id))! }, payload: { issuedBy: delegate.id } });
+    const pin = await app.inject({
+      method: 'POST',
+      url: `/staff/${facility.admin.id}/pin-codes`,
+      headers: {
+        authorization: `Bearer ${facility.device.credential}`,
+        'x-staff-session': (await staffSessionFor(app, facility.device.credential, delegate.id))!,
+      },
+      payload: { issuedBy: delegate.id },
+    });
     assert.equal(pin.statusCode, 403);
   });
 
   it('recognizes a secondary admin and prevents supervisors resetting that account', async () => {
-    const secondary = await addStaff(db.sql, facility, { role: 'nurse', additionalRoles: ['facility_admin'] });
+    const secondary = await addStaff(db.sql, facility, {
+      role: 'nurse',
+      additionalRoles: ['facility_admin'],
+    });
     const target = await addStaff(db.sql, facility, { role: 'cashier' });
-    const response = await app.inject({ method: 'POST', url: `/staff/${target.id}/pin-codes`, headers: { authorization: `Bearer ${facility.device.credential}`, 'x-staff-session': (await staffSessionFor(app, facility.device.credential, secondary.id))! }, payload: { issuedBy: secondary.id } });
+    const response = await app.inject({
+      method: 'POST',
+      url: `/staff/${target.id}/pin-codes`,
+      headers: {
+        authorization: `Bearer ${facility.device.credential}`,
+        'x-staff-session': (await staffSessionFor(app, facility.device.credential, secondary.id))!,
+      },
+      payload: { issuedBy: secondary.id },
+    });
     assert.equal(response.statusCode, 201);
     const server = await findStaffInFacility(db.sql, facility.facility.id, secondary.id);
     assert.equal(staffDenial(server, secondary.id, 'staff:permission'), undefined);
@@ -103,69 +244,131 @@ describe('staff editing and combined authorization', () => {
 
   it('rejects an unassignable PIN claim and unknown roles before persisting', async () => {
     const staff = await addStaff(db.sql, facility, { role: 'nurse' });
-    for (const changes of [{ additionalPermissions: ['pin_setup_code:claim'] }, { additionalRoles: ['janitor'] }]) {
+    for (const changes of [
+      { additionalPermissions: ['pin_setup_code:claim'] },
+      { additionalRoles: ['janitor'] },
+    ]) {
       const result = await send(facility, patch(staff.id, facility.admin, changes));
       assert.equal(result.rejected[0]?.category, 'validation');
     }
-    assert.deepEqual((await findRecord<Staff>(db.sql, 'staff', staff.id))?.additionalPermissions, []);
+    assert.deepEqual(
+      (await findRecord<Staff>(db.sql, 'staff', staff.id))?.additionalPermissions,
+      [],
+    );
   });
 
   it('refuses cross-facility staff edits', async () => {
     const other = await registerScratchFacility(db.sql);
-    const result = await send(facility, patch(other.admin.id, facility.admin, { fullName: 'Must Not Change' }));
+    const result = await send(
+      facility,
+      patch(other.admin.id, facility.admin, { fullName: 'Must Not Change' }),
+    );
     assert.equal(result.rejected[0]?.category, 'identity');
-    assert.notEqual((await findRecord<Staff>(db.sql, 'staff', other.admin.id))?.fullName, 'Must Not Change');
+    assert.notEqual(
+      (await findRecord<Staff>(db.sql, 'staff', other.admin.id))?.fullName,
+      'Must Not Change',
+    );
   });
 
   it('protects the last admin even when two admins demote themselves concurrently', async () => {
     const isolated = await registerScratchFacility(db.sql);
-    const second = await addStaff(db.sql, isolated, { role: 'nurse', additionalRoles: ['facility_admin'] });
+    const second = await addStaff(db.sql, isolated, {
+      role: 'nurse',
+      additionalRoles: ['facility_admin'],
+    });
     const results = await Promise.all([
       send(isolated, patch(isolated.admin.id, isolated.admin, { role: 'records_officer' })),
       send(isolated, patch(second.id, second, { additionalRoles: [] })),
     ]);
-    assert.equal(results.reduce((total, result) => total + result.applied, 0), 1);
-    assert.equal(results.reduce((total, result) => total + result.rejected.length, 0), 1);
-    assert.ok(results.some((result) => result.rejected[0]?.reason.includes('at least one active facility administrator')));
+    assert.equal(
+      results.reduce((total, result) => total + result.applied, 0),
+      1,
+    );
+    assert.equal(
+      results.reduce((total, result) => total + result.rejected.length, 0),
+      1,
+    );
+    assert.ok(
+      results.some((result) =>
+        result.rejected[0]?.reason.includes('at least one active facility administrator'),
+      ),
+    );
   });
 
   it('records care attributed to an assigned additional role', async () => {
     const staff = await addStaff(db.sql, facility, { role: 'cashier', additionalRoles: ['nurse'] });
     const patientMutation = patient(staff, '000804');
     const encounterId = 'encounter:combined-role';
-    const response = await send(facility, patientMutation,
-      put('encounter', encounterId, { ...envelopeFor(facility), createdBy: staff.id, patientId: patientMutation.id, openedOn: new Date().toISOString() }),
-      put('encounter_entry', 'entry:combined-role', { ...envelopeFor(facility), createdBy: staff.id, patientId: patientMutation.id, encounterId, actorRole: 'nurse', step: 'vitals', values: { temperatureC: 37 } }));
+    const response = await send(
+      facility,
+      patientMutation,
+      put('encounter', encounterId, {
+        ...envelopeFor(facility),
+        createdBy: staff.id,
+        patientId: patientMutation.id,
+        openedOn: new Date().toISOString(),
+      }),
+      put('encounter_entry', 'entry:combined-role', {
+        ...envelopeFor(facility),
+        createdBy: staff.id,
+        patientId: patientMutation.id,
+        encounterId,
+        actorRole: 'nurse',
+        step: 'vitals',
+        values: { temperatureC: 37 },
+      }),
+    );
     assert.equal(response.applied, 3);
   });
   it('persists 24-hour login access as an access change without granting administrator privileges', async () => {
     const target = await addStaff(db.sql, facility, { role: 'cashier' });
-    const result = await send(facility, patch(target.id, facility.admin, { loginAccess: 'always' }));
+    const result = await send(
+      facility,
+      patch(target.id, facility.admin, { loginAccess: 'always' }),
+    );
     assert.equal(result.applied, 1);
     const saved = await findRecord<Staff>(db.sql, 'staff', target.id);
     assert.equal(saved?.loginAccess, 'always');
     assert.equal(saved?.role, 'cashier');
-    assert.deepEqual(saved && staffPermissions(saved), ['payment:receive', 'coverage:elect_self_pay','charge:associate']);
+    assert.deepEqual(saved && staffPermissions(saved), [
+      'payment:receive',
+      'coverage:elect_self_pay',
+      'charge:associate',
+    ]);
   });
   it('requires access-assignment permission rather than name management to grant 24-hour access', async () => {
     const target = await addStaff(db.sql, facility, { role: 'nurse' });
-    const delegate = await addStaff(db.sql, facility, { role: 'nurse', additionalPermissions: ['staff:manage', 'roster:assign'] });
+    const delegate = await addStaff(db.sql, facility, {
+      role: 'nurse',
+      additionalPermissions: ['staff:manage', 'roster:assign'],
+    });
     const denied = await send(facility, patch(target.id, delegate, { loginAccess: 'always' }));
     assert.equal(denied.rejected[0]?.category, 'authorization');
     assert.equal((await findRecord<Staff>(db.sql, 'staff', target.id))?.loginAccess, undefined);
-    const invalid = await send(facility, patch(target.id, facility.admin, { loginAccess: 'admin' }));
+    const invalid = await send(
+      facility,
+      patch(target.id, facility.admin, { loginAccess: 'admin' }),
+    );
     assert.equal(invalid.rejected[0]?.category, 'validation');
-    await assert.rejects(db.sql`UPDATE staff SET login_access = 'admin' WHERE id = ${target.id}`, (cause: unknown) => (cause as { code?: string }).code === '23514');
+    await assert.rejects(
+      db.sql`UPDATE staff SET login_access = 'admin' WHERE id = ${target.id}`,
+      (cause: unknown) => (cause as { code?: string }).code === '23514',
+    );
   });
   it('stores an overnight 24-hour roster with its real next-day end instant', async () => {
     const target = await addStaff(db.sql, facility, { role: 'nurse' });
     const id = 'roster_shift:full-day';
-    const result = await send(facility, put('roster_shift', id, {
-      ...envelopeFor(facility), staffId: target.id, startsAt: '2026-10-24T08:00:00Z', endsAt: '2026-10-25T08:00:00Z',
-    }));
+    const result = await send(
+      facility,
+      put('roster_shift', id, {
+        ...envelopeFor(facility),
+        staffId: target.id,
+        startsAt: '2026-10-24T08:00:00Z',
+        endsAt: '2026-10-25T08:00:00Z',
+      }),
+    );
     assert.equal(result.applied, 1);
     const saved = await findRecord<import('#shared').RosterShift>(db.sql, 'roster_shift', id);
     assert.equal(saved && Date.parse(saved.endsAt) - Date.parse(saved.startsAt), 24 * 60 * 60_000);
   });
-
 });

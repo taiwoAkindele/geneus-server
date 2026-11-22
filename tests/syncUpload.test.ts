@@ -1,7 +1,15 @@
 import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import type { FastifyInstance } from 'fastify';
-import type { FacilityRegistrationResult, Patient, RegisterDefinition, RegisterEntry, Staff, SyncRejection, UploadMutation } from '#shared';
+import type {
+  FacilityRegistrationResult,
+  Patient,
+  RegisterDefinition,
+  RegisterEntry,
+  Staff,
+  SyncRejection,
+  UploadMutation,
+} from '#shared';
 import { findRecord, insertRecord } from '../src/db/records.ts';
 import { enrollDevice, issueEnrollmentCode } from '../src/devices/enrollment.ts';
 import {
@@ -37,7 +45,8 @@ describe('POST /sync/upload', () => {
   let supervisor: Staff;
   let records: Staff;
 
-  const patientId = (facility: FacilityRegistrationResult, sequence: string) => `${facility.facility.id}-${sequence}-K2`;
+  const patientId = (facility: FacilityRegistrationResult, sequence: string) =>
+    `${facility.facility.id}-${sequence}-K2`;
 
   const patientPut = (
     facility: FacilityRegistrationResult,
@@ -64,7 +73,13 @@ describe('POST /sync/upload', () => {
     },
   });
 
-  const patch = (table: UploadMutation['table'], id: string, by: Staff, data: Record<string, unknown>, previous?: Record<string, unknown>): UploadMutation => ({
+  const patch = (
+    table: UploadMutation['table'],
+    id: string,
+    by: Staff,
+    data: Record<string, unknown>,
+    previous?: Record<string, unknown>,
+  ): UploadMutation => ({
     clientId: clientId(),
     op: 'patch',
     table,
@@ -77,7 +92,14 @@ describe('POST /sync/upload', () => {
     upload(app, credential, { transactionId: 1, mutations });
 
   const rejectionsFor = (entityId: string) =>
-    db.sql<{ category: string; reason: string; attributed_to: string | null; conflicts: SyncRejection['conflicts'] }[]>`
+    db.sql<
+      {
+        category: string;
+        reason: string;
+        attributed_to: string | null;
+        conflicts: SyncRejection['conflicts'];
+      }[]
+    >`
       SELECT category, reason, attributed_to, conflicts FROM sync_rejections WHERE entity_id = ${entityId} ORDER BY created_on`;
 
   before(async () => {
@@ -92,8 +114,14 @@ describe('POST /sync/upload', () => {
       addStaff(db.sql, a, { role: 'records_officer' }),
     ]);
     const code = await issueEnrollmentCode(db.sql, a.facility.id, a.admin.id, a.device.deviceId);
-    const enrolled = await enrollDevice(db.sql, { code: code.code, deviceId: 'device-a-second' }, 'http://sync');
-    if (!enrolled.ok) throw new Error(enrolled.error);
+    const enrolled = await enrollDevice(
+      db.sql,
+      { code: code.code, deviceId: 'device-a-second' },
+      'http://sync',
+    );
+    if (!enrolled.ok) {
+      throw new Error(enrolled.error);
+    }
     aSecond = { deviceId: enrolled.device.id, credential: enrolled.credential.credential };
   });
 
@@ -106,7 +134,11 @@ describe('POST /sync/upload', () => {
     const mutation = () => ({ transactionId: 1, mutations: [patientPut(a, nurse, '000900')] });
 
     it('refuses an upload with no credential', async () => {
-      const response = await app.inject({ method: 'POST', url: '/sync/upload', payload: mutation() });
+      const response = await app.inject({
+        method: 'POST',
+        url: '/sync/upload',
+        payload: mutation(),
+      });
       assert.equal(response.statusCode, 401);
     });
 
@@ -136,7 +168,7 @@ describe('POST /sync/upload', () => {
   });
 
   describe('facility and device identity', () => {
-    it('applies a nurse\'s patient registration from her own facility and device', async () => {
+    it("applies a nurse's patient registration from her own facility and device", async () => {
       const response = await send(a.device.credential, patientPut(a, nurse, '000001'));
 
       assert.deepEqual(response.rejected, []);
@@ -144,7 +176,7 @@ describe('POST /sync/upload', () => {
       assert.ok(await findRecord(db.sql, 'patient', patientId(a, '000001')));
     });
 
-    it('refuses a record that claims to belong to facility B, arriving from facility A\'s device', async () => {
+    it("refuses a record that claims to belong to facility B, arriving from facility A's device", async () => {
       const forged = patientPut(a, nurse, '000002', { facilityId: b.facility.id });
 
       const response = await send(a.device.credential, forged);
@@ -168,13 +200,19 @@ describe('POST /sync/upload', () => {
 
       const response = await send(a.device.credential, otherFacilitysAdmin, nobody);
 
-      assert.deepEqual(response.rejected.map((rejection) => rejection.category), ['identity', 'identity']);
+      assert.deepEqual(
+        response.rejected.map((rejection) => rejection.category),
+        ['identity', 'identity'],
+      );
     });
 
     it('cannot patch a record of another facility, even knowing its id', async () => {
       await send(b.device.credential, patientPut(b, b.admin, '000001'));
 
-      const response = await send(a.device.credential, patch('patient', patientId(b, '000001'), nurse, { phone: '0999' }));
+      const response = await send(
+        a.device.credential,
+        patch('patient', patientId(b, '000001'), nurse, { phone: '0999' }),
+      );
 
       assert.equal(response.rejected[0]?.category, 'identity');
       const untouched = await findRecord<Patient>(db.sql, 'patient', patientId(b, '000001'));
@@ -196,7 +234,17 @@ describe('POST /sync/upload', () => {
         op: 'put',
         table: 'staff',
         id: 'staff:by-nurse',
-        data: { ...envelopeFor(a), createdBy: nurse.id, id: 'staff:by-nurse', type: 'staff', staffId: 'staff:by-nurse', fullName: 'X', role: 'doctor', permission: 'read_write', active: true },
+        data: {
+          ...envelopeFor(a),
+          createdBy: nurse.id,
+          id: 'staff:by-nurse',
+          type: 'staff',
+          staffId: 'staff:by-nurse',
+          fullName: 'X',
+          role: 'doctor',
+          permission: 'read_write',
+          active: true,
+        },
       });
 
       assert.equal(response.rejected[0]?.category, 'authorization');
@@ -217,24 +265,45 @@ describe('POST /sync/upload', () => {
         op: 'put',
         table: 'roster_shift',
         id: shiftId,
-        data: { ...envelopeFor(a), id: shiftId, type: 'roster_shift', staffId: nurse.id, startsAt: '2026-09-12T08:00:00Z', endsAt: '2026-09-12T16:00:00Z' },
+        data: {
+          ...envelopeFor(a),
+          id: shiftId,
+          type: 'roster_shift',
+          staffId: nurse.id,
+          startsAt: '2026-09-12T08:00:00Z',
+          endsAt: '2026-09-12T16:00:00Z',
+        },
       });
 
-      const bySupervisor = await send(a.device.credential, patch('roster_shift', shiftId, supervisor, { extendedUntil: '2026-09-12T20:00:00Z' }));
-      const byNurse = await send(a.device.credential, patch('roster_shift', shiftId, nurse, { extendedUntil: '2026-09-12T22:00:00Z' }));
+      const bySupervisor = await send(
+        a.device.credential,
+        patch('roster_shift', shiftId, supervisor, { extendedUntil: '2026-09-12T20:00:00Z' }),
+      );
+      const byNurse = await send(
+        a.device.credential,
+        patch('roster_shift', shiftId, nurse, { extendedUntil: '2026-09-12T22:00:00Z' }),
+      );
 
       assert.deepEqual(bySupervisor.rejected, []);
       assert.equal(byNurse.rejected[0]?.category, 'authorization');
     });
 
-    it('refuses a shift that arrives already signed — the signature is the server\'s to add', async () => {
+    it("refuses a shift that arrives already signed — the signature is the server's to add", async () => {
       const shiftId = `roster_shift:${nurse.id}:2026-09-13`;
       const response = await send(a.device.credential, {
         clientId: clientId(),
         op: 'put',
         table: 'roster_shift',
         id: shiftId,
-        data: { ...envelopeFor(a), id: shiftId, type: 'roster_shift', staffId: nurse.id, startsAt: '2026-09-13T08:00:00Z', endsAt: '2026-09-13T16:00:00Z', signature: 'forged' },
+        data: {
+          ...envelopeFor(a),
+          id: shiftId,
+          type: 'roster_shift',
+          staffId: nurse.id,
+          startsAt: '2026-09-13T08:00:00Z',
+          endsAt: '2026-09-13T16:00:00Z',
+          signature: 'forged',
+        },
       });
 
       assert.equal(response.rejected[0]?.category, 'validation');
@@ -247,7 +316,16 @@ describe('POST /sync/upload', () => {
         op: 'put',
         table: 'staff',
         id: 'staff:stale',
-        data: { ...envelopeFor(a, stale), id: 'staff:stale', type: 'staff', staffId: 'staff:stale', fullName: 'Late', role: 'nurse', permission: 'read_write', active: true },
+        data: {
+          ...envelopeFor(a, stale),
+          id: 'staff:stale',
+          type: 'staff',
+          staffId: 'staff:stale',
+          fullName: 'Late',
+          role: 'nurse',
+          permission: 'read_write',
+          active: true,
+        },
       });
 
       assert.equal(response.rejected[0]?.category, 'authorization');
@@ -261,7 +339,16 @@ describe('POST /sync/upload', () => {
         op: 'put',
         table: 'staff',
         id: 'staff:fresh',
-        data: { ...envelopeFor(a, fresh), id: 'staff:fresh', type: 'staff', staffId: 'staff:fresh', fullName: 'Prompt', role: 'nurse', permission: 'read_write', active: true },
+        data: {
+          ...envelopeFor(a, fresh),
+          id: 'staff:fresh',
+          type: 'staff',
+          staffId: 'staff:fresh',
+          fullName: 'Prompt',
+          role: 'nurse',
+          permission: 'read_write',
+          active: true,
+        },
       });
 
       assert.deepEqual(response.rejected, []);
@@ -270,7 +357,13 @@ describe('POST /sync/upload', () => {
 
   describe('deletes and server-written tables', () => {
     it('refuses a delete outright', async () => {
-      const response = await send(a.device.credential, { clientId: clientId(), op: 'delete', table: 'patient', id: patientId(a, '000001'), data: {} });
+      const response = await send(a.device.credential, {
+        clientId: clientId(),
+        op: 'delete',
+        table: 'patient',
+        id: patientId(a, '000001'),
+        data: {},
+      });
 
       assert.equal(response.rejected[0]?.category, 'authorization');
       assert.ok(await findRecord(db.sql, 'patient', patientId(a, '000001')));
@@ -282,7 +375,13 @@ describe('POST /sync/upload', () => {
         op: 'put',
         table: 'device',
         id: 'device-self-enrolled',
-        data: { ...envelopeFor(a), id: 'device-self-enrolled', type: 'device', enrolledBy: a.admin.id, enrolledOn: new Date().toISOString() },
+        data: {
+          ...envelopeFor(a),
+          id: 'device-self-enrolled',
+          type: 'device',
+          enrolledBy: a.admin.id,
+          enrolledOn: new Date().toISOString(),
+        },
       });
 
       assert.equal(response.rejected[0]?.category, 'authorization');
@@ -291,20 +390,37 @@ describe('POST /sync/upload', () => {
 
   describe('validation and immutability', () => {
     it('refuses a record that fails the contract', async () => {
-      const response = await send(a.device.credential, patientPut(a, nurse, '000020', { sex: 'unknown' }));
+      const response = await send(
+        a.device.credential,
+        patientPut(a, nurse, '000020', { sex: 'unknown' }),
+      );
 
       assert.equal(response.rejected[0]?.category, 'validation');
     });
 
     it('refuses a patch that moves an identity field', async () => {
-      for (const change of [{ createdBy: supervisor.id }, { deviceId: aSecond.deviceId }, { createdOn: '2020-01-01T00:00:00Z' }, { facilityId: b.facility.id }]) {
-        const response = await send(a.device.credential, patch('patient', patientId(a, '000001'), nurse, change));
+      for (const change of [
+        { createdBy: supervisor.id },
+        { deviceId: aSecond.deviceId },
+        { createdOn: '2020-01-01T00:00:00Z' },
+        { facilityId: b.facility.id },
+      ]) {
+        const response = await send(
+          a.device.credential,
+          patch('patient', patientId(a, '000001'), nurse, change),
+        );
         assert.equal(response.rejected[0]?.category, 'validation', JSON.stringify(change));
       }
     });
 
     it('refuses a patch with no attribution', async () => {
-      const response = await send(a.device.credential, { clientId: clientId(), op: 'patch', table: 'patient', id: patientId(a, '000001'), data: { phone: '0000' } });
+      const response = await send(a.device.credential, {
+        clientId: clientId(),
+        op: 'patch',
+        table: 'patient',
+        id: patientId(a, '000001'),
+        data: { phone: '0000' },
+      });
 
       assert.equal(response.rejected[0]?.category, 'validation');
     });
@@ -337,21 +453,36 @@ describe('POST /sync/upload', () => {
   describe('conflicts', () => {
     it('rejects the second device creating the same patient id — never overwrites the first', async () => {
       const first = patientPut(a, nurse, '000040', { fullName: 'First Device' });
-      const second = { ...patientPut(a, nurse, '000040', { fullName: 'Second Device' }), data: { ...patientPut(a, nurse, '000040', { fullName: 'Second Device' }).data, deviceId: aSecond.deviceId } };
+      const second = {
+        ...patientPut(a, nurse, '000040', { fullName: 'Second Device' }),
+        data: {
+          ...patientPut(a, nurse, '000040', { fullName: 'Second Device' }).data,
+          deviceId: aSecond.deviceId,
+        },
+      };
       await send(a.device.credential, first);
 
       const response = await send(aSecond.credential, second);
 
       assert.equal(response.rejected[0]?.category, 'conflict');
-      assert.equal((await findRecord<Patient>(db.sql, 'patient', first.id))?.fullName, 'First Device');
+      assert.equal(
+        (await findRecord<Patient>(db.sql, 'patient', first.id))?.fullName,
+        'First Device',
+      );
     });
 
     it('merges changes to different columns from two devices', async () => {
       const id = patientId(a, '000041');
       await send(a.device.credential, patientPut(a, nurse, '000041'));
 
-      await send(a.device.credential, patch('patient', id, nurse, { phone: '0802' }, { phone: '0801' }));
-      const response = await send(aSecond.credential, patch('patient', id, nurse, { address: 'Ring Road' }, { address: 'Odo-Ona' }));
+      await send(
+        a.device.credential,
+        patch('patient', id, nurse, { phone: '0802' }, { phone: '0801' }),
+      );
+      const response = await send(
+        aSecond.credential,
+        patch('patient', id, nurse, { address: 'Ring Road' }, { address: 'Odo-Ona' }),
+      );
 
       assert.deepEqual(response.rejected, []);
       const merged = await findRecord<Patient>(db.sql, 'patient', id);
@@ -362,10 +493,22 @@ describe('POST /sync/upload', () => {
     it('queues a same-column race on a patient for a human, applying the rest', async () => {
       const id = patientId(a, '000042');
       await send(a.device.credential, patientPut(a, nurse, '000042'));
-      await send(a.device.credential, patch('patient', id, nurse, { phone: '0802' }, { phone: '0801' }));
+      await send(
+        a.device.credential,
+        patch('patient', id, nurse, { phone: '0802' }, { phone: '0801' }),
+      );
 
       // The second device still thinks the phone is 0801, and also fixes the address.
-      const response = await send(aSecond.credential, patch('patient', id, nurse, { phone: '0803', address: 'Ring Road' }, { phone: '0801', address: 'Odo-Ona' }));
+      const response = await send(
+        aSecond.credential,
+        patch(
+          'patient',
+          id,
+          nurse,
+          { phone: '0803', address: 'Ring Road' },
+          { phone: '0801', address: 'Odo-Ona' },
+        ),
+      );
 
       assert.equal(response.applied, 1);
       assert.equal(response.rejected[0]?.category, 'conflict');
@@ -373,7 +516,9 @@ describe('POST /sync/upload', () => {
       assert.equal(after?.phone, '0802', 'the server value stands');
       assert.equal(after?.address, 'Ring Road', 'the non-conflicting column applied');
       const [queued] = await rejectionsFor(id);
-      assert.deepEqual(queued.conflicts, [{ column: 'phone', deviceValue: '0803', serverValue: '0802' }]);
+      assert.deepEqual(queued.conflicts, [
+        { column: 'phone', deviceValue: '0803', serverValue: '0802' },
+      ]);
       assert.equal(queued.attributed_to, nurse.id);
     });
 
@@ -396,23 +541,45 @@ describe('POST /sync/upload', () => {
     });
 
     it('rejects a patch to an append-only register entry', async () => {
-      const response = await send(a.device.credential, patch('register_entry', 'register_entry:any', nurse, { values: {} }));
+      const response = await send(
+        a.device.credential,
+        patch('register_entry', 'register_entry:any', nurse, { values: {} }),
+      );
 
       assert.equal(response.rejected[0]?.category, 'validation');
       assert.match(response.rejected[0]?.reason ?? '', /append-only/);
     });
 
     it('rejects a second publish of the same register version, and accepts the next', async () => {
-      const definition = (device: FacilityRegistrationResult['device'] | typeof aSecond, version: number, name: string): UploadMutation => ({
+      const definition = (
+        device: FacilityRegistrationResult['device'] | typeof aSecond,
+        version: number,
+        name: string,
+      ): UploadMutation => ({
         clientId: clientId(),
         op: 'put',
         table: 'register_definition',
         id: `register:opd:v${version}`,
-        data: { ...envelopeFor(a), deviceId: device.deviceId, createdBy: records.id, id: `register:opd:v${version}`, type: 'register_definition', registerId: 'register:opd', version, name, category: 'General', status: 'published', fields: [{ id: 'service', type: 'text', label: 'Service provided' }] },
+        data: {
+          ...envelopeFor(a),
+          deviceId: device.deviceId,
+          createdBy: records.id,
+          id: `register:opd:v${version}`,
+          type: 'register_definition',
+          registerId: 'register:opd',
+          version,
+          name,
+          category: 'General',
+          status: 'published',
+          fields: [{ id: 'service', type: 'text', label: 'Service provided' }],
+        },
       });
       await send(a.device.credential, definition(a.device, 1, 'OPD'));
 
-      const collision = await send(aSecond.credential, definition(aSecond, 1, 'OPD (other device)'));
+      const collision = await send(
+        aSecond.credential,
+        definition(aSecond, 1, 'OPD (other device)'),
+      );
       const next = await send(aSecond.credential, definition(aSecond, 2, 'OPD v2'));
 
       assert.equal(collision.rejected[0]?.category, 'conflict');
@@ -420,32 +587,118 @@ describe('POST /sync/upload', () => {
     });
 
     it('takes a visit-linked register, and only entries completing one of its own visits', async () => {
-      const owner = patientId(a, '000070'), other = patientId(a, '000071');
-      await send(a.device.credential, patientPut(a, nurse, '000070'), patientPut(a, nurse, '000071'));
-      await insertRecord(db.sql, 'encounter', { ...envelopeFor(a), createdBy: nurse.id, id: 'encounter:malaria', type: 'encounter', patientId: owner, openedOn: new Date().toISOString(), setting: 'facility' });
-      const definition: UploadMutation = { clientId: clientId(), op: 'put', table: 'register_definition', id: 'register:malaria:v1', data: { ...envelopeFor(a), createdBy: records.id, id: 'register:malaria:v1', type: 'register_definition', registerId: 'register:malaria', version: 1, name: 'Malaria', category: 'Disease', status: 'published',
-        visitLink: { visits: 'matching', words: ['malaria'], codes: [] },
-        fields: [{ id: 'name', type: 'text', label: 'Name', fromVisit: { fact: 'patient_name' } }, { id: 'onset', type: 'date', label: 'Date fever started' }] } };
+      const owner = patientId(a, '000070');
+      const other = patientId(a, '000071');
+      await send(
+        a.device.credential,
+        patientPut(a, nurse, '000070'),
+        patientPut(a, nurse, '000071'),
+      );
+      await insertRecord(db.sql, 'encounter', {
+        ...envelopeFor(a),
+        createdBy: nurse.id,
+        id: 'encounter:malaria',
+        type: 'encounter',
+        patientId: owner,
+        openedOn: new Date().toISOString(),
+        setting: 'facility',
+      });
+      const definition: UploadMutation = {
+        clientId: clientId(),
+        op: 'put',
+        table: 'register_definition',
+        id: 'register:malaria:v1',
+        data: {
+          ...envelopeFor(a),
+          createdBy: records.id,
+          id: 'register:malaria:v1',
+          type: 'register_definition',
+          registerId: 'register:malaria',
+          version: 1,
+          name: 'Malaria',
+          category: 'Disease',
+          status: 'published',
+          visitLink: { visits: 'matching', words: ['malaria'], codes: [] },
+          fields: [
+            { id: 'name', type: 'text', label: 'Name', fromVisit: { fact: 'patient_name' } },
+            { id: 'onset', type: 'date', label: 'Date fever started' },
+          ],
+        },
+      };
       assert.deepEqual((await send(a.device.credential, definition)).rejected, []);
-      assert.deepEqual((await findRecord<RegisterDefinition>(db.sql, 'register_definition', 'register:malaria:v1'))?.visitLink, { visits: 'matching', words: ['malaria'], codes: [], visitTypes: [] });
-      const entry = (id: string, data: Record<string, unknown>): UploadMutation => ({ clientId: clientId(), op: 'put', table: 'register_entry', id, data: { ...envelopeFor(a), createdBy: nurse.id, id, type: 'register_entry', registerId: 'register:malaria', registerVersion: 1, entryDate: '2026-11-03', values: { onset: '2026-11-01' }, ...data } });
+      assert.deepEqual(
+        (await findRecord<RegisterDefinition>(db.sql, 'register_definition', 'register:malaria:v1'))
+          ?.visitLink,
+        { visits: 'matching', words: ['malaria'], codes: [], visitTypes: [] },
+      );
+      const entry = (id: string, data: Record<string, unknown>): UploadMutation => ({
+        clientId: clientId(),
+        op: 'put',
+        table: 'register_entry',
+        id,
+        data: {
+          ...envelopeFor(a),
+          createdBy: nurse.id,
+          id,
+          type: 'register_entry',
+          registerId: 'register:malaria',
+          registerVersion: 1,
+          entryDate: '2026-11-03',
+          values: { onset: '2026-11-01' },
+          ...data,
+        },
+      });
       const loose = await send(a.device.credential, entry('entry:loose', {}));
-      const filled = await send(a.device.credential, entry('entry:filled', { patientId: owner, encounterId: 'encounter:malaria', values: { name: 'Someone else' } }));
-      const wrongPatient = await send(a.device.credential, entry('entry:wrong', { patientId: other, encounterId: 'encounter:malaria' }));
-      const complete = await send(a.device.credential, entry('entry:complete', { patientId: owner, encounterId: 'encounter:malaria' }));
+      const filled = await send(
+        a.device.credential,
+        entry('entry:filled', {
+          patientId: owner,
+          encounterId: 'encounter:malaria',
+          values: { name: 'Someone else' },
+        }),
+      );
+      const wrongPatient = await send(
+        a.device.credential,
+        entry('entry:wrong', { patientId: other, encounterId: 'encounter:malaria' }),
+      );
+      const complete = await send(
+        a.device.credential,
+        entry('entry:complete', { patientId: owner, encounterId: 'encounter:malaria' }),
+      );
       assert.match(loose.rejected[0]?.reason ?? '', /fills from visits/);
       assert.match(filled.rejected[0]?.reason ?? '', /not recorded by staff/);
       assert.match(wrongPatient.rejected[0]?.reason ?? '', /same patient and facility/);
       assert.deepEqual(complete.rejected, []);
-      assert.equal((await findRecord<RegisterEntry>(db.sql, 'register_entry', 'entry:complete'))?.encounterId, 'encounter:malaria');
+      assert.equal(
+        (await findRecord<RegisterEntry>(db.sql, 'register_entry', 'entry:complete'))?.encounterId,
+        'encounter:malaria',
+      );
     });
 
     it('refuses a staff change made from an outdated view, so one administrator never silently overwrites another', async () => {
       const target = await addStaff(db.sql, a, { role: 'chew' });
-      await send(a.device.credential, patch('staff', target.id, a.admin, { permission: 'read_only' }, { permission: 'read_write' }));
+      await send(
+        a.device.credential,
+        patch(
+          'staff',
+          target.id,
+          a.admin,
+          { permission: 'read_only' },
+          { permission: 'read_write' },
+        ),
+      );
 
       // The second device still saw read_write: saving online from that view is refused, not applied over the first change.
-      const response = await send(aSecond.credential, patch('staff', target.id, a.admin, { permission: 'read_write' }, { permission: 'read_write' }));
+      const response = await send(
+        aSecond.credential,
+        patch(
+          'staff',
+          target.id,
+          a.admin,
+          { permission: 'read_write' },
+          { permission: 'read_write' },
+        ),
+      );
 
       assert.equal(response.rejected[0]?.category, 'conflict');
       assert.equal((await findRecord<Staff>(db.sql, 'staff', target.id))?.permission, 'read_only');
@@ -466,17 +719,25 @@ describe('POST /sync/upload', () => {
 
       assert.equal(rejection.category, 'authorization');
       assert.equal(rejection.attributed_to, readOnlyNurse.id);
-      assert.deepEqual(audit, { result: 'rejected', actor_staff_id: readOnlyNurse.id, action: 'reject' });
+      assert.deepEqual(audit, {
+        result: 'rejected',
+        actor_staff_id: readOnlyNurse.id,
+        action: 'reject',
+      });
     });
 
     it('records the rejection in the ledger as rejected, and the upload as contact', async () => {
       const mutation = patientPut(a, readOnlyNurse, '000051');
-      const before = await db.sql<{ last_seen_on: string | null }[]>`SELECT last_seen_on FROM devices WHERE id = ${a.device.deviceId}`;
+      const before = await db.sql<
+        { last_seen_on: string | null }[]
+      >`SELECT last_seen_on FROM devices WHERE id = ${a.device.deviceId}`;
       await send(a.device.credential, mutation);
 
       const [ledger] = await db.sql<{ outcome: string }[]>`
         SELECT outcome FROM applied_mutations WHERE device_id = ${a.device.deviceId} AND client_id = ${mutation.clientId}`;
-      const after = await db.sql<{ last_seen_on: string | null }[]>`SELECT last_seen_on FROM devices WHERE id = ${a.device.deviceId}`;
+      const after = await db.sql<
+        { last_seen_on: string | null }[]
+      >`SELECT last_seen_on FROM devices WHERE id = ${a.device.deviceId}`;
 
       assert.equal(ledger.outcome, 'rejected');
       assert.notEqual(after[0].last_seen_on, null);
@@ -499,9 +760,21 @@ describe('POST /sync/upload', () => {
     it('keeps a partly applied clash in its conflicts, not as refused changes', async () => {
       const id = patientId(a, '000053');
       await send(a.device.credential, patientPut(a, nurse, '000053'));
-      await send(a.device.credential, patch('patient', id, nurse, { phone: '0802' }, { phone: '0801' }));
+      await send(
+        a.device.credential,
+        patch('patient', id, nurse, { phone: '0802' }, { phone: '0801' }),
+      );
 
-      await send(aSecond.credential, patch('patient', id, nurse, { phone: '0803', address: 'Ring Road' }, { phone: '0801', address: 'Odo-Ona' }));
+      await send(
+        aSecond.credential,
+        patch(
+          'patient',
+          id,
+          nurse,
+          { phone: '0803', address: 'Ring Road' },
+          { phone: '0801', address: 'Odo-Ona' },
+        ),
+      );
 
       const [row] = await db.sql<{ refused_changes: unknown; conflicts: unknown[] }[]>`
         SELECT refused_changes, conflicts FROM sync_rejections WHERE entity_id = ${id}`;
@@ -516,11 +789,21 @@ describe('POST /sync/upload', () => {
         op: 'put',
         table: 'audit_event',
         id,
-        data: { ...envelopeFor(a, '2026-09-10T07:00:00Z'), createdBy: nurse.id, id, type: 'audit_event', actorStaffId: nurse.id, action: 'login', occurredOn: '2026-09-10T07:00:00Z' },
+        data: {
+          ...envelopeFor(a, '2026-09-10T07:00:00Z'),
+          createdBy: nurse.id,
+          id,
+          type: 'audit_event',
+          actorStaffId: nurse.id,
+          action: 'login',
+          occurredOn: '2026-09-10T07:00:00Z',
+        },
       });
 
       assert.deepEqual(response.rejected, []);
-      const [row] = await db.sql<{ received_on: string; occurred_on: string }[]>`SELECT received_on, occurred_on FROM audit_events WHERE id = ${id}`;
+      const [row] = await db.sql<
+        { received_on: string; occurred_on: string }[]
+      >`SELECT received_on, occurred_on FROM audit_events WHERE id = ${id}`;
       assert.ok(row.received_on > row.occurred_on);
     });
   });

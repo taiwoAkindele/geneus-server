@@ -1,5 +1,11 @@
 import { randomUUID } from 'node:crypto';
-import { SyncRejection, SCHEMA_VERSION, type DocType, type RejectionCategory, type SyncOperation } from '#shared';
+import {
+  SyncRejection,
+  SCHEMA_VERSION,
+  type DocType,
+  type RejectionCategory,
+  type SyncOperation,
+} from '#shared';
 import type { Sql, Tx } from '../db/client.ts';
 import { insertRecord } from '../db/records.ts';
 
@@ -44,7 +50,10 @@ export const claimMutation = async (
   return claimed.count === 1;
 };
 
-export const wasApplied = async (sql: Sql | Tx, identity: Pick<MutationIdentity, 'deviceId' | 'clientId'>): Promise<boolean> => {
+export const wasApplied = async (
+  sql: Sql | Tx,
+  identity: Pick<MutationIdentity, 'deviceId' | 'clientId'>,
+): Promise<boolean> => {
   const rows = await sql`
     SELECT 1 FROM applied_mutations WHERE device_id = ${identity.deviceId} AND client_id = ${identity.clientId}`;
   return rows.length === 1;
@@ -72,7 +81,10 @@ export type Rejection = {
 };
 
 /** Files a rejection in the reconcile queue. The record syncs back to the facility. */
-export const recordRejection = async (sql: Sql | Tx, rejection: Rejection): Promise<SyncRejection> => {
+export const recordRejection = async (
+  sql: Sql | Tx,
+  rejection: Rejection,
+): Promise<SyncRejection> => {
   const now = new Date().toISOString();
   const record = SyncRejection.parse({
     id: `sync_rejection:${randomUUID()}`,

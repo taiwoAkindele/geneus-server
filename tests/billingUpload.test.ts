@@ -34,9 +34,16 @@ describe('billing on upload', () => {
   const patientId = (sequence: string) => `${a.facility.id}-${sequence}-K2`;
   const receipt = (sequence: string) => `${a.facility.id}-R-${sequence}-K2`;
 
-  const envelope = (by: Staff | FacilityRegistrationResult['admin']) => ({ ...envelopeFor(a), createdBy: by.id });
+  const envelope = (by: Staff | FacilityRegistrationResult['admin']) => ({
+    ...envelopeFor(a),
+    createdBy: by.id,
+  });
 
-  const put = (table: UploadMutation['table'], id: string, data: Record<string, unknown>): UploadMutation => ({
+  const put = (
+    table: UploadMutation['table'],
+    id: string,
+    data: Record<string, unknown>,
+  ): UploadMutation => ({
     clientId: clientId(),
     op: 'put',
     table,
@@ -44,7 +51,12 @@ describe('billing on upload', () => {
     data: { ...data, id, type: table },
   });
 
-  const patch = (table: UploadMutation['table'], id: string, by: Staff | FacilityRegistrationResult['admin'], changes: Record<string, unknown>): UploadMutation => ({
+  const patch = (
+    table: UploadMutation['table'],
+    id: string,
+    by: Staff | FacilityRegistrationResult['admin'],
+    changes: Record<string, unknown>,
+  ): UploadMutation => ({
     clientId: clientId(),
     op: 'patch',
     table,
@@ -52,7 +64,8 @@ describe('billing on upload', () => {
     data: { ...changes, updatedBy: by.id, updatedOn: new Date().toISOString() },
   });
 
-  const send = (...mutations: UploadMutation[]) => upload(app, a.device.credential, { transactionId: 1, mutations });
+  const send = (...mutations: UploadMutation[]) =>
+    upload(app, a.device.credential, { transactionId: 1, mutations });
 
   const patientPut = (sequence: string, fullName: string) =>
     put('patient', patientId(sequence), {
@@ -77,7 +90,13 @@ describe('billing on upload', () => {
       ...extra,
     });
 
-  const paymentPut = (id: string, by: Staff, patient: string, allocations: { chargeId: string; amountMinor: number }[], extra: Record<string, unknown> = {}) =>
+  const paymentPut = (
+    id: string,
+    by: Staff,
+    patient: string,
+    allocations: { chargeId: string; amountMinor: number }[],
+    extra: Record<string, unknown> = {},
+  ) =>
     put('payment', id, {
       ...envelope(by),
       patientId: patient,
@@ -146,10 +165,15 @@ describe('billing on upload', () => {
     });
 
     it('lets the facility admin change a price', async () => {
-      const response = await send(patch('fee_item', 'fee_item:consultation', a.admin, { amountMinor: 200000 }));
+      const response = await send(
+        patch('fee_item', 'fee_item:consultation', a.admin, { amountMinor: 200000 }),
+      );
 
       assert.deepEqual(response.rejected, []);
-      assert.equal((await findRecord<FeeItem>(db.sql, 'fee_item', 'fee_item:consultation'))?.amountMinor, 200000);
+      assert.equal(
+        (await findRecord<FeeItem>(db.sql, 'fee_item', 'fee_item:consultation'))?.amountMinor,
+        200000,
+      );
     });
 
     it('refuses a fee set up by anyone but the facility admin', async () => {
@@ -170,25 +194,39 @@ describe('billing on upload', () => {
 
   describe('raising fees', () => {
     it('refuses a charge that owes less than its price without an exemption', async () => {
-      const response = await send(chargePut('charge:discounted', patientId('000001'), { amountMinor: 100000 }));
+      const response = await send(
+        chargePut('charge:discounted', patientId('000001'), { amountMinor: 100000 }),
+      );
 
       assert.equal(response.rejected[0]?.category, 'validation');
     });
 
     it('applies an exempt charge that owes nothing, keeping the price it would have been', async () => {
-      const response = await send(chargePut('charge:exempt', patientId('000001'), { amountMinor: 0, exemptionReason: 'Under-5 policy' }));
+      const response = await send(
+        chargePut('charge:exempt', patientId('000001'), {
+          amountMinor: 0,
+          exemptionReason: 'Under-5 policy',
+        }),
+      );
 
       assert.deepEqual(response.rejected, []);
     });
 
     it("refuses a charge naming another patient's appointment", async () => {
-      const response = await send(chargePut('charge:crossed', patientId('000001'), { appointmentId: 'appointment:2' }));
+      const response = await send(
+        chargePut('charge:crossed', patientId('000001'), { appointmentId: 'appointment:2' }),
+      );
 
       assert.equal(response.rejected[0]?.category, 'validation');
     });
 
     it('refuses a fee raised by the cashier, who only takes money', async () => {
-      const response = await send(put('charge', 'charge:by-cashier', { ...chargePut('x', patientId('000001')).data, createdBy: cashier.id }));
+      const response = await send(
+        put('charge', 'charge:by-cashier', {
+          ...chargePut('x', patientId('000001')).data,
+          createdBy: cashier.id,
+        }),
+      );
 
       assert.equal(response.rejected[0]?.category, 'authorization');
     });
@@ -196,47 +234,77 @@ describe('billing on upload', () => {
 
   describe('taking payments', () => {
     it("applies the cashier's payment against the patient's charge", async () => {
-      const response = await send(paymentPut('payment:1', cashier, patientId('000001'), [{ chargeId: 'charge:1', amountMinor: 150000 }]));
+      const response = await send(
+        paymentPut('payment:1', cashier, patientId('000001'), [
+          { chargeId: 'charge:1', amountMinor: 150000 },
+        ]),
+      );
 
       assert.deepEqual(response.rejected, []);
     });
 
     it('accepts a second payment for a fee already paid — the money changed hands', async () => {
-      const response = await send(paymentPut('payment:2', cashier, patientId('000001'), [{ chargeId: 'charge:1', amountMinor: 150000 }]));
+      const response = await send(
+        paymentPut('payment:2', cashier, patientId('000001'), [
+          { chargeId: 'charge:1', amountMinor: 150000 },
+        ]),
+      );
 
       assert.deepEqual(response.rejected, []);
     });
 
     it("refuses a payment allocated to another patient's charge", async () => {
-      const response = await send(paymentPut('payment:3', cashier, patientId('000001'), [{ chargeId: 'charge:2', amountMinor: 150000 }]));
+      const response = await send(
+        paymentPut('payment:3', cashier, patientId('000001'), [
+          { chargeId: 'charge:2', amountMinor: 150000 },
+        ]),
+      );
 
       assert.equal(response.rejected[0]?.category, 'validation');
       assert.match(response.rejected[0]?.reason ?? '', /another patient/);
     });
 
     it('refuses a payment for a charge that does not exist', async () => {
-      const response = await send(paymentPut('payment:4', cashier, patientId('000001'), [{ chargeId: 'charge:missing', amountMinor: 150000 }]));
+      const response = await send(
+        paymentPut('payment:4', cashier, patientId('000001'), [
+          { chargeId: 'charge:missing', amountMinor: 150000 },
+        ]),
+      );
 
       assert.equal(response.rejected[0]?.category, 'validation');
     });
 
     it('refuses a payment in a different currency from the charge', async () => {
-      const response = await send(paymentPut('payment:5', cashier, patientId('000001'), [{ chargeId: 'charge:usd', amountMinor: 150000 }]));
+      const response = await send(
+        paymentPut('payment:5', cashier, patientId('000001'), [
+          { chargeId: 'charge:usd', amountMinor: 150000 },
+        ]),
+      );
 
       assert.match(response.rejected[0]?.reason ?? '', /is in USD, not NGN/);
     });
 
     it('refuses a payment taken by a nurse', async () => {
-      const response = await send(paymentPut('payment:6', nurse, patientId('000001'), [{ chargeId: 'charge:3', amountMinor: 150000 }]));
+      const response = await send(
+        paymentPut('payment:6', nurse, patientId('000001'), [
+          { chargeId: 'charge:3', amountMinor: 150000 },
+        ]),
+      );
 
       assert.equal(response.rejected[0]?.category, 'authorization');
     });
 
     it('refuses a receipt number already used in the facility', async () => {
       const response = await send(
-        paymentPut('payment:7', cashier, patientId('000001'), [{ chargeId: 'charge:3', amountMinor: 150000 }], {
-          receiptNumber: receipt('000001'),
-        }),
+        paymentPut(
+          'payment:7',
+          cashier,
+          patientId('000001'),
+          [{ chargeId: 'charge:3', amountMinor: 150000 }],
+          {
+            receiptNumber: receipt('000001'),
+          },
+        ),
       );
 
       assert.equal(response.rejected[0]?.category, 'conflict');
@@ -246,10 +314,16 @@ describe('billing on upload', () => {
   describe('waivers', () => {
     it('refuses a waiver from the cashier', async () => {
       const response = await send(
-        paymentPut('payment:8', cashier, patientId('000002'), [{ chargeId: 'charge:2', amountMinor: 150000 }], {
-          method: 'waiver',
-          reason: 'Destitute',
-        }),
+        paymentPut(
+          'payment:8',
+          cashier,
+          patientId('000002'),
+          [{ chargeId: 'charge:2', amountMinor: 150000 }],
+          {
+            method: 'waiver',
+            reason: 'Destitute',
+          },
+        ),
       );
 
       assert.equal(response.rejected[0]?.category, 'authorization');
@@ -257,10 +331,16 @@ describe('billing on upload', () => {
 
     it("applies a supervisor's waiver with a reason", async () => {
       const response = await send(
-        paymentPut('payment:9', supervisor, patientId('000002'), [{ chargeId: 'charge:2', amountMinor: 150000 }], {
-          method: 'waiver',
-          reason: 'Destitute',
-        }),
+        paymentPut(
+          'payment:9',
+          supervisor,
+          patientId('000002'),
+          [{ chargeId: 'charge:2', amountMinor: 150000 }],
+          {
+            method: 'waiver',
+            reason: 'Destitute',
+          },
+        ),
       );
 
       assert.deepEqual(response.rejected, []);
@@ -283,10 +363,16 @@ describe('billing on upload', () => {
 
     it('refuses a reversal that does not repeat the original exactly', async () => {
       const response = await send(
-        paymentPut('payment:11', supervisor, patientId('000001'), [{ chargeId: 'charge:3', amountMinor: 150000 }], {
-          reverses: 'payment:2',
-          reason: 'Paid twice',
-        }),
+        paymentPut(
+          'payment:11',
+          supervisor,
+          patientId('000001'),
+          [{ chargeId: 'charge:3', amountMinor: 150000 }],
+          {
+            reverses: 'payment:2',
+            reason: 'Paid twice',
+          },
+        ),
       );
 
       assert.match(response.rejected[0]?.reason ?? '', /must repeat payment payment:2/);
@@ -327,7 +413,9 @@ describe('billing on upload', () => {
     });
 
     it('holds the rule in PostgreSQL too', async () => {
-      const error = await refusal(db.sql`UPDATE payments SET reference = 'edited' WHERE id = 'payment:1'`);
+      const error = await refusal(
+        db.sql`UPDATE payments SET reference = 'edited' WHERE id = 'payment:1'`,
+      );
 
       assert.equal(error.code, '42501');
     });

@@ -1,9 +1,21 @@
 import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import type { FastifyInstance } from 'fastify';
-import { DeviceCredential, EnrollmentCode, type FacilityRegistrationResult, type Staff } from '#shared';
+import {
+  DeviceCredential,
+  EnrollmentCode,
+  type FacilityRegistrationResult,
+  type Staff,
+} from '#shared';
 import { verifyCredential } from '../src/devices/credentials.ts';
-import { addStaff, asDevice, registerScratchFacility, scratchDatabase, testApp, type ScratchDatabase } from './postgres.ts';
+import {
+  addStaff,
+  asDevice,
+  registerScratchFacility,
+  scratchDatabase,
+  testApp,
+  type ScratchDatabase,
+} from './postgres.ts';
 
 /**
  * Enrollment is how a phone becomes a facility's replica, and revocation is
@@ -18,10 +30,19 @@ describe('device enrollment', () => {
   let nurse: Staff;
 
   const issueCode = (credential: string, issuedBy: string) =>
-    app.inject({ method: 'POST', url: '/devices/codes', headers: asDevice(credential), payload: { issuedBy } });
+    app.inject({
+      method: 'POST',
+      url: '/devices/codes',
+      headers: asDevice(credential),
+      payload: { issuedBy },
+    });
 
   const enroll = (code: string, deviceId: string) =>
-    app.inject({ method: 'POST', url: '/devices', payload: { code, deviceId, deviceLabel: 'Test phone' } });
+    app.inject({
+      method: 'POST',
+      url: '/devices',
+      payload: { code, deviceId, deviceLabel: 'Test phone' },
+    });
 
   const enrolledDevice = async (deviceId: string) => {
     const code = EnrollmentCode.parse((await issueCode(a.device.credential, a.admin.id)).json());
@@ -29,7 +50,12 @@ describe('device enrollment', () => {
   };
 
   const revoke = (credential: string, targetId: string, revokedBy: string, wipe = true) =>
-    app.inject({ method: 'POST', url: `/devices/${targetId}/revoke`, headers: asDevice(credential), payload: { revokedBy, wipe } });
+    app.inject({
+      method: 'POST',
+      url: `/devices/${targetId}/revoke`,
+      headers: asDevice(credential),
+      payload: { revokedBy, wipe },
+    });
 
   before(async () => {
     db = await scratchDatabase();
@@ -68,12 +94,21 @@ describe('device enrollment', () => {
     });
 
     it('refuses an unenrolled caller', async () => {
-      assert.equal((await app.inject({ method: 'POST', url: '/devices/codes', payload: { issuedBy: a.admin.id } })).statusCode, 401);
+      assert.equal(
+        (
+          await app.inject({
+            method: 'POST',
+            url: '/devices/codes',
+            payload: { issuedBy: a.admin.id },
+          })
+        ).statusCode,
+        401,
+      );
     });
   });
 
   describe('spending a code', () => {
-    it('enrols the joining device into the code\'s facility and hands it a working credential', async () => {
+    it("enrols the joining device into the code's facility and hands it a working credential", async () => {
       const credential = await enrolledDevice('device-joiner-1');
 
       assert.equal(credential.facilityId, a.facility.id);
@@ -84,7 +119,8 @@ describe('device enrollment', () => {
       const [device] = await db.sql<{ enrolled_by: string; label: string; status: string }[]>`
         SELECT enrolled_by, label, status FROM devices WHERE id = 'device-joiner-1'`;
       assert.deepEqual(device, { enrolled_by: a.admin.id, label: 'Test phone', status: 'active' });
-      const audits = await db.sql`SELECT 1 FROM audit_events WHERE entity_id = 'device-joiner-1' AND action = 'enroll'`;
+      const audits =
+        await db.sql`SELECT 1 FROM audit_events WHERE entity_id = 'device-joiner-1' AND action = 'enroll'`;
       assert.equal(audits.length, 1);
     });
 
@@ -125,16 +161,31 @@ describe('device enrollment', () => {
       assert.equal(response.statusCode, 200, response.body);
       assert.equal(response.json().status, 'revoked');
       assert.equal(response.json().wipeRequested, true);
-      assert.deepEqual(await verifyCredential(db.sql, credential.credential), { failure: 'revoked' });
-      assert.equal((await app.inject({ method: 'POST', url: '/sync/token', headers: asDevice(credential.credential) })).statusCode, 401);
-      const audits = await db.sql`SELECT 1 FROM audit_events WHERE entity_id = 'device-to-revoke' AND action = 'revoke'`;
+      assert.deepEqual(await verifyCredential(db.sql, credential.credential), {
+        failure: 'revoked',
+      });
+      assert.equal(
+        (
+          await app.inject({
+            method: 'POST',
+            url: '/sync/token',
+            headers: asDevice(credential.credential),
+          })
+        ).statusCode,
+        401,
+      );
+      const audits =
+        await db.sql`SELECT 1 FROM audit_events WHERE entity_id = 'device-to-revoke' AND action = 'revoke'`;
       assert.equal(audits.length, 1);
     });
 
     it('refuses a nurse, leaving the device enrolled', async () => {
       const credential = await enrolledDevice('device-nurse-cannot');
 
-      assert.equal((await revoke(a.device.credential, 'device-nurse-cannot', nurse.id)).statusCode, 403);
+      assert.equal(
+        (await revoke(a.device.credential, 'device-nurse-cannot', nurse.id)).statusCode,
+        403,
+      );
       assert.ok('identity' in (await verifyCredential(db.sql, credential.credential)));
     });
 
@@ -142,7 +193,9 @@ describe('device enrollment', () => {
       const response = await revoke(a.device.credential, b.device.deviceId, a.admin.id);
 
       assert.equal(response.statusCode, 404);
-      const [device] = await db.sql<{ status: string }[]>`SELECT status FROM devices WHERE id = ${b.device.deviceId}`;
+      const [device] = await db.sql<
+        { status: string }[]
+      >`SELECT status FROM devices WHERE id = ${b.device.deviceId}`;
       assert.equal(device.status, 'active');
     });
   });

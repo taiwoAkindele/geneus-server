@@ -70,20 +70,30 @@ export type RosterSigning = { stop: () => Promise<void> };
 export const startRosterSigning = (
   sql: Sql,
   signer: Signer,
-  log: { info: (details: object, message: string) => void; error: (details: object, message: string) => void },
+  log: {
+    info: (details: object, message: string) => void;
+    error: (details: object, message: string) => void;
+  },
   intervalMs = 60_000,
 ): RosterSigning => {
   let running: Promise<void> | undefined;
   const pass = () => {
-    if (running) return;
-    running = signPendingShifts(sql, signer).then(async (signed) => {
-      const authority = await refreshDueAuthority(sql,signer);
-      if (authority > 0) log.info({ refreshed: authority }, 'clinical authority refreshed');
-      return signed;
-    })
+    if (running) {
+      return;
+    }
+    running = signPendingShifts(sql, signer)
+      .then(async (signed) => {
+        const authority = await refreshDueAuthority(sql, signer);
+        if (authority > 0) {
+          log.info({ refreshed: authority }, 'clinical authority refreshed');
+        }
+        return signed;
+      })
       .then(
         (signed) => {
-          if (signed > 0) log.info({ signed }, 'roster shifts signed');
+          if (signed > 0) {
+            log.info({ signed }, 'roster shifts signed');
+          }
         },
         (cause: unknown) => log.error({ cause }, 'roster signing pass failed'),
       )

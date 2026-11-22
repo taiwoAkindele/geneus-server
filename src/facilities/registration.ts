@@ -12,7 +12,12 @@ import { isPostgresError, UNIQUE_VIOLATION, type Sql, type Tx } from '../db/clie
 import { insertRecord } from '../db/records.ts';
 import { recordAuditEvent } from '../audit/auditEvents.ts';
 import { issueCredential } from '../devices/credentials.ts';
-import { checkVerificationCode, consumeVerification, registrationSubject, saveStaffEmail } from '../email/verifications.ts';
+import {
+  checkVerificationCode,
+  consumeVerification,
+  registrationSubject,
+  saveStaffEmail,
+} from '../email/verifications.ts';
 import { claimInvite, findInvite, rejectionFor, type InviteRejection } from './invites.ts';
 
 /**
@@ -38,11 +43,19 @@ export type RegistrationOutcome =
 
 type UniqueViolation = { constraint_name?: string };
 
-export const facilityRegistrationConflict = (cause: unknown): 'facility_code_taken' | 'device_already_enrolled' | undefined => {
-  if (!isPostgresError(cause, UNIQUE_VIOLATION)) return undefined;
+export const facilityRegistrationConflict = (
+  cause: unknown,
+): 'facility_code_taken' | 'device_already_enrolled' | undefined => {
+  if (!isPostgresError(cause, UNIQUE_VIOLATION)) {
+    return undefined;
+  }
   const constraint = (cause as UniqueViolation).constraint_name;
-  if (constraint === 'facilities_pkey') return 'facility_code_taken';
-  if (constraint === 'devices_pkey') return 'device_already_enrolled';
+  if (constraint === 'facilities_pkey') {
+    return 'facility_code_taken';
+  }
+  if (constraint === 'devices_pkey') {
+    return 'device_already_enrolled';
+  }
   return undefined;
 };
 
@@ -52,21 +65,29 @@ export const registerFacility = async (
   syncEndpoint: string,
 ): Promise<RegistrationOutcome> => {
   const inviteRejection = rejectionFor(await findInvite(sql, registration.inviteToken));
-  if (inviteRejection) return { ok: false, error: 'invalid_invite', rejection: inviteRejection };
+  if (inviteRejection) {
+    return { ok: false, error: 'invalid_invite', rejection: inviteRejection };
+  }
   const verificationId = await checkVerificationCode(sql, {
     purpose: 'registration',
     subject: registrationSubject(registration.inviteToken),
     email: registration.adminEmail,
     code: registration.emailCode,
   });
-  if (!verificationId) return { ok: false, error: 'invalid_email_code' };
+  if (!verificationId) {
+    return { ok: false, error: 'invalid_email_code' };
+  }
 
   try {
     return await sql.begin(async (tx): Promise<RegistrationOutcome> => {
       const invite = await findInvite(tx, registration.inviteToken);
       const rejection = rejectionFor(invite);
-      if (rejection) return { ok: false, error: 'invalid_invite', rejection };
-      if (!(await consumeVerification(tx, verificationId))) return { ok: false, error: 'invalid_email_code' };
+      if (rejection) {
+        return { ok: false, error: 'invalid_invite', rejection };
+      }
+      if (!(await consumeVerification(tx, verificationId))) {
+        return { ok: false, error: 'invalid_email_code' };
+      }
       if (!(await claimInvite(tx, registration.inviteToken, registration.code))) {
         return { ok: false, error: 'invalid_invite', rejection: 'already_used' };
       }
@@ -75,7 +96,9 @@ export const registerFacility = async (
     });
   } catch (cause) {
     const taken = facilityRegistrationConflict(cause);
-    if (taken) return { ok: false, error: taken };
+    if (taken) {
+      return { ok: false, error: taken };
+    }
     throw cause;
   }
 };
@@ -86,7 +109,8 @@ export const facilityExists = async (sql: Sql, code: string): Promise<boolean> =
 /** Shared bootstrap for invite registration and an authorized organization administrator. */
 export const createFacilityRecords = async (
   tx: Sql | Tx,
-  registration: FacilityDetails & Pick<FacilityRegistration, 'deviceId' | 'deviceLabel' | 'adminFullName' | 'adminEmail'>,
+  registration: FacilityDetails &
+    Pick<FacilityRegistration, 'deviceId' | 'deviceLabel' | 'adminFullName' | 'adminEmail'>,
   syncEndpoint: string,
   personId?: string,
   deviceSecret?: string,
@@ -160,5 +184,9 @@ export const createFacilityRecords = async (
     entityId: device.id,
   });
 
-  return { facility, admin, device: { deviceId: device.id, facilityId: facility.id, credential, syncEndpoint } };
+  return {
+    facility,
+    admin,
+    device: { deviceId: device.id, facilityId: facility.id, credential, syncEndpoint },
+  };
 };

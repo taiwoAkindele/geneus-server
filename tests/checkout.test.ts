@@ -9,7 +9,14 @@ import { sealPaystackSecret } from '../src/billing/paystack.ts';
 import { insertRecord } from '../src/db/records.ts';
 import { createDocumentLink } from '../src/patientDocuments/links.ts';
 import { loadBill, loadReceipt } from '../src/patientDocuments/documentData.ts';
-import { config, envelopeFor, registerScratchFacility, scratchDatabase, signer, type ScratchDatabase } from './postgres.ts';
+import {
+  config,
+  envelopeFor,
+  registerScratchFacility,
+  scratchDatabase,
+  signer,
+  type ScratchDatabase,
+} from './postgres.ts';
 
 const masterKey = '12'.repeat(32);
 const liveKey = 'sk_live_FictionalCheckoutKey';
@@ -36,7 +43,7 @@ describe('patient bill checkout', () => {
 
   const http: typeof fetch = async (url, init) => {
     const address = new URL(String(url));
-    const body = init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : {};
+    const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : {};
     const headers = init?.headers as Record<string, string>;
     let data: unknown;
 
@@ -50,28 +57,39 @@ describe('patient bill checkout', () => {
       data = {
         ...verifications.get(reference),
         reference,
-        ...(verifications.has(reference) ? {} : { status: 'pending', amount: 0, currency: 'NGN', domain: 'live' }),
+        ...(verifications.has(reference)
+          ? {}
+          : { status: 'pending', amount: 0, currency: 'NGN', domain: 'live' }),
         paid_at: '2026-11-22T00:00:00.000Z',
       };
     } else if (address.pathname === '/api/v1/auth/login') {
-      return Response.json({ requestSuccessful: true, responseBody: { accessToken: 'synthetic-token', expiresIn: 3600 } });
+      return Response.json({
+        requestSuccessful: true,
+        responseBody: { accessToken: 'synthetic-token', expiresIn: 3600 },
+      });
     } else if (address.pathname.endsWith('/init-transaction')) {
       const reference = String(body.paymentReference);
       starts.set(reference, body);
-      return Response.json({ requestSuccessful: true, responseBody: {
-        paymentReference: reference,
-        checkoutUrl: `https://checkout.monnify.com/${reference}`,
-      } });
+      return Response.json({
+        requestSuccessful: true,
+        responseBody: {
+          paymentReference: reference,
+          checkoutUrl: `https://checkout.monnify.com/${reference}`,
+        },
+      });
     } else if (address.pathname.endsWith('/query')) {
       const reference = address.searchParams.get('paymentReference')!;
       const verification = verifications.get(reference);
-      return Response.json({ requestSuccessful: true, responseBody: {
-        paymentReference: reference,
-        paymentStatus: verification?.status === 'success' ? 'PAID' : 'PENDING',
-        amountPaid: String((verification?.amount ?? 0) / 100),
-        currencyCode: verification?.currency ?? 'NGN',
-        paidOn: '2026-11-22T00:00:00.000Z',
-      } });
+      return Response.json({
+        requestSuccessful: true,
+        responseBody: {
+          paymentReference: reference,
+          paymentStatus: verification?.status === 'success' ? 'PAID' : 'PENDING',
+          amountPaid: String((verification?.amount ?? 0) / 100),
+          currencyCode: verification?.currency ?? 'NGN',
+          paidOn: '2026-11-22T00:00:00.000Z',
+        },
+      });
     } else {
       throw new Error(`Unexpected synthetic provider call: ${address.pathname}`);
     }
@@ -191,10 +209,13 @@ describe('patient bill checkout', () => {
       exemptions: [],
     });
     await db.sql`UPDATE facilities SET email = 'hospital@example.org' WHERE id = ${facility.facility.id}`;
-    app = buildApp({ config: checkoutConfig, sql: db.sql, signer, paystackFetch: http }, {
-      logger: false,
-      rateLimit: false,
-    });
+    app = buildApp(
+      { config: checkoutConfig, sql: db.sql, signer, paystackFetch: http },
+      {
+        logger: false,
+        rateLimit: false,
+      },
+    );
     await connect();
   });
 
@@ -213,7 +234,8 @@ describe('patient bill checkout', () => {
     const callback = new URL(String(starts.get(checkout.reference)?.callback_url));
     assert.equal(callback.searchParams.get('checkout'), checkout.reference);
     assert.ok(callback.pathname.startsWith('/p/b/'));
-    const [session] = await db.sql`SELECT charge_ids FROM checkout_sessions WHERE reference = ${checkout.reference}`;
+    const [session] =
+      await db.sql`SELECT charge_ids FROM checkout_sessions WHERE reference = ${checkout.reference}`;
     assert.deepEqual(new Set(session.charge_ids), new Set(bill.charges.map((charge) => charge.id)));
   });
 
@@ -221,17 +243,29 @@ describe('patient bill checkout', () => {
     const bill = await makeBill();
     const checkout = await start(bill.api);
     markPaid(checkout);
-    const outcomes = await Promise.all(Array.from({ length: 4 }, () =>
-      app.inject({ method: 'GET', url: `${bill.api}/checkout/${checkout.reference}` })));
-    assert.ok(outcomes.every((response) => response.statusCode === 200 && response.json().status === 'paid'));
-    const payments = await db.sql`SELECT id, method, amount_minor FROM payments WHERE reference = ${checkout.reference}`;
+    const outcomes = await Promise.all(
+      Array.from({ length: 4 }, () =>
+        app.inject({ method: 'GET', url: `${bill.api}/checkout/${checkout.reference}` }),
+      ),
+    );
+    assert.ok(
+      outcomes.every(
+        (response) => response.statusCode === 200 && response.json().status === 'paid',
+      ),
+    );
+    const payments =
+      await db.sql`SELECT id, method, amount_minor FROM payments WHERE reference = ${checkout.reference}`;
     assert.equal(payments.length, 1);
     assert.equal(payments[0].method, 'online');
     assert.equal(payments[0].amount_minor, checkout.amountMinor);
     assert.equal((await loadBill(db.sql, facility.facility.id, bill.key))?.totals.dueMinor, 0);
-    const queued = await db.sql`SELECT * FROM patient_receipt_queue WHERE payment_id = ${payments[0].id}`;
+    const queued =
+      await db.sql`SELECT * FROM patient_receipt_queue WHERE payment_id = ${payments[0].id}`;
     assert.equal(queued.length, 1);
-    const pdf = await app.inject({ method: 'GET', url: `${bill.api}/checkout/${checkout.reference}/receipt` });
+    const pdf = await app.inject({
+      method: 'GET',
+      url: `${bill.api}/checkout/${checkout.reference}/receipt`,
+    });
     assert.equal(pdf.statusCode, 200, pdf.body);
     assert.equal(pdf.headers['content-type'], 'application/pdf');
   });
@@ -243,13 +277,15 @@ describe('patient bill checkout', () => {
     markPaid(checkout);
     const state = await confirmCheckout(db.sql, checkoutConfig, checkout.reference, http);
     assert.equal(state?.heldMinor, 3_000);
-    const [payment] = await db.sql`SELECT allocations, amount_minor FROM payments WHERE reference = ${checkout.reference}`;
+    const [payment] =
+      await db.sql`SELECT allocations, amount_minor FROM payments WHERE reference = ${checkout.reference}`;
     assert.equal(payment.amount_minor, 7_000);
     assert.deepEqual(payment.allocations, [
       { chargeId: bill.charges[0].id, amountMinor: 3_000 },
       { chargeId: bill.charges[1].id, amountMinor: 4_000 },
     ]);
-    const [source] = await db.sql`SELECT amount_minor, channel FROM incoming_transfers WHERE provider_reference = ${checkout.reference}`;
+    const [source] =
+      await db.sql`SELECT amount_minor, channel FROM incoming_transfers WHERE provider_reference = ${checkout.reference}`;
     assert.equal(source.amount_minor, 10_000);
     assert.equal(source.channel, 'checkout');
   });
@@ -262,7 +298,10 @@ describe('patient bill checkout', () => {
     const state = await confirmCheckout(db.sql, checkoutConfig, checkout.reference, http);
     assert.equal(state?.status, 'paid');
     assert.equal(state?.heldMinor, checkout.amountMinor);
-    assert.equal((await db.sql`SELECT id FROM payments WHERE reference = ${checkout.reference}`).length, 0);
+    assert.equal(
+      (await db.sql`SELECT id FROM payments WHERE reference = ${checkout.reference}`).length,
+      0,
+    );
   });
 
   it('never applies a checkout to charges added after it started', async () => {
@@ -275,7 +314,10 @@ describe('patient bill checkout', () => {
       createdOn: new Date().toISOString(),
     });
     markPaid(checkout);
-    assert.equal((await confirmCheckout(db.sql, checkoutConfig, checkout.reference, http))?.heldMinor, checkout.amountMinor);
+    assert.equal(
+      (await confirmCheckout(db.sql, checkoutConfig, checkout.reference, http))?.heldMinor,
+      checkout.amountMinor,
+    );
     assert.equal((await loadBill(db.sql, facility.facility.id, bill.key))?.totals.dueMinor, 10_000);
   });
 
@@ -292,8 +334,12 @@ describe('patient bill checkout', () => {
     markPaid(paidLess, { amount: 4_000 });
     const less = await confirmCheckout(db.sql, checkoutConfig, paidLess.reference, http);
     assert.deepEqual([less?.status, less?.heldMinor], ['paid', 0]);
-    assert.equal((await loadBill(db.sql, facility.facility.id, under.key))?.totals.dueMinor, paidLess.amountMinor - 4_000);
-    const [transfer] = await db.sql`SELECT amount_minor FROM incoming_transfers WHERE provider_reference = ${paidLess.reference}`;
+    assert.equal(
+      (await loadBill(db.sql, facility.facility.id, under.key))?.totals.dueMinor,
+      paidLess.amountMinor - 4_000,
+    );
+    const [transfer] =
+      await db.sql`SELECT amount_minor FROM incoming_transfers WHERE provider_reference = ${paidLess.reference}`;
     assert.equal(transfer.amount_minor, 4_000, 'the money actually received is what is recorded');
   });
 
@@ -302,9 +348,17 @@ describe('patient bill checkout', () => {
       const bill = await makeBill();
       const checkout = await start(bill.api);
       markPaid(checkout, change);
-      const response = await app.inject({ method: 'GET', url: `${bill.api}/checkout/${checkout.reference}` });
+      const response = await app.inject({
+        method: 'GET',
+        url: `${bill.api}/checkout/${checkout.reference}`,
+      });
       assert.equal(response.statusCode, 409, response.body);
-      assert.equal((await db.sql`SELECT id FROM incoming_transfers WHERE provider_reference = ${checkout.reference}`).length, 0);
+      assert.equal(
+        (
+          await db.sql`SELECT id FROM incoming_transfers WHERE provider_reference = ${checkout.reference}`
+        ).length,
+        0,
+      );
     }
   });
 
@@ -317,12 +371,19 @@ describe('patient bill checkout', () => {
     const state = await confirmCheckout(db.sql, checkoutConfig, checkout.reference, http);
     assert.equal(state?.status, 'paid');
     assert.equal((await loadBill(db.sql, facility.facility.id, bill.key))?.totals.dueMinor, 0);
-    const [source] = await db.sql`SELECT mode FROM incoming_transfers WHERE provider_reference = ${checkout.reference}`;
+    const [source] =
+      await db.sql`SELECT mode FROM incoming_transfers WHERE provider_reference = ${checkout.reference}`;
     assert.equal(source.mode, 'test');
     // …and its receipt says it is not real money.
-    const receipt = await app.inject({ method: 'GET', url: `${bill.api}/checkout/${checkout.reference}/receipt` });
+    const receipt = await app.inject({
+      method: 'GET',
+      url: `${bill.api}/checkout/${checkout.reference}/receipt`,
+    });
     assert.equal(receipt.statusCode, 200);
-    assert.match((await loadReceipt(db.sql, facility.facility.id, `payment:${checkout.reference}`))!.method, /TEST, not real money/);
+    assert.match(
+      (await loadReceipt(db.sql, facility.facility.id, `payment:${checkout.reference}`))!.method,
+      /TEST, not real money/,
+    );
 
     // Once the hospital is live, a late sandbox payment never marks a real bill paid.
     const later = await makeBill();
@@ -330,9 +391,18 @@ describe('patient bill checkout', () => {
     await connect('live');
     markPaid(lateCheckout, { domain: 'test' });
     await db.sql`UPDATE checkout_sessions SET mode = 'test' WHERE reference = ${lateCheckout.reference}`;
-    assert.equal((await confirmCheckout(db.sql, checkoutConfig, lateCheckout.reference, http))?.status, 'failed');
-    assert.equal((await loadBill(db.sql, facility.facility.id, later.key))?.totals.dueMinor, lateCheckout.amountMinor);
-    assert.equal((await db.sql`SELECT id FROM payments WHERE reference = ${lateCheckout.reference}`).length, 0);
+    assert.equal(
+      (await confirmCheckout(db.sql, checkoutConfig, lateCheckout.reference, http))?.status,
+      'failed',
+    );
+    assert.equal(
+      (await loadBill(db.sql, facility.facility.id, later.key))?.totals.dueMinor,
+      lateCheckout.amountMinor,
+    );
+    assert.equal(
+      (await db.sql`SELECT id FROM payments WHERE reference = ${lateCheckout.reference}`).length,
+      0,
+    );
   });
 
   it('uses the original encrypted connection even after hospital settings change', async () => {
@@ -340,7 +410,10 @@ describe('patient bill checkout', () => {
     const checkout = await start(bill.api);
     await connect('test');
     markPaid(checkout);
-    assert.equal((await confirmCheckout(db.sql, checkoutConfig, checkout.reference, http))?.status, 'paid');
+    assert.equal(
+      (await confirmCheckout(db.sql, checkoutConfig, checkout.reference, http))?.status,
+      'paid',
+    );
     assert.equal(authorization.get(checkout.reference), `Bearer ${liveKey}`);
     await connect();
   });
@@ -368,12 +441,20 @@ describe('patient bill checkout', () => {
     const bill = await makeBill();
     const checkout = await start(bill.api);
     markPaid(checkout);
-    const raw = JSON.stringify({ event: 'charge.success', data: { reference: checkout.reference } });
+    const raw = JSON.stringify({
+      event: 'charge.success',
+      data: { reference: checkout.reference },
+    });
     const signature = createHmac('sha512', liveKey).update(raw).digest('hex');
     const url = `/billing/paystack/${facility.facility.id}/webhook`;
     const refused = await app.inject({ method: 'POST', url, payload: JSON.parse(raw) });
     assert.equal(refused.statusCode, 401);
-    const response = await app.inject({ method: 'POST', url, headers: { 'x-paystack-signature': signature }, payload: JSON.parse(raw) });
+    const response = await app.inject({
+      method: 'POST',
+      url,
+      headers: { 'x-paystack-signature': signature },
+      payload: JSON.parse(raw),
+    });
     assert.equal(response.statusCode, 200, response.body);
     assert.equal((await loadBill(db.sql, facility.facility.id, bill.key))?.totals.dueMinor, 0);
   });
@@ -385,19 +466,28 @@ describe('patient bill checkout', () => {
     markPaid(checkout);
     await confirmCheckout(db.sql, checkoutConfig, checkout.reference, http);
     for (const suffix of ['', '/receipt']) {
-      const response = await app.inject({ method: 'GET', url: `${other.api}/checkout/${checkout.reference}${suffix}` });
+      const response = await app.inject({
+        method: 'GET',
+        url: `${other.api}/checkout/${checkout.reference}${suffix}`,
+      });
       assert.equal(response.statusCode, 404);
     }
     await db.sql`UPDATE patient_document_links SET stopped_on = now(), stopped_by = ${facility.admin.id}
       WHERE subject = ${bill.key}`;
-    assert.equal((await app.inject({ method: 'POST', url: `${bill.api}/pay`, payload: {} })).statusCode, 404);
+    assert.equal(
+      (await app.inject({ method: 'POST', url: `${bill.api}/pay`, payload: {} })).statusCode,
+      404,
+    );
   });
 
   it('rechecks expired sessions for late payments and recovers missed callbacks', async () => {
     const bill = await makeBill();
     const checkout = await start(bill.api);
     await db.sql`UPDATE checkout_sessions SET expires_on = now() - interval '1 minute' WHERE reference = ${checkout.reference}`;
-    assert.equal((await confirmCheckout(db.sql, checkoutConfig, checkout.reference, http))?.status, 'expired');
+    assert.equal(
+      (await confirmCheckout(db.sql, checkoutConfig, checkout.reference, http))?.status,
+      'expired',
+    );
     markPaid(checkout);
     await db.sql`UPDATE checkout_sessions SET checked_on = NULL WHERE reference = ${checkout.reference}`;
     await reconcileCheckouts(db.sql, checkoutConfig, { warn: () => undefined }, http);
@@ -429,9 +519,18 @@ describe('patient bill checkout', () => {
   it('refuses paid bills and unsupported currencies before opening a checkout', async () => {
     const paid = await makeBill();
     await receiveCash(paid.charges[0].id, 10_000);
-    assert.equal((await app.inject({ method: 'POST', url: `${paid.api}/pay`, payload: {} })).statusCode, 409);
+    assert.equal(
+      (await app.inject({ method: 'POST', url: `${paid.api}/pay`, payload: {} })).statusCode,
+      409,
+    );
     const foreign = await makeBill([10_000], 'USD');
-    assert.equal((await app.inject({ method: 'GET', url: foreign.api })).json().bill.payable, false);
-    assert.equal((await app.inject({ method: 'POST', url: `${foreign.api}/pay`, payload: {} })).statusCode, 409);
+    assert.equal(
+      (await app.inject({ method: 'GET', url: foreign.api })).json().bill.payable,
+      false,
+    );
+    assert.equal(
+      (await app.inject({ method: 'POST', url: `${foreign.api}/pay`, payload: {} })).statusCode,
+      409,
+    );
   });
 });

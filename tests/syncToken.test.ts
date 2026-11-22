@@ -4,7 +4,15 @@ import type { FastifyInstance } from 'fastify';
 import { SyncTokenResponse, type FacilityRegistrationResult } from '#shared';
 import { mintSyncToken, verifySyncToken, type Jwk } from '../src/auth/syncToken.ts';
 import { createSigner } from '../src/lib/signing.ts';
-import { asDevice, config, registerScratchFacility, scratchDatabase, signer, testApp, type ScratchDatabase } from './postgres.ts';
+import {
+  asDevice,
+  config,
+  registerScratchFacility,
+  scratchDatabase,
+  signer,
+  testApp,
+  type ScratchDatabase,
+} from './postgres.ts';
 
 const HOUR_S = 3600;
 
@@ -18,7 +26,8 @@ describe('sync tokens', () => {
   let facility: FacilityRegistrationResult;
   let keys: Jwk[];
 
-  const token = (credential: string) => app.inject({ method: 'POST', url: '/sync/token', headers: asDevice(credential) });
+  const token = (credential: string) =>
+    app.inject({ method: 'POST', url: '/sync/token', headers: asDevice(credential) });
 
   before(async () => {
     db = await scratchDatabase();
@@ -40,7 +49,7 @@ describe('sync tokens', () => {
     );
   });
 
-  it('mints a token whose subject is the device and whose facility claim is the device\'s facility', async () => {
+  it("mints a token whose subject is the device and whose facility claim is the device's facility", async () => {
     const response = await token(facility.device.credential);
 
     assert.equal(response.statusCode, 200);
@@ -53,7 +62,7 @@ describe('sync tokens', () => {
     assert.equal(minted.syncEndpoint, config.powerSyncPublicUrl);
   });
 
-  it('lives no longer than the configured hour, within PowerSync\'s 24-hour cap', async () => {
+  it("lives no longer than the configured hour, within PowerSync's 24-hour cap", async () => {
     const minted = SyncTokenResponse.parse((await token(facility.device.credential)).json());
     const verified = verifySyncToken(minted.token, keys, config.powerSyncAudience);
     assert.ok('claims' in verified);
@@ -65,22 +74,48 @@ describe('sync tokens', () => {
 
   it('is refused once expired', () => {
     const now = Date.parse('2026-09-12T12:00:00Z');
-    const minted = mintSyncToken(signer, { deviceId: 'd', facilityId: 'F', audience: 'powersync', ttlSeconds: 60, now });
+    const minted = mintSyncToken(signer, {
+      deviceId: 'd',
+      facilityId: 'F',
+      audience: 'powersync',
+      ttlSeconds: 60,
+      now,
+    });
 
     assert.ok('claims' in verifySyncToken(minted.token, keys, 'powersync', now + 59_000));
-    assert.deepEqual(verifySyncToken(minted.token, keys, 'powersync', now + 60_000), { failure: 'expired' });
+    assert.deepEqual(verifySyncToken(minted.token, keys, 'powersync', now + 60_000), {
+      failure: 'expired',
+    });
   });
 
   it('is refused when tampered with, signed by another key, or for another audience', () => {
-    const minted = mintSyncToken(signer, { deviceId: 'd', facilityId: 'F', audience: 'powersync', ttlSeconds: 60 });
+    const minted = mintSyncToken(signer, {
+      deviceId: 'd',
+      facilityId: 'F',
+      audience: 'powersync',
+      ttlSeconds: 60,
+    });
     const [header, claims, signature] = minted.token.split('.');
-    const forgedClaims = Buffer.from(JSON.stringify({ ...JSON.parse(Buffer.from(claims, 'base64url').toString()), facility_id: 'OTHER' })).toString('base64url');
+    const forgedClaims = Buffer.from(
+      JSON.stringify({
+        ...JSON.parse(Buffer.from(claims, 'base64url').toString()),
+        facility_id: 'OTHER',
+      }),
+    ).toString('base64url');
     const otherKeys = [createSigner(undefined).publicJwk()];
 
-    assert.deepEqual(verifySyncToken(`${header}.${forgedClaims}.${signature}`, keys, 'powersync'), { failure: 'bad_signature' });
-    assert.deepEqual(verifySyncToken(minted.token, otherKeys, 'powersync'), { failure: 'unknown_key' });
-    assert.deepEqual(verifySyncToken(minted.token, keys, 'someone-else'), { failure: 'wrong_audience' });
-    assert.deepEqual(verifySyncToken('not.a.jwt.at.all', keys, 'powersync'), { failure: 'malformed' });
+    assert.deepEqual(verifySyncToken(`${header}.${forgedClaims}.${signature}`, keys, 'powersync'), {
+      failure: 'bad_signature',
+    });
+    assert.deepEqual(verifySyncToken(minted.token, otherKeys, 'powersync'), {
+      failure: 'unknown_key',
+    });
+    assert.deepEqual(verifySyncToken(minted.token, keys, 'someone-else'), {
+      failure: 'wrong_audience',
+    });
+    assert.deepEqual(verifySyncToken('not.a.jwt.at.all', keys, 'powersync'), {
+      failure: 'malformed',
+    });
   });
 
   it('is not issued to a device with the wrong secret, or to a revoked one', async () => {
@@ -106,7 +141,9 @@ describe('sync tokens', () => {
   it('records the contact on the device', async () => {
     await token(facility.device.credential);
 
-    const [row] = await db.sql<{ last_seen_on: string | null }[]>`SELECT last_seen_on FROM devices WHERE id = ${facility.device.deviceId}`;
+    const [row] = await db.sql<
+      { last_seen_on: string | null }[]
+    >`SELECT last_seen_on FROM devices WHERE id = ${facility.device.deviceId}`;
     assert.ok(row.last_seen_on);
   });
 });

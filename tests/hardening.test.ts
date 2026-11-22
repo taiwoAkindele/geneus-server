@@ -17,7 +17,10 @@ describe('server hardening', () => {
   before(async () => {
     db = await scratchDatabase();
     // PowerSync is pointed somewhere nothing listens, so /health is degraded.
-    app = buildApp({ config: { ...config, powerSyncInternalUrl: 'http://127.0.0.1:9' }, sql: db.sql, signer }, { logger: false });
+    app = buildApp(
+      { config: { ...config, powerSyncInternalUrl: 'http://127.0.0.1:9' }, sql: db.sql, signer },
+      { logger: false },
+    );
     app.get('/test-failure', async () => {
       throw new Error('relation "secret_table" does not exist');
     });
@@ -55,7 +58,9 @@ describe('server hardening', () => {
   it('stops an address guessing invite codes after ten tries a minute', async () => {
     const statuses: number[] = [];
     for (let attempt = 0; attempt < 11; attempt += 1) {
-      statuses.push((await app.inject({ method: 'GET', url: `/invites/GUESS${attempt}` })).statusCode);
+      statuses.push(
+        (await app.inject({ method: 'GET', url: `/invites/GUESS${attempt}` })).statusCode,
+      );
     }
 
     assert.deepEqual(statuses.slice(0, 10), Array(10).fill(404));

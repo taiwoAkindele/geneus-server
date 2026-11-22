@@ -10,7 +10,12 @@ import {
   type StockItem as StockItemRecord,
 } from '#shared';
 import { camelCase, findRecord, insertRecord, snakeCase } from '../src/db/records.ts';
-import { envelopeFor, registerScratchFacility, scratchDatabase, type ScratchDatabase } from './postgres.ts';
+import {
+  envelopeFor,
+  registerScratchFacility,
+  scratchDatabase,
+  type ScratchDatabase,
+} from './postgres.ts';
 
 /**
  * The camelCase ↔ snake_case boundary is mechanical, which is exactly why it is
@@ -31,7 +36,14 @@ describe('records', () => {
   });
 
   it('renames keys both ways without losing anything', () => {
-    for (const key of ['facilityId', 'dateOfBirth', 'legacyPaperRef', 'notYetArrivedFlagged', 'tier1', 'id']) {
+    for (const key of [
+      'facilityId',
+      'dateOfBirth',
+      'legacyPaperRef',
+      'notYetArrivedFlagged',
+      'tier1',
+      'id',
+    ]) {
       assert.equal(camelCase(snakeCase(key)), key, key);
     }
   });
@@ -74,7 +86,11 @@ describe('records', () => {
     });
     await insertRecord(db.sql, 'register_definition', written);
 
-    const read = await findRecord<RegisterDefinitionRecord>(db.sql, 'register_definition', written.id);
+    const read = await findRecord<RegisterDefinitionRecord>(
+      db.sql,
+      'register_definition',
+      written.id,
+    );
 
     assert.deepEqual(read?.fields, written.fields);
   });

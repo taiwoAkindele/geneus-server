@@ -3,9 +3,18 @@ import type { InsuranceBillingPeriod } from '#shared';
 import type { Sql, Tx } from '../db/client.ts';
 
 /** Every span during which this hospital's insurance billing was active, oldest first. */
-export const billingPeriods = async (sql: Sql | Tx, facilityId: string): Promise<InsuranceBillingPeriod[]> =>
-  (await sql<{ starts_on: Date; ends_on: Date | null }[]>`SELECT starts_on, ends_on FROM insurance_billing_periods WHERE facility_id = ${facilityId} ORDER BY starts_on`)
-    .map((r) => ({ from: new Date(r.starts_on).toISOString(), ...(r.ends_on ? { to: new Date(r.ends_on).toISOString() } : {}) }));
+export const billingPeriods = async (
+  sql: Sql | Tx,
+  facilityId: string,
+): Promise<InsuranceBillingPeriod[]> =>
+  (
+    await sql<
+      { starts_on: Date; ends_on: Date | null }[]
+    >`SELECT starts_on, ends_on FROM insurance_billing_periods WHERE facility_id = ${facilityId} ORDER BY starts_on`
+  ).map((r) => ({
+    from: new Date(r.starts_on).toISOString(),
+    ...(r.ends_on ? { to: new Date(r.ends_on).toISOString() } : {}),
+  }));
 
 /** Billing becomes active from now: nothing raised before this moment is reclassified. */
 export const openBillingPeriod = async (tx: Tx, facilityId: string, by: string) =>

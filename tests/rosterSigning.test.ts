@@ -2,10 +2,25 @@ import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { createPublicKey, verify } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
-import { rosterSignaturePayload, RosterShift, type FacilityRegistrationResult, type Staff } from '#shared';
+import {
+  rosterSignaturePayload,
+  RosterShift,
+  type FacilityRegistrationResult,
+  type Staff,
+} from '#shared';
 import { findRecord, insertRecord } from '../src/db/records.ts';
 import { signPendingShifts } from '../src/roster/rosterSigning.ts';
-import { addStaff, clientId, envelopeFor, registerScratchFacility, scratchDatabase, signer, testApp, upload, type ScratchDatabase } from './postgres.ts';
+import {
+  addStaff,
+  clientId,
+  envelopeFor,
+  registerScratchFacility,
+  scratchDatabase,
+  signer,
+  testApp,
+  upload,
+  type ScratchDatabase,
+} from './postgres.ts';
 
 /**
  * Roster signing is what lets a device tell, offline, a genuine shift from one
@@ -19,10 +34,19 @@ describe('roster signing', () => {
   let a: FacilityRegistrationResult;
   let nurse: Staff;
 
-  const publicKey = createPublicKey({ key: Buffer.from(signer.publicKeyBase64, 'base64'), format: 'der', type: 'spki' });
+  const publicKey = createPublicKey({
+    key: Buffer.from(signer.publicKeyBase64, 'base64'),
+    format: 'der',
+    type: 'spki',
+  });
   const isValid = (shift: RosterShift) =>
     Boolean(shift.signature) &&
-    verify(null, Buffer.from(rosterSignaturePayload(shift), 'utf8'), publicKey, Buffer.from(shift.signature as string, 'base64'));
+    verify(
+      null,
+      Buffer.from(rosterSignaturePayload(shift), 'utf8'),
+      publicKey,
+      Buffer.from(shift.signature as string, 'base64'),
+    );
 
   const addShift = async (id: string) => {
     const shift = RosterShift.parse({

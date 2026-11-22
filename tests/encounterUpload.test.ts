@@ -1,7 +1,13 @@
 import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import type { FastifyInstance } from 'fastify';
-import type { FacilityRegistrationResult, Patient, Staff, SyncRejection, UploadMutation } from '#shared';
+import type {
+  FacilityRegistrationResult,
+  Patient,
+  Staff,
+  SyncRejection,
+  UploadMutation,
+} from '#shared';
 import { findRecord, insertRecord } from '../src/db/records.ts';
 import { enrollDevice, issueEnrollmentCode } from '../src/devices/enrollment.ts';
 import {
@@ -35,9 +41,17 @@ describe('encounters and Patient ID clashes on upload', () => {
   const patientId = (sequence: string) => `${a.facility.id}-${sequence}-K2`;
 
   /** Records as the given device; the first device unless told otherwise. */
-  const envelope = (by: Staff, deviceId = a.device.deviceId) => ({ ...envelopeFor(a), createdBy: by.id, deviceId });
+  const envelope = (by: Staff, deviceId = a.device.deviceId) => ({
+    ...envelopeFor(a),
+    createdBy: by.id,
+    deviceId,
+  });
 
-  const put = (table: UploadMutation['table'], id: string, data: Record<string, unknown>): UploadMutation => ({
+  const put = (
+    table: UploadMutation['table'],
+    id: string,
+    data: Record<string, unknown>,
+  ): UploadMutation => ({
     clientId: clientId(),
     op: 'put',
     table,
@@ -56,7 +70,11 @@ describe('encounters and Patient ID clashes on upload', () => {
     });
 
   const encounterPut = (id: string, patient: string, by: Staff, deviceId?: string) =>
-    put('encounter', id, { ...envelope(by, deviceId), patientId: patient, openedOn: new Date().toISOString() });
+    put('encounter', id, {
+      ...envelope(by, deviceId),
+      patientId: patient,
+      openedOn: new Date().toISOString(),
+    });
 
   const entryPut = (
     id: string,
@@ -77,10 +95,13 @@ describe('encounters and Patient ID clashes on upload', () => {
       ...extra,
     });
 
-  const send = (credential: string, ...mutations: UploadMutation[]) => upload(app, credential, { transactionId: 1, mutations });
+  const send = (credential: string, ...mutations: UploadMutation[]) =>
+    upload(app, credential, { transactionId: 1, mutations });
 
   const rejectionFor = async (entityId: string) => {
-    const [row] = await db.sql<{ category: string; reason: string; refused_record: SyncRejection['refusedRecord'] | null }[]>`
+    const [row] = await db.sql<
+      { category: string; reason: string; refused_record: SyncRejection['refusedRecord'] | null }[]
+    >`
       SELECT category, reason, refused_record FROM sync_rejections WHERE entity_id = ${entityId} ORDER BY created_on DESC LIMIT 1`;
     return row;
   };
@@ -95,8 +116,14 @@ describe('encounters and Patient ID clashes on upload', () => {
       addStaff(db.sql, a, { role: 'records_officer' }),
     ]);
     const code = await issueEnrollmentCode(db.sql, a.facility.id, a.admin.id, a.device.deviceId);
-    const enrolled = await enrollDevice(db.sql, { code: code.code, deviceId: 'device-encounter-second' }, 'http://sync');
-    if (!enrolled.ok) throw new Error(enrolled.error);
+    const enrolled = await enrollDevice(
+      db.sql,
+      { code: code.code, deviceId: 'device-encounter-second' },
+      'http://sync',
+    );
+    if (!enrolled.ok) {
+      throw new Error(enrolled.error);
+    }
     second = { deviceId: enrolled.device.id, credential: enrolled.credential.credential };
 
     consultation = 'unit:consultation';
@@ -104,7 +131,12 @@ describe('encounters and Patient ID clashes on upload', () => {
     const units = [consultation, injectionRoom].map((id) =>
       put('unit', id, { ...envelope(a.admin), unitId: id, name: id }),
     );
-    const setup = await send(a.device.credential, ...units, patientPut('000001', 'Amaka Okoro'), patientPut('000002', 'Bisi Adeyemi'));
+    const setup = await send(
+      a.device.credential,
+      ...units,
+      patientPut('000001', 'Amaka Okoro'),
+      patientPut('000002', 'Bisi Adeyemi'),
+    );
     assert.deepEqual(setup.rejected, []);
   });
 
@@ -118,7 +150,9 @@ describe('encounters and Patient ID clashes on upload', () => {
       const response = await send(
         a.device.credential,
         encounterPut('encounter:1', patientId('000001'), nurse),
-        entryPut('encounter_entry:1-vitals', 'encounter:1', patientId('000001'), nurse, 'vitals', { temperatureC: 38.9 }),
+        entryPut('encounter_entry:1-vitals', 'encounter:1', patientId('000001'), nurse, 'vitals', {
+          temperatureC: 38.9,
+        }),
       );
 
       assert.deepEqual(response.rejected, []);
@@ -130,7 +164,14 @@ describe('encounters and Patient ID clashes on upload', () => {
     it('refuses the front desk recording a clinical step', async () => {
       const response = await send(
         a.device.credential,
-        entryPut('encounter_entry:1-front-desk', 'encounter:1', patientId('000001'), records, 'complaint', { complaints: ['Fever'] }),
+        entryPut(
+          'encounter_entry:1-front-desk',
+          'encounter:1',
+          patientId('000001'),
+          records,
+          'complaint',
+          { complaints: ['Fever'] },
+        ),
       );
 
       assert.equal(response.rejected[0]?.category, 'authorization');
@@ -139,7 +180,15 @@ describe('encounters and Patient ID clashes on upload', () => {
     it('refuses a step stamped with a role the server does not know the person holds', async () => {
       const response = await send(
         a.device.credential,
-        entryPut('encounter_entry:1-posing', 'encounter:1', patientId('000001'), nurse, 'diagnosis', { diagnosis: 'Malaria' }, { actorRole: 'doctor' }),
+        entryPut(
+          'encounter_entry:1-posing',
+          'encounter:1',
+          patientId('000001'),
+          nurse,
+          'diagnosis',
+          { diagnosis: 'Malaria' },
+          { actorRole: 'doctor' },
+        ),
       );
 
       assert.equal(response.rejected[0]?.category, 'authorization');
@@ -152,12 +201,22 @@ describe('encounters and Patient ID clashes on upload', () => {
         op: 'patch',
         table: 'encounter_entry',
         id: 'encounter_entry:1-vitals',
-        data: { values: { temperatureC: 37 }, updatedBy: nurse.id, updatedOn: new Date().toISOString() },
+        data: {
+          values: { temperatureC: 37 },
+          updatedBy: nurse.id,
+          updatedOn: new Date().toISOString(),
+        },
       });
 
       assert.equal(response.rejected[0]?.category, 'validation');
-      await assert.rejects(db.sql`UPDATE encounter_entries SET "values" = '{}' WHERE id = 'encounter_entry:1-vitals'`, /never changed/);
-      await assert.rejects(db.sql`DELETE FROM encounters WHERE id = 'encounter:1'`, /never changed/);
+      await assert.rejects(
+        db.sql`UPDATE encounter_entries SET "values" = '{}' WHERE id = 'encounter_entry:1-vitals'`,
+        /never changed/,
+      );
+      await assert.rejects(
+        db.sql`DELETE FROM encounters WHERE id = 'encounter:1'`,
+        /never changed/,
+      );
     });
 
     it('refuses an amendment of an entry that belongs to another encounter', async () => {
@@ -165,7 +224,15 @@ describe('encounters and Patient ID clashes on upload', () => {
 
       const response = await send(
         a.device.credential,
-        entryPut('encounter_entry:2-stray', 'encounter:2', patientId('000001'), nurse, 'amendment', { note: 'wrong chart' }, { amends: 'encounter_entry:1-vitals' }),
+        entryPut(
+          'encounter_entry:2-stray',
+          'encounter:2',
+          patientId('000001'),
+          nurse,
+          'amendment',
+          { note: 'wrong chart' },
+          { amends: 'encounter_entry:1-vitals' },
+        ),
       );
 
       assert.equal(response.rejected[0]?.category, 'validation');
@@ -174,7 +241,14 @@ describe('encounters and Patient ID clashes on upload', () => {
     it('refuses an entry naming a different patient from its encounter', async () => {
       const response = await send(
         a.device.credential,
-        entryPut('encounter_entry:1-other-patient', 'encounter:1', patientId('000002'), nurse, 'vitals', { pulseBpm: 80 }),
+        entryPut(
+          'encounter_entry:1-other-patient',
+          'encounter:1',
+          patientId('000002'),
+          nurse,
+          'vitals',
+          { pulseBpm: 80 },
+        ),
       );
 
       assert.equal(response.rejected[0]?.category, 'validation');
@@ -191,7 +265,11 @@ describe('encounters and Patient ID clashes on upload', () => {
           instruction: 'Give tetanus toxoid injection',
         });
 
-      const response = await send(a.device.credential, handoff('handoff:1', patientId('000001')), handoff('handoff:2', patientId('000002')));
+      const response = await send(
+        a.device.credential,
+        handoff('handoff:1', patientId('000001')),
+        handoff('handoff:2', patientId('000002')),
+      );
 
       assert.equal(response.applied, 1);
       assert.equal(response.rejected[0]?.id, 'handoff:2');
@@ -203,14 +281,54 @@ describe('encounters and Patient ID clashes on upload', () => {
       // A visit closed in the retired order, already on the server.
       for (const mutation of [
         encounterPut('encounter:3', patientId('000002'), doctor),
-        entryPut('encounter_entry:3-diagnosis', 'encounter:3', patientId('000002'), doctor, 'diagnosis', { diagnosis: 'Malaria' }),
-        entryPut('encounter_entry:3-close', 'encounter:3', patientId('000002'), doctor, 'follow_up', {}),
-      ]) await insertRecord(db.sql, mutation.table, mutation.data);
+        entryPut(
+          'encounter_entry:3-diagnosis',
+          'encounter:3',
+          patientId('000002'),
+          doctor,
+          'diagnosis',
+          { diagnosis: 'Malaria' },
+        ),
+        entryPut(
+          'encounter_entry:3-close',
+          'encounter:3',
+          patientId('000002'),
+          doctor,
+          'follow_up',
+          {},
+        ),
+      ]) {
+        await insertRecord(db.sql, mutation.table, mutation.data);
+      }
 
       // Recorded on the second device while it had not yet heard of the close.
-      const late = entryPut('encounter_entry:3-late', 'encounter:3', patientId('000002'), nurse, 'lab_results', { results: [{ test: 'Malaria RDT', result: 'Positive' }] }, { deviceId: second.deviceId });
-      const lateAssessment = entryPut('encounter_entry:3-late-vitals', 'encounter:3', patientId('000002'), nurse, 'vitals', { pulseBpm: 80 }, { deviceId: second.deviceId });
-      const amendment = entryPut('encounter_entry:3-amend', 'encounter:3', patientId('000002'), doctor, 'amendment', { note: 'Uncomplicated malaria' }, { amends: 'encounter_entry:3-diagnosis', deviceId: second.deviceId });
+      const late = entryPut(
+        'encounter_entry:3-late',
+        'encounter:3',
+        patientId('000002'),
+        nurse,
+        'lab_results',
+        { results: [{ test: 'Malaria RDT', result: 'Positive' }] },
+        { deviceId: second.deviceId },
+      );
+      const lateAssessment = entryPut(
+        'encounter_entry:3-late-vitals',
+        'encounter:3',
+        patientId('000002'),
+        nurse,
+        'vitals',
+        { pulseBpm: 80 },
+        { deviceId: second.deviceId },
+      );
+      const amendment = entryPut(
+        'encounter_entry:3-amend',
+        'encounter:3',
+        patientId('000002'),
+        doctor,
+        'amendment',
+        { note: 'Uncomplicated malaria' },
+        { amends: 'encounter_entry:3-diagnosis', deviceId: second.deviceId },
+      );
       const response = await send(second.credential, late, lateAssessment, amendment);
 
       assert.equal(response.applied, 2);
@@ -231,10 +349,16 @@ describe('encounters and Patient ID clashes on upload', () => {
     });
 
     it('keeps the refused registration whole in the reconcile queue', async () => {
-      const response = await send(second.credential, patientPut('000047', 'Second Device Patient', second.deviceId));
+      const response = await send(
+        second.credential,
+        patientPut('000047', 'Second Device Patient', second.deviceId),
+      );
 
       assert.equal(response.rejected[0]?.category, 'conflict');
-      assert.equal((await findRecord<Patient>(db.sql, 'patient', clashing()))?.fullName, 'First Device Patient');
+      assert.equal(
+        (await findRecord<Patient>(db.sql, 'patient', clashing()))?.fullName,
+        'First Device Patient',
+      );
       const queued = await rejectionFor(clashing());
       assert.equal(queued?.refused_record?.fullName, 'Second Device Patient');
     });
@@ -252,7 +376,10 @@ describe('encounters and Patient ID clashes on upload', () => {
       const response = await send(second.credential, encounter, edit);
 
       assert.equal(response.applied, 0);
-      assert.deepEqual(response.rejected.map((rejection) => rejection.category), ['conflict', 'conflict']);
+      assert.deepEqual(
+        response.rejected.map((rejection) => rejection.category),
+        ['conflict', 'conflict'],
+      );
       assert.match(response.rejected[0]?.reason ?? '', /^held:/);
       assert.equal(await findRecord(db.sql, 'encounter', encounter.id), undefined);
       assert.equal((await findRecord<Patient>(db.sql, 'patient', clashing()))?.phone, undefined);
@@ -262,7 +389,10 @@ describe('encounters and Patient ID clashes on upload', () => {
     });
 
     it('does not hold the device that registered the patient first', async () => {
-      const response = await send(a.device.credential, encounterPut('encounter:first-device', clashing(), nurse));
+      const response = await send(
+        a.device.credential,
+        encounterPut('encounter:first-device', clashing(), nurse),
+      );
 
       assert.deepEqual(response.rejected, []);
     });
@@ -272,7 +402,10 @@ describe('encounters and Patient ID clashes on upload', () => {
         UPDATE sync_rejections SET resolved_on = now(), resolved_by = ${records.id}, resolution = 're-registered'
         WHERE entity_id = ${clashing()} AND device_id = ${second.deviceId}`;
 
-      const response = await send(second.credential, encounterPut('encounter:after-resolution', clashing(), nurse, second.deviceId));
+      const response = await send(
+        second.credential,
+        encounterPut('encounter:after-resolution', clashing(), nurse, second.deviceId),
+      );
 
       assert.deepEqual(response.rejected, []);
     });

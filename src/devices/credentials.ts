@@ -16,13 +16,16 @@ const SECRET_BYTES = 32;
 
 export type DeviceIdentity = { deviceId: string; facilityId: string };
 
-export type CredentialFailure = 'malformed' | 'unknown_device' | 'wrong_secret' | 'revoked' | 'wipe_requested';
+export type CredentialFailure =
+  'malformed' | 'unknown_device' | 'wrong_secret' | 'revoked' | 'wipe_requested';
 
 const hashSecret = (secret: string): string => createHash('sha256').update(secret).digest('hex');
 
 const split = (credential: string): { deviceId: string; secret: string } | undefined => {
   const at = credential.indexOf('.');
-  if (at <= 0 || at === credential.length - 1) return undefined;
+  if (at <= 0 || at === credential.length - 1) {
+    return undefined;
+  }
   return { deviceId: credential.slice(0, at), secret: credential.slice(at + 1) };
 };
 
@@ -30,12 +33,21 @@ const split = (credential: string): { deviceId: string; secret: string } | undef
  * Mints and stores a credential for a device row that exists (or is being
  * inserted in the same transaction). The clear secret is returned exactly once.
  */
-export const issueCredential = async (sql: Sql | Tx, deviceId: string, secret = randomBytes(SECRET_BYTES).toString('base64url')): Promise<string> => {
+export const issueCredential = async (
+  sql: Sql | Tx,
+  deviceId: string,
+  secret = randomBytes(SECRET_BYTES).toString('base64url'),
+): Promise<string> => {
   await sql`INSERT INTO device_credentials (device_id, credential_hash) VALUES (${deviceId}, ${hashSecret(secret)})`;
   return `${deviceId}.${secret}`;
 };
 
-type Lookup = { credential_hash: string; facility_id: string; status: string; wipe_requested: boolean };
+type Lookup = {
+  credential_hash: string;
+  facility_id: string;
+  status: string;
+  wipe_requested: boolean;
+};
 
 /**
  * Resolves a presented credential to a trusted device identity, or says why
@@ -47,21 +59,31 @@ export const verifyCredential = async (
   credential: string,
 ): Promise<{ identity: DeviceIdentity } | { failure: CredentialFailure }> => {
   const parts = split(credential);
-  if (!parts) return { failure: 'malformed' };
+  if (!parts) {
+    return { failure: 'malformed' };
+  }
 
   const [row] = await sql<Lookup[]>`
     SELECT c.credential_hash, d.facility_id, d.status, d.wipe_requested
     FROM device_credentials c
     JOIN devices d ON d.id = c.device_id
     WHERE c.device_id = ${parts.deviceId}`;
-  if (!row) return { failure: 'unknown_device' };
+  if (!row) {
+    return { failure: 'unknown_device' };
+  }
 
   const presented = Buffer.from(hashSecret(parts.secret), 'hex');
   const stored = Buffer.from(row.credential_hash, 'hex');
-  if (presented.length !== stored.length || !timingSafeEqual(presented, stored)) return { failure: 'wrong_secret' };
+  if (presented.length !== stored.length || !timingSafeEqual(presented, stored)) {
+    return { failure: 'wrong_secret' };
+  }
 
-  if (row.status !== 'active') return { failure: 'revoked' };
-  if (row.wipe_requested) return { failure: 'wipe_requested' };
+  if (row.status !== 'active') {
+    return { failure: 'revoked' };
+  }
+  if (row.wipe_requested) {
+    return { failure: 'wipe_requested' };
+  }
 
   return { identity: { deviceId: parts.deviceId, facilityId: row.facility_id } };
 };

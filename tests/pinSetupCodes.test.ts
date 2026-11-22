@@ -1,10 +1,25 @@
 import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import type { FastifyInstance } from 'fastify';
-import { PinSetupCode, PinSetupCodeIssued, type FacilityRegistrationResult, type Staff } from '#shared';
+import {
+  PinSetupCode,
+  PinSetupCodeIssued,
+  type FacilityRegistrationResult,
+  type Staff,
+} from '#shared';
 import { fromRow } from '../src/db/records.ts';
 import { hashPinSetupCode } from '../src/staff/pinSetupCodes.ts';
-import { addStaff, asDevice, clientId, registerScratchFacility, scratchDatabase, staffSessionFor, testApp, upload, type ScratchDatabase } from './postgres.ts';
+import {
+  addStaff,
+  asDevice,
+  clientId,
+  registerScratchFacility,
+  scratchDatabase,
+  staffSessionFor,
+  testApp,
+  upload,
+  type ScratchDatabase,
+} from './postgres.ts';
 
 /**
  * A PIN setup code is how a member of staff gets approval to set their PIN on
@@ -22,10 +37,20 @@ describe('PIN setup codes', () => {
 
   /** Issued by `issuedBy` in their own PIN-proven session, as the app does. */
   const issue = async (credential: string, staffId: string, issuedBy: string) =>
-    app.inject({ method: 'POST', url: `/staff/${staffId}/pin-codes`, headers: { ...asDevice(credential), 'x-staff-session': (await staffSessionFor(app, credential, issuedBy)) ?? '' }, payload: { issuedBy } });
+    app.inject({
+      method: 'POST',
+      url: `/staff/${staffId}/pin-codes`,
+      headers: {
+        ...asDevice(credential),
+        'x-staff-session': (await staffSessionFor(app, credential, issuedBy)) ?? '',
+      },
+      payload: { issuedBy },
+    });
 
   const codesFor = async (staffId: string): Promise<PinSetupCode[]> => {
-    const rows = await db.sql<Record<string, unknown>[]>`SELECT * FROM pin_setup_codes WHERE staff_id = ${staffId} ORDER BY created_on`;
+    const rows = await db.sql<
+      Record<string, unknown>[]
+    >`SELECT * FROM pin_setup_codes WHERE staff_id = ${staffId} ORDER BY created_on`;
     return rows.map((row) => fromRow<PinSetupCode>('pin_setup_code', row));
   };
 
@@ -66,7 +91,10 @@ describe('PIN setup codes', () => {
     const [stored] = await codesFor(nurse.id);
     assert.ok(stored);
     assert.notEqual(stored.codeHash, issued.code);
-    assert.equal(hashPinSetupCode(issued.code.toLowerCase(), stored.codeSalt, stored.codeIterations), stored.codeHash);
+    assert.equal(
+      hashPinSetupCode(issued.code.toLowerCase(), stored.codeSalt, stored.codeIterations),
+      stored.codeHash,
+    );
     assert.equal(stored.createdBy, a.admin.id);
   });
 
@@ -118,7 +146,10 @@ describe('PIN setup codes', () => {
     const response = await claim(live, nurse);
 
     assert.equal(response.rejected[0]?.category, 'authorization');
-    assert.match(response.rejected[0]?.reason ?? '', /only be used by the person it was issued for/);
+    assert.match(
+      response.rejected[0]?.reason ?? '',
+      /only be used by the person it was issued for/,
+    );
   });
 
   it('refuses a device inserting a code of its own', async () => {
@@ -126,7 +157,15 @@ describe('PIN setup codes', () => {
     assert.ok(code);
     const response = await upload(app, a.device.credential, {
       transactionId: null,
-      mutations: [{ clientId: clientId(), op: 'put', table: 'pin_setup_code', id: 'pin_setup_code:forged', data: { ...code, id: 'pin_setup_code:forged' } }],
+      mutations: [
+        {
+          clientId: clientId(),
+          op: 'put',
+          table: 'pin_setup_code',
+          id: 'pin_setup_code:forged',
+          data: { ...code, id: 'pin_setup_code:forged' },
+        },
+      ],
     });
 
     assert.equal(response.rejected[0]?.category, 'authorization');

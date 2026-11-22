@@ -23,7 +23,11 @@ const FILE_PATTERN = /^(\d{4})_([a-z0-9_]+)\.sql$/;
 const MIGRATION_LOCK = 7_244_001;
 
 export type Migration = { version: number; name: string; sql: string };
-export type MigrationOutcome = { version: number; name: string; outcome: 'applied' | 'already_applied' };
+export type MigrationOutcome = {
+  version: number;
+  name: string;
+  outcome: 'applied' | 'already_applied';
+};
 
 export const loadMigrations = async (dir = MIGRATIONS_DIR): Promise<Migration[]> => {
   const files = (await readdir(dir)).filter((file) => FILE_PATTERN.test(file)).sort();
@@ -53,12 +57,18 @@ export const migrate = async (sql: Sql, migrations?: Migration[]): Promise<Migra
         applied_on  timestamptz NOT NULL DEFAULT now()
       )`;
     const applied = new Set(
-      (await tx<{ version: number }[]>`SELECT version FROM schema_migrations`).map((row) => row.version),
+      (await tx<{ version: number }[]>`SELECT version FROM schema_migrations`).map(
+        (row) => row.version,
+      ),
     );
 
     for (const migration of pending) {
       if (applied.has(migration.version)) {
-        outcomes.push({ version: migration.version, name: migration.name, outcome: 'already_applied' });
+        outcomes.push({
+          version: migration.version,
+          name: migration.name,
+          outcome: 'already_applied',
+        });
         continue;
       }
       // `simple()` sends the file as one multi-statement script — what a

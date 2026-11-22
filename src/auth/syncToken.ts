@@ -29,38 +29,69 @@ export type SyncTokenOptions = {
   insuranceWorkflowVersion?: 1;
   careServiceVersion?: 1;
   billingCatalogueVersion?: 1;
-  integratedBillingVersion?:1;
+  integratedBillingVersion?: 1;
 };
 
 const base64url = (input: Buffer | string): string => Buffer.from(input).toString('base64url');
 
-export const mintSyncToken = (signer: Signer, options: SyncTokenOptions): { token: string; expiresOn: string } => {
+export const mintSyncToken = (
+  signer: Signer,
+  options: SyncTokenOptions,
+): { token: string; expiresOn: string } => {
   const issuedAt = Math.floor((options.now ?? Date.now()) / 1000);
-  const claims = { ...(options.integratedBillingVersion?{integrated_billing:1}:{}), ...(options.billingCatalogueVersion ? { billing_catalogue: 1 } : {}), ...SyncTokenClaims.parse({
-    sub: options.deviceId,
-    aud: options.audience,
-    iat: issuedAt,
-    exp: issuedAt + options.ttlSeconds,
-    facility_id: options.facilityId,
-  }), ...(options.facilityContractVersion ? { facility_contract: options.facilityContractVersion } : {}), ...(options.careServiceVersion ? { care_service: 1 } : {}), ...(options.clinicalWorkflowVersion ? { clinical_workflow: 1 } : {}), ...(options.patientRegistrationVersion ? { patient_registration: 1 } : {}), ...(options.pharmacyWorkflowVersion ? { pharmacy_workflow: 1 } : {}), ...(options.wardCareVersion ? { ward_care: 1 } : {}), ...(options.inpatientWorkflowVersion ? { inpatient_workflow: 1 } : {}), ...(options.documentWorkflowVersion ? { document_workflow:1 } : {}), ...(options.resultTemplateWorkflowVersion ? { result_template_workflow: 1 } : {}), ...(options.insuranceWorkflowVersion ? { insurance_workflow: 1 } : {}) };
+  const claims = {
+    ...(options.integratedBillingVersion ? { integrated_billing: 1 } : {}),
+    ...(options.billingCatalogueVersion ? { billing_catalogue: 1 } : {}),
+    ...SyncTokenClaims.parse({
+      sub: options.deviceId,
+      aud: options.audience,
+      iat: issuedAt,
+      exp: issuedAt + options.ttlSeconds,
+      facility_id: options.facilityId,
+    }),
+    ...(options.facilityContractVersion
+      ? { facility_contract: options.facilityContractVersion }
+      : {}),
+    ...(options.careServiceVersion ? { care_service: 1 } : {}),
+    ...(options.clinicalWorkflowVersion ? { clinical_workflow: 1 } : {}),
+    ...(options.patientRegistrationVersion ? { patient_registration: 1 } : {}),
+    ...(options.pharmacyWorkflowVersion ? { pharmacy_workflow: 1 } : {}),
+    ...(options.wardCareVersion ? { ward_care: 1 } : {}),
+    ...(options.inpatientWorkflowVersion ? { inpatient_workflow: 1 } : {}),
+    ...(options.documentWorkflowVersion ? { document_workflow: 1 } : {}),
+    ...(options.resultTemplateWorkflowVersion ? { result_template_workflow: 1 } : {}),
+    ...(options.insuranceWorkflowVersion ? { insurance_workflow: 1 } : {}),
+  };
   const header = { alg: 'EdDSA', typ: 'JWT', kid: signer.publicKeyFingerprint };
   const signingInput = `${base64url(JSON.stringify(header))}.${base64url(JSON.stringify(claims))}`;
   const signature = base64url(signer.signBytes(Buffer.from(signingInput)));
-  return { token: `${signingInput}.${signature}`, expiresOn: new Date(claims.exp * 1000).toISOString() };
+  return {
+    token: `${signingInput}.${signature}`,
+    expiresOn: new Date(claims.exp * 1000).toISOString(),
+  };
 };
 
 export type Jwk = ReturnType<Signer['publicJwk']>;
 
-export type TokenVerification = { claims: SyncTokenClaims } | { failure: 'malformed' | 'unknown_key' | 'bad_signature' | 'expired' | 'wrong_audience' };
+export type TokenVerification =
+  | { claims: SyncTokenClaims }
+  | { failure: 'malformed' | 'unknown_key' | 'bad_signature' | 'expired' | 'wrong_audience' };
 
 /**
  * What PowerSync does with the token, reproduced here so the tests prove the
  * whole round trip — key published, signature checked, expiry honoured — and
  * so a future server-side consumer of the token has one place to verify it.
  */
-export const verifySyncToken = (token: string, keys: Jwk[], audience: string, now = Date.now()): TokenVerification => {
+export const verifySyncToken = (
+  token: string,
+  keys: Jwk[],
+  audience: string,
+  now = Date.now(),
+): TokenVerification => {
   const parts = token.split('.');
-  if (parts.length !== 3) return { failure: 'malformed' };
+  if (parts.length !== 3) {
+    return { failure: 'malformed' };
+  }
   const [encodedHeader, encodedClaims, encodedSignature] = parts;
 
   let header: { alg?: string; kid?: string };
@@ -73,13 +104,29 @@ export const verifySyncToken = (token: string, keys: Jwk[], audience: string, no
   }
 
   const key = keys.find((candidate) => candidate.kid === header.kid);
-  if (!key || header.alg !== 'EdDSA') return { failure: 'unknown_key' };
+  if (!key || header.alg !== 'EdDSA') {
+    return { failure: 'unknown_key' };
+  }
 
-  const publicKey = createPublicKey({ key: { kty: key.kty, crv: key.crv, x: key.x }, format: 'jwk' });
-  const valid = verify(null, Buffer.from(`${encodedHeader}.${encodedClaims}`), publicKey, Buffer.from(encodedSignature, 'base64url'));
-  if (!valid) return { failure: 'bad_signature' };
+  const publicKey = createPublicKey({
+    key: { kty: key.kty, crv: key.crv, x: key.x },
+    format: 'jwk',
+  });
+  const valid = verify(
+    null,
+    Buffer.from(`${encodedHeader}.${encodedClaims}`),
+    publicKey,
+    Buffer.from(encodedSignature, 'base64url'),
+  );
+  if (!valid) {
+    return { failure: 'bad_signature' };
+  }
 
-  if (claims.aud !== audience) return { failure: 'wrong_audience' };
-  if (claims.exp * 1000 <= now) return { failure: 'expired' };
+  if (claims.aud !== audience) {
+    return { failure: 'wrong_audience' };
+  }
+  if (claims.exp * 1000 <= now) {
+    return { failure: 'expired' };
+  }
   return { claims };
 };

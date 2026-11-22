@@ -39,14 +39,21 @@ describe('migrate', () => {
 
   it('creates a table for every record type in the contract', async () => {
     const tables = new Set(
-      (await db.sql<{ table_name: string }[]>`
-        SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'`).map((row) => row.table_name),
+      (
+        await db.sql<{ table_name: string }[]>`
+        SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'`
+      ).map((row) => row.table_name),
     );
 
     for (const table of Object.values(TABLE_FOR)) {
       assert.ok(tables.has(table), `missing table ${table}`);
     }
-    for (const serverOnly of ['device_credentials', 'applied_mutations', 'facility_invites', 'schema_migrations']) {
+    for (const serverOnly of [
+      'device_credentials',
+      'applied_mutations',
+      'facility_invites',
+      'schema_migrations',
+    ]) {
       assert.ok(tables.has(serverOnly), `missing table ${serverOnly}`);
     }
   });

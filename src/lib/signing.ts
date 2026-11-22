@@ -30,7 +30,10 @@ export type Signer = {
 const FINGERPRINT_LENGTH = 16;
 
 const fingerprintOf = (publicKeyBase64: string): string =>
-  createHash('sha256').update(Buffer.from(publicKeyBase64, 'base64')).digest('hex').slice(0, FINGERPRINT_LENGTH);
+  createHash('sha256')
+    .update(Buffer.from(publicKeyBase64, 'base64'))
+    .digest('hex')
+    .slice(0, FINGERPRINT_LENGTH);
 
 const toPkcs8 = (base64: string): KeyObject =>
   createPrivateKey({ key: Buffer.from(base64, 'base64'), format: 'der', type: 'pkcs8' });
@@ -53,11 +56,19 @@ export const createSigner = (privateKeyBase64: string | undefined): Signer => {
     publicKeyBase64,
     publicKeyFingerprint,
     isEphemeral: !privateKeyBase64,
-    sign: (payload) => sign(null, Buffer.from(JSON.stringify(payload)), privateKey).toString('base64'),
+    sign: (payload) =>
+      sign(null, Buffer.from(JSON.stringify(payload)), privateKey).toString('base64'),
     signBytes: (data) => sign(null, data, privateKey),
     publicJwk: () => {
       const jwk = createPublicKey(privateKey).export({ format: 'jwk' }) as { x: string };
-      return { kty: 'OKP', crv: 'Ed25519', x: jwk.x, kid: publicKeyFingerprint, alg: 'EdDSA', use: 'sig' };
+      return {
+        kty: 'OKP',
+        crv: 'Ed25519',
+        x: jwk.x,
+        kid: publicKeyFingerprint,
+        alg: 'EdDSA',
+        use: 'sig',
+      };
     },
   };
 };

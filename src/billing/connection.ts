@@ -13,26 +13,29 @@ export const providerConnection = async (
   facilityId: string,
 ) => {
   if (!config.billingEncryptionKey) {
-    throw conflict('Payment setup isn\'t finished on the server. Ask your system administrator.');
+    throw conflict("Payment setup isn't finished on the server. Ask your system administrator.");
   }
 
-  const [row] = await sql<ConnectionRow[]>`SELECT encrypted_secret, mode, provider FROM billing_connections WHERE facility_id = ${facilityId}`;
+  const [row] = await sql<
+    ConnectionRow[]
+  >`SELECT encrypted_secret, mode, provider FROM billing_connections WHERE facility_id = ${facilityId}`;
 
   if (!row) {
-    throw conflict('Connect the hospital\'s payment provider first');
+    throw conflict("Connect the hospital's payment provider first");
   }
 
   const provider = paymentProvider(row.provider);
 
   if (!provider) {
-    throw conflict('The hospital\'s payment provider is no longer supported. Connect a supported provider.');
+    throw conflict(
+      "The hospital's payment provider is no longer supported. Connect a supported provider.",
+    );
   }
 
-  const credentials = deserialiseCredentials(provider, openPaystackSecret(
-    row.encrypted_secret,
-    config.billingEncryptionKey,
-    facilityId,
-  ));
+  const credentials = deserialiseCredentials(
+    provider,
+    openPaystackSecret(row.encrypted_secret, config.billingEncryptionKey, facilityId),
+  );
 
   return {
     provider,
@@ -55,7 +58,9 @@ export const checkoutAvailable = async (
     return false;
   }
 
-  const [row] = await sql<{ provider: string }[]>`SELECT provider FROM billing_connections WHERE facility_id = ${facilityId}`;
+  const [row] = await sql<
+    { provider: string }[]
+  >`SELECT provider FROM billing_connections WHERE facility_id = ${facilityId}`;
   const provider = row ? paymentProvider(row.provider) : undefined;
 
   return Boolean(provider?.checkout && provider.descriptor.currencies.includes(currency));

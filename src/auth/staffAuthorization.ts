@@ -7,7 +7,10 @@ import type { Sql, Tx } from '../db/client.ts';
  * applies is the shared one, so the answer matches what the device decided
  * offline; the difference is that this copy of the facts is the one that counts.
  */
-export type StaffRecord = Pick<Staff, 'id' | 'role' | 'additionalRoles' | 'additionalPermissions' | 'permission' | 'active'>;
+export type StaffRecord = Pick<
+  Staff,
+  'id' | 'role' | 'additionalRoles' | 'additionalPermissions' | 'permission' | 'active'
+>;
 
 export type StaffDenial =
   | { kind: 'not_member'; staffId: string }
@@ -31,9 +34,15 @@ export const staffDenial = (
   staffId: string,
   permission: Permission,
 ): StaffDenial | undefined => {
-  if (!staff) return { kind: 'not_member', staffId };
-  if (!staff.active) return { kind: 'deactivated', staffId };
-  if (!staffPermissions(staff).includes(permission)) return { kind: 'not_granted', staffId, permission };
+  if (!staff) {
+    return { kind: 'not_member', staffId };
+  }
+  if (!staff.active) {
+    return { kind: 'deactivated', staffId };
+  }
+  if (!staffPermissions(staff).includes(permission)) {
+    return { kind: 'not_granted', staffId, permission };
+  }
   return undefined;
 };
 
