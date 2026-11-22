@@ -5,6 +5,10 @@ import { loadConfig } from './lib/config.ts';
 import { createSigner } from './lib/signing.ts';
 import { startRosterSigning, type RosterSigning } from './roster/rosterSigning.ts';
 import { ensureAllStandardCatalogues } from './clinical/standardCatalogue.ts';
+import { createMailer } from './lib/email.ts';
+import { smsSenderFrom } from './messaging/sendar.ts';
+import { startPatientMessaging, type PatientMessaging } from './messaging/patientMessages.ts';
+import { startCheckoutReconciliation } from './billing/checkout.ts';
 
 /**
  * The whole server: one process beside PostgreSQL and the PowerSync service.
@@ -16,6 +20,8 @@ const signer = createSigner(config.signingPrivateKey);
 const sql = createSql(config.postgresUrl);
 const app = buildApp({ config, sql, signer });
 let rosterSigning: RosterSigning | undefined;
+let patientMessaging: PatientMessaging | undefined;
+let checkoutReconciliation: ReturnType<typeof startCheckoutReconciliation> | undefined;
 
 /** The URL carries the password; the log gets the host and database only. */
 const describeDatabase = (url: string): string => {
@@ -46,6 +52,9 @@ const start = async () => {
   }
   await app.listen({ port: config.port, host: '0.0.0.0' });
   rosterSigning = startRosterSigning(sql, signer, app.log);
+  // Retries bills and receipts that couldn't be sent to patients at once.
+  patientMessaging = startPatientMessaging({ sql, mailer: createMailer(config, app.log), sms: smsSenderFrom(config), appUrl: config.corsOrigins[0], log: app.log });
+  checkoutReconciliation = startCheckoutReconciliation(sql, config, app.log);
 };
 
 /**
@@ -61,6 +70,8 @@ const shutdown = async (signal: string) => {
   try {
     await app.close();
     await rosterSigning?.stop();
+    await patientMessaging?.stop();
+    await checkoutReconciliation?.stop();
     await sql.end({ timeout: 5 });
     process.exit(0);
   } catch (cause) {

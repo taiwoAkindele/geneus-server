@@ -1,6 +1,6 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { z } from 'zod';
-import { providerFailure, ProviderUnavailable, ProviderUnexpectedReply, providerReply, toMinor, type ProviderDescriptor, type ProviderHttp, type ProviderMode, type ReceivingAccount, type VerifiedTransfer } from './types.ts';
+import { providerFailure, ProviderRefused, ProviderUnavailable, ProviderUnexpectedReply, providerReply, toMinor, type CheckoutOutcome, type CheckoutRequest, type ProviderDescriptor, type ProviderHttp, type ProviderMode, type ReceivingAccount, type VerifiedTransfer } from './types.ts';
 
 /**
  * Partner banks the hospital can choose for its one account number. Wema and Sterling open reserved
@@ -136,10 +136,46 @@ export const monnifyVerifyTransfer = async (c: MonnifyCredentials, reference: st
 };
 
 /** The webhook only prompts a check: a valid signature yields the transaction reference to verify. */
-export const monnifyWebhookReference = (raw: string, signature: unknown, c: Pick<MonnifyCredentials, 'secretKey'>): { ok: false } | { ok: true; reference?: string } => {
+export const monnifyWebhookReference = (raw: string, signature: unknown, c: Pick<MonnifyCredentials, 'secretKey'>): { ok: false } | { ok: true; reference?: string; checkoutReference?: string } => {
   if (typeof signature !== 'string' || !/^[a-f0-9]{128}$/i.test(signature)) return { ok: false };
   if (!timingSafeEqual(createHmac('sha512', c.secretKey).update(raw).digest(), Buffer.from(signature, 'hex'))) return { ok: false };
-  const event = z.object({ eventType: z.string(), eventData: z.object({ transactionReference: z.string().min(1), product: z.object({ type: z.string() }).optional() }).optional() }).safeParse((() => { try { return JSON.parse(raw); } catch { return undefined; } })());
+  const event = z.object({ eventType: z.string(), eventData: z.object({ transactionReference: z.string().min(1), paymentReference: z.string().optional(), product: z.object({ type: z.string(), reference: z.string().optional() }).optional() }).optional() }).safeParse((() => { try { return JSON.parse(raw); } catch { return undefined; } })());
   if (!event.success) return { ok: true };
-  return event.data.eventType === 'SUCCESSFUL_TRANSACTION' && event.data.eventData?.product?.type === 'RESERVED_ACCOUNT' ? { ok: true, reference: event.data.eventData.transactionReference } : { ok: true };
+  if (event.data.eventType !== 'SUCCESSFUL_TRANSACTION' || !event.data.eventData) return { ok: true };
+  const product = event.data.eventData.product;
+  // A bill checkout reports our payment reference as the product reference; a reserved account reports a transfer.
+  const checkoutReference = event.data.eventData.paymentReference ?? product?.reference;
+
+  if (product?.type !== 'RESERVED_ACCOUNT' && checkoutReference?.startsWith('geneus-co-')) {
+    return { ok: true, checkoutReference };
+  }
+  return product?.type === 'RESERVED_ACCOUNT' ? { ok: true, reference: event.data.eventData.transactionReference } : { ok: true };
+};
+
+/* ---- Online checkout for a bill (Monnify: init-transaction, then the transaction query by payment reference) ---- */
+const Started = z.object({ checkoutUrl: z.string().url(), paymentReference: z.string().min(1) });
+export const monnifyStartCheckout = async (c: MonnifyCredentials, input: CheckoutRequest, http: ProviderHttp) => {
+  const body = providerReply(Started, await call(c, http, '/api/v1/merchant/transactions/init-transaction', {
+    amount: (input.amountMinor / 100).toFixed(2), customerName: input.name, customerEmail: input.email, paymentReference: input.reference,
+    paymentDescription: input.description, currencyCode: input.currency, contractCode: c.contractCode, redirectUrl: input.returnUrl,
+    paymentMethods: ['CARD', 'ACCOUNT_TRANSFER', 'USSD'],
+  }), 'checkout');
+  if (body.paymentReference !== input.reference) throw new ProviderUnexpectedReply('checkout: payment reference changed');
+  return { checkoutUrl: body.checkoutUrl };
+};
+const Queried = z.object({ paymentReference: z.string().min(1), paymentStatus: z.string(), amountPaid: z.union([z.number(), z.string()]).optional(),
+  currencyCode: z.string().optional(), paidOn: z.string().nullable().optional(), completedOn: z.string().nullable().optional(), customerName: z.string().optional() });
+export const monnifyVerifyCheckout = async (c: MonnifyCredentials, reference: string, http: ProviderHttp): Promise<CheckoutOutcome> => {
+  let raw: unknown;
+  try { raw = await call(c, http, `/api/v2/merchant/transactions/query?paymentReference=${encodeURIComponent(reference)}`); }
+  catch (cause) { if (cause instanceof ProviderRefused && cause.providerStatus === 404) return { status: 'pending' }; throw cause; }
+  const t = providerReply(Queried, raw, 'checkout query');
+  if (t.paymentReference !== reference) return { status: 'pending' };
+  const status = t.paymentStatus.toUpperCase();
+  if (status === 'PAID' || status === 'OVERPAID') {
+    const amountMinor = toMinor(t.amountPaid), paidAt = isoDate(t.paidOn ?? t.completedOn ?? undefined);
+    if (!amountMinor || !paidAt) throw new ProviderUnexpectedReply(`checkout query: ${!amountMinor ? 'amountPaid' : 'paidOn'} not understood`);
+    return { status: 'paid', reference, mode: monnifyMode(c), amountMinor, currency: t.currencyCode ?? 'NGN', paidAt, ...(t.customerName ? { payerName: t.customerName } : {}) };
+  }
+  return ['FAILED', 'CANCELLED', 'EXPIRED', 'REVERSED'].includes(status) ? { status: 'failed' } : { status: 'pending' };
 };

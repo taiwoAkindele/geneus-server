@@ -373,6 +373,8 @@ const allocationsByCharge = (payment: Payment): Record<string, number> =>
  * overpayment shows in the balances for a supervisor to settle (PRD §9.13.7).
  */
 const paymentRefusal = async (tx: Tx, payment: Payment): Promise<Refusal | undefined> => {
+  // Online payments are written only by the server, after it verified the checkout with the provider.
+  if (payment.method === 'online' && !payment.reverses) return refuse('validation', 'An online payment is recorded by the server when the provider confirms it');
   if(payment.method==='transfer'&&!payment.reverses&&await integratedEnabled(tx,payment.facilityId))return refuse('validation','Allocate a verified hospital bank receipt online. Offline cash collection remains available');
   const chargeIds = payment.allocations.map((allocation) => allocation.chargeId);
   const charges = await tx<{ id: string; patient_id: string; currency: string }[]>`

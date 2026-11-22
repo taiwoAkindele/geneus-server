@@ -8,7 +8,20 @@
  * message that cannot be sent is an error the caller reports, and /health says
  * email is not configured.
  */
-export type EmailMessage = { to: string; subject: string; text: string };
+/**
+ * `fromName` replaces the sender's display name (the address stays Geneus's verified one), e.g. "Sunrise Hospital
+ * via Geneus". `replyTo` sends replies elsewhere, e.g. to the hospital. Attachments are small files sent inline.
+ */
+export type EmailMessage = {
+  to: string; subject: string; text: string; html?: string; fromName?: string; replyTo?: string;
+  attachments?: { filename: string; content: Uint8Array; contentType: string }[];
+};
+
+/** `Geneus <no-reply@example.org>` with a new display name: quotes and angle brackets are removed from the name. */
+export const withDisplayName = (from: string, name: string) => {
+  const address = /<([^>]+)>/.exec(from)?.[1] ?? from.trim();
+  return `"${name.replace(/["<>\\\r\n]/g, '').slice(0, 100)}" <${address}>`;
+};
 
 /**
  * What the provider said when it took a message. Acceptance only: whether the
@@ -41,12 +54,16 @@ export const createMailer = (
   if (resendApiKey && emailFrom) {
     return {
       configured: true,
-      send: async ({ to, subject, text }) => {
+      send: async ({ to, subject, text, html, fromName, replyTo, attachments }) => {
         const response = await fetch(RESEND_URL, {
           method: 'POST',
           headers: { authorization: `Bearer ${resendApiKey}`, 'content-type': 'application/json' },
-          body: JSON.stringify({ from: emailFrom, to: [to], subject, text }),
-          signal: AbortSignal.timeout(10_000),
+          body: JSON.stringify({
+            from: fromName ? withDisplayName(emailFrom, fromName) : emailFrom, to: [to], subject, text,
+            ...(html ? { html } : {}), ...(replyTo ? { reply_to: replyTo } : {}),
+            ...(attachments?.length ? { attachments: attachments.map((a) => ({ filename: a.filename, content: Buffer.from(a.content).toString('base64'), content_type: a.contentType })) } : {}),
+          }),
+          signal: AbortSignal.timeout(20_000),
         }).catch((cause: unknown) => {
           throw new EmailNotSent(cause instanceof Error ? cause.message : 'network error');
         });
@@ -62,7 +79,7 @@ export const createMailer = (
     configured: false,
     send: async (message) => {
       if (config.isProduction) throw new EmailNotSent('RESEND_API_KEY and EMAIL_FROM are not set');
-      log.warn({ to: message.to, subject: message.subject, text: message.text }, 'email not configured — message written to the log instead (development only)');
+      log.warn({ to: message.to, subject: message.subject, text: message.text, attachments: message.attachments?.map((a) => a.filename) }, 'email not configured — message written to the log instead (development only)');
     },
   };
 };

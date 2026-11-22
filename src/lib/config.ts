@@ -49,7 +49,16 @@ const Config = z
      * The first Geneus platform operators, provisioned with the deployment. Only ever adds:
      * further operators are added and removed in the operator console, never here.
      */
+    /** Geneus's one Sendar account for patient SMS (not per hospital). Without it, SMS is reported as not set up. */
+    sendarApiKey: z.string().min(1).optional(),
+    /** The sender name registered with Sendar, up to 11 letters or digits. */
+    sendarSenderId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9 ]{1,10}$/, 'SENDAR_SENDER_ID: up to 11 letters or digits').optional(),
+    sendarBaseUrl: z.url().default('https://sms-submit.sendar.io'),
     bootstrapOperators: z.array(z.email()).default([]),
+  })
+  .refine((config) => !config.sendarApiKey || Boolean(config.sendarSenderId), {
+    message: 'SENDAR_SENDER_ID is required when SENDAR_API_KEY is set: messages need the registered sender name',
+    path: ['sendarSenderId'],
   })
   .refine((config) => !config.resendApiKey || Boolean(config.emailFrom), {
     message: 'EMAIL_FROM is required when RESEND_API_KEY is set: Resend refuses a message with no sender',
@@ -81,4 +90,7 @@ export const loadConfig = (): Config =>
     isProduction: process.env.NODE_ENV === 'production',
     billingEncryptionKey: process.env.BILLING_ENCRYPTION_KEY || undefined,
     bootstrapOperators: (process.env.PLATFORM_OPERATOR_EMAILS ?? '').split(',').map((e) => e.trim().toLowerCase()).filter(Boolean),
+    sendarApiKey: process.env.SENDAR_API_KEY || undefined,
+    sendarSenderId: process.env.SENDAR_SENDER_ID || undefined,
+    sendarBaseUrl: process.env.SENDAR_BASE_URL || undefined,
   });

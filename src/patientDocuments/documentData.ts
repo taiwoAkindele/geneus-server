@@ -80,7 +80,11 @@ export const loadReceipt = async (sql: Sql | Tx, facilityId: string, paymentId: 
   return {
     paymentId: payment.id, number: payment.receiptNumber, currency: payment.currency, receivedOn: payment.createdOn,
     method: METHOD[payment.method] ?? payment.method, reference: payment.reference, reversal: Boolean(payment.reverses),
-    receivedBy: staff?.facilityId === facilityId ? staff.fullName : payment.incomingTransferId ? 'Bank transfer (confirmed automatically)' : 'Hospital staff',
+    receivedBy: payment.method === 'online'
+      ? 'Online payment'
+      : staff?.facilityId === facilityId
+        ? staff.fullName
+        : payment.incomingTransferId ? 'Bank transfer (confirmed automatically)' : 'Hospital staff',
     hospital, patient, amountMinor: payment.amountMinor,
     applied: payment.allocations.flatMap((a) => { const c = byId.get(a.chargeId); return c ? [{ bill: billReference(billKey(c)), item: c.description, amountMinor: a.amountMinor }] : []; }),
     stillDue: keys.map((key) => ({ bill: billReference(key), dueMinor: billCharges.filter((c) => billKey(c) === key).reduce((n, c) => n + Math.max(0, positions.get(c.id)!.balanceMinor), 0) }))
