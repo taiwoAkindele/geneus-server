@@ -21,6 +21,15 @@ import type { Sql } from '../db/client.ts';
 import type { Signer } from '../lib/signing.ts';
 import { processUpload } from '../sync/upload.ts';
 
+/** What the person proved themselves with, for the audit trail. */
+const enrolmentProof = (body: { pinGrant?: string; setupCode?: string }) => {
+  if (body.pinGrant) {
+    return 'password';
+  }
+
+  return body.setupCode ? 'setup_code' : 'email';
+};
+
 const header = (value: string | string[] | undefined) =>
   typeof value === 'string' ? value : undefined;
 
@@ -90,7 +99,7 @@ export const registerStaffSessionRoutes = (
         action: 'login',
         metadata: {
           context: 'staff_pin_enrolled',
-          proof: body.data.setupCode ? 'setup_code' : 'email',
+          proof: enrolmentProof(body.data),
         },
       });
 

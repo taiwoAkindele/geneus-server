@@ -467,6 +467,17 @@ export const matchInvitationCode = async (
   return undefined;
 };
 
+/** The email an invitation was sent to, lower-case. */
+export const invitationDestination = async (
+  sql: Sql | Tx,
+  invitationId: string,
+): Promise<string | undefined> => {
+  const [row] = await sql<{ destination: string }[]>`
+    SELECT destination FROM staff_invitations WHERE id = ${invitationId}`;
+
+  return row?.destination.toLowerCase();
+};
+
 /**
  * Accepts a matched invitation inside the caller's PIN-registration
  * transaction: false when it was revoked, accepted or expired meanwhile, and

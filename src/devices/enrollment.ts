@@ -121,6 +121,51 @@ export const claimCodeAndEnroll = async (
   };
 };
 
+/**
+ * Enrols a device for the person signing in on it with their password and an
+ * emailed code (SCHEMA.md §10, "New devices"). The person stands where an
+ * administrator's code would: they are recorded as enrolling it, so it is
+ * listed and revocable like any other device. A device id already in use fails
+ * with a unique violation the caller maps.
+ */
+export const enrollOwnDevice = async (
+  tx: Tx,
+  request: { facilityId: string; staffId: string; deviceId: string; deviceLabel?: string },
+  syncEndpoint: string,
+): Promise<DeviceCredential> => {
+  const now = new Date().toISOString();
+
+  const device = Device.parse({
+    id: request.deviceId,
+    type: 'device',
+    facilityId: request.facilityId,
+    schemaVersion: SCHEMA_VERSION,
+    createdBy: request.staffId,
+    createdOn: now,
+    deviceId: request.deviceId,
+    label: request.deviceLabel || undefined,
+    enrolledBy: request.staffId,
+    status: 'active',
+    wipeRequested: false,
+    enrolledOn: now,
+  });
+
+  await insertRecord(tx, 'device', device);
+  const credential = await issueCredential(tx, device.id);
+
+  await recordAuditEvent(tx, {
+    facilityId: device.facilityId,
+    deviceId: device.id,
+    actorStaffId: request.staffId,
+    action: 'enroll',
+    entityType: 'device',
+    entityId: device.id,
+    metadata: { context: 'staff_password_device' },
+  });
+
+  return { deviceId: device.id, facilityId: device.facilityId, credential, syncEndpoint };
+};
+
 export type RevocationOutcome =
   { ok: true; device: Device } | { ok: false; error: 'unknown_device' };
 

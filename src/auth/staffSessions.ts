@@ -1,11 +1,30 @@
 import { createHash, pbkdf2Sync, randomBytes, timingSafeEqual } from 'node:crypto';
-import type { Staff, StaffSession } from '#shared';
+import type { ExistingAccountProof, Staff, StaffPasswordSession, StaffSession } from '#shared';
 import type { Sql, Tx } from '../db/client.ts';
 import { findRecord } from '../db/records.ts';
 import type { DeviceIdentity } from '../devices/credentials.ts';
+import {
+  checkVerificationCode,
+  consumeVerification,
+  findStaffEmail,
+} from '../email/verifications.ts';
 import { hashPinSetupCode } from '../staff/pinSetupCodes.ts';
-import { acceptInvitation, matchInvitationCode } from '../staff/invitations.ts';
+import {
+  acceptInvitation,
+  invitationDestination,
+  matchInvitationCode,
+} from '../staff/invitations.ts';
 import { completePrivateAccess } from '../workforce/privateAccess.ts';
+import {
+  checkPassword,
+  hasPassword,
+  hashNewPassword,
+  issuePinGrant,
+  savePassword,
+  spendPinGrant,
+  staffWithEmail,
+  type PasswordHash,
+} from './staffPasswords.ts';
 
 /**
  * Server-verified staff identity on shared devices. The device proves which
@@ -54,7 +73,8 @@ const activeStaff = async (sql: Sql | Tx, facilityId: string, staffId: string) =
 export const endDeviceSessions = (sql: Sql | Tx, deviceId: string) =>
   sql`UPDATE staff_sessions SET ended_on = now() WHERE device_id = ${deviceId} AND ended_on IS NULL`;
 
-const openSession = async (
+/** Opens a session for one person on one device, ending whoever else was signed in there. */
+export const openSession = async (
   tx: Tx,
   identity: DeviceIdentity,
   staffId: string,
@@ -68,25 +88,143 @@ const openSession = async (
 };
 
 /**
+ * How accepting an invitation settles the password of the invited email,
+ * worked out before the transaction (hashing and checking a password are slow):
+ * a first password to save, an emailed account code to spend, or nothing.
+ */
+type InvitationAccount = { newPassword?: PasswordHash; accountCodeId?: string };
+
+const EXISTING_ACCOUNT_MESSAGE =
+  'This email already has a Geneus password. Enter it, or use the code we email you';
+
+/**
+ * An invitation never replaces a password the email already has: the person
+ * proves it is them with that password or an emailed account code. An email
+ * with no password may choose its first one here.
+ */
+const settleInvitationAccount = async (
+  sql: Sql,
+  invitationId: string,
+  input: { password?: string; existingAccount?: ExistingAccountProof },
+): Promise<InvitationAccount> => {
+  const email = (await invitationDestination(sql, invitationId)) ?? '';
+
+  if (!(await hasPassword(sql, email))) {
+    if (input.existingAccount) {
+      throw new StaffSessionRefusal(
+        'no_existing_account',
+        'This email has no Geneus password yet. Choose one',
+      );
+    }
+
+    return input.password ? { newPassword: await hashNewPassword(input.password) } : {};
+  }
+
+  if (!input.existingAccount || input.password) {
+    throw new StaffSessionRefusal('existing_account', EXISTING_ACCOUNT_MESSAGE);
+  }
+
+  if ('accountCode' in input.existingAccount) {
+    const accountCodeId = await checkVerificationCode(sql, {
+      purpose: 'staff_account',
+      subject: invitationId,
+      email,
+      code: input.existingAccount.accountCode,
+    });
+
+    if (!accountCodeId) {
+      throw new StaffSessionRefusal(
+        'invalid_account_code',
+        'The email code is not right, or has expired',
+      );
+    }
+
+    return { accountCodeId };
+  }
+
+  const check = await checkPassword(sql, email, input.existingAccount.currentPassword);
+
+  if (!check.ok && check.reason === 'locked') {
+    throw new StaffSessionRefusal('locked', 'Too many wrong passwords. Try again later', {
+      retryAt: check.retryAt,
+    });
+  }
+
+  if (!check.ok) {
+    throw new StaffSessionRefusal('wrong_password', 'That password is not right');
+  }
+
+  return {};
+};
+
+/**
+ * Inside the acceptance: spends the account code, and saves a first password
+ * only when the invitation's address is now the person's verified email — the
+ * invitation proved that inbox and no other.
+ */
+const applyInvitationAccount = async (
+  tx: Tx,
+  identity: DeviceIdentity,
+  staffId: string,
+  invitationId: string,
+  account: InvitationAccount,
+): Promise<void> => {
+  if (account.accountCodeId && !(await consumeVerification(tx, account.accountCodeId))) {
+    throw new StaffSessionRefusal(
+      'invalid_account_code',
+      'The email code is not right, or has expired',
+    );
+  }
+
+  if (!account.newPassword) {
+    return;
+  }
+
+  const destination = await invitationDestination(tx, invitationId);
+  const email = (await findStaffEmail(tx, identity.facilityId, staffId))?.toLowerCase();
+
+  if (!destination || email !== destination) {
+    throw new StaffSessionRefusal(
+      'invitation_email_mismatch',
+      'Your password cannot be set from this invitation. Use "Forgot password" with the email your administrator has on file',
+    );
+  }
+
+  await savePassword(tx, email, account.newPassword, 'invitation');
+};
+
+/**
  * Registers a PIN with the server for this person on this device, and opens a
- * session. Proof of who they are: a PIN setup code an administrator issued to
- * them (read aloud, or sent as an invitation — accepted here, online only), or
- * a code sent to their own verified email, for PINs set before server sessions
- * existed.
+ * session. Proof of who they are: the PIN grant from signing in with their
+ * password on this device; a PIN setup code an administrator issued to them
+ * (read aloud, or sent as an invitation — accepted here, online only); or a
+ * code sent to their own verified email, for PINs set before server sessions
+ * existed. Accepting an invitation is also where the first password is chosen.
  */
 export const enrolPin = async (
   sql: Sql,
   identity: DeviceIdentity,
-  input: { staffId: string; pin: string; setupCode?: string; emailCode?: string },
+  input: {
+    staffId: string;
+    pin: string;
+    pinGrant?: string;
+    setupCode?: string;
+    emailCode?: string;
+    password?: string;
+    existingAccount?: ExistingAccountProof;
+  },
 ): Promise<StaffSession> => {
   if (!(await activeStaff(sql, identity.facilityId, input.staffId))) {
     throw new StaffSessionRefusal('unknown_staff', 'No such member of staff here');
   }
 
-  let proof: 'setup_code' | 'email' | 'invitation';
+  let proof: 'password' | 'setup_code' | 'email' | 'invitation';
   let invitationId: string | undefined;
 
-  if (input.setupCode) {
+  if (input.pinGrant) {
+    // Spent with the PIN below, so a refused registration leaves the grant usable.
+    proof = 'password';
+  } else if (input.setupCode) {
     const codes = await sql<
       {
         id: string;
@@ -148,13 +286,35 @@ export const enrolPin = async (
 
   const salt = randomBytes(16).toString('base64');
 
+  if ((input.password || input.existingAccount) && proof !== 'invitation') {
+    throw new StaffSessionRefusal(
+      'password_needs_invitation',
+      'A password is settled here only when accepting an email invitation',
+    );
+  }
+
+  const account = invitationId
+    ? await settleInvitationAccount(sql, invitationId, input)
+    : undefined;
+
   return sql.begin(async (tx) => {
+    if (input.pinGrant && !(await spendPinGrant(tx, identity, input.staffId, input.pinGrant))) {
+      throw new StaffSessionRefusal(
+        'invalid_pin_grant',
+        'Your sign-in has expired. Sign in with your email and password again',
+      );
+    }
+
     // Accepted with the PIN or not at all: a revocation or expiry that won the race stops both.
     if (invitationId && !(await acceptInvitation(tx, identity, input.staffId, invitationId))) {
       throw new StaffSessionRefusal(
         'invalid_setup_code',
         'This invitation code has expired or was withdrawn. Ask your administrator to send a new one',
       );
+    }
+
+    if (invitationId && account) {
+      await applyInvitationAccount(tx, identity, input.staffId, invitationId, account);
     }
 
     await tx`INSERT INTO staff_device_pins (facility_id, staff_id, device_id, salt, hash, iterations, enrolled_by)
@@ -235,6 +395,46 @@ export const signInSession = async (
   }
 
   return outcome;
+};
+
+/**
+ * Signs in with email and password on an enrolled device: opens a session for
+ * the active member of staff at this facility with that verified email, and
+ * gives permission to register their PIN on this device. A wrong password and
+ * an unknown email get the same answer.
+ */
+export const signInWithPassword = async (
+  sql: Sql,
+  identity: DeviceIdentity,
+  input: { email: string; password: string },
+): Promise<StaffPasswordSession> => {
+  const check = await checkPassword(sql, input.email, input.password);
+
+  if (!check.ok && check.reason === 'locked') {
+    throw new StaffSessionRefusal('locked', 'Too many wrong passwords. Try again later', {
+      retryAt: check.retryAt,
+    });
+  }
+
+  if (!check.ok) {
+    throw new StaffSessionRefusal('wrong_password', 'That email or password is not right');
+  }
+
+  const staffId = await staffWithEmail(sql, identity.facilityId, input.email);
+
+  if (!staffId) {
+    throw new StaffSessionRefusal(
+      'not_at_facility',
+      'You are not set up at this facility. Ask its administrator to add you',
+    );
+  }
+
+  return sql.begin(async (tx) => {
+    const session = await openSession(tx, identity, staffId);
+    const grant = await issuePinGrant(tx, identity, staffId);
+
+    return { ...session, ...grant };
+  });
 };
 
 /**

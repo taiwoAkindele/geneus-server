@@ -9,6 +9,7 @@ import {
   registerScratchFacility,
   scratchDatabase,
   scratchFacilityCode,
+  staffSessionFor,
   testApp,
 } from './postgres.ts';
 import { findRecord, insertRecord } from '../src/db/records.ts';
@@ -28,13 +29,20 @@ test('organization facility creation reuses verified identity, isolates records 
   const a = await registerScratchFacility(db.sql);
   const nurse = await addStaff(db.sql, a, { role: 'nurse' });
 
-  const post = (path: string, values: Record<string, unknown> = {}, staffId = a.admin.id) =>
-    app.inject({
+  /** As the person signed in on facility A's device, with their proven session. */
+  const post = async (path: string, values: Record<string, unknown> = {}, staffId = a.admin.id) => {
+    const session = await staffSessionFor(app, a.device.credential, staffId);
+
+    return app.inject({
       method: 'POST',
       url: path,
-      headers: asDevice(a.device.credential),
+      headers: {
+        ...asDevice(a.device.credential),
+        ...(session ? { 'x-staff-session': session } : {}),
+      },
       payload: { actorStaffId: staffId, ...values },
     });
+  };
 
   const patientId = `${a.facility.id}-000001-K2`;
   await insertRecord(
@@ -128,6 +136,16 @@ test('organization facility creation reuses verified identity, isolates records 
   );
 
   const opening = { facilityId: input.code, ...proof() };
+
+  const asserted = await app.inject({
+    method: 'POST',
+    url: '/organization/facilities/open',
+    headers: asDevice(a.device.credential),
+    payload: { actorStaffId: a.admin.id, ...opening },
+  });
+  assert.equal(asserted.statusCode, 403, 'a staff id the device merely asserts cannot switch');
+  assert.equal(asserted.json().error, 'staff_session_required');
+
   const opened = await post('/organization/facilities/open', opening);
   assert.equal(opened.statusCode, 200, opened.body);
   assert.equal(opened.json().staffId, result.admin.id);
@@ -135,7 +153,11 @@ test('organization facility creation reuses verified identity, isolates records 
   assert.ok('identity' in (await verifyCredential(db.sql, opened.json().device.credential)));
   const reopened = await post('/organization/facilities/open', opening);
   assert.equal(reopened.statusCode, 200, reopened.body);
-  assert.deepEqual(reopened.json(), opened.json());
+  const { session: firstSession, ...first } = opened.json();
+  const { session: secondSession, ...second } = reopened.json();
+  assert.deepEqual(second, first);
+  assert.equal(firstSession.staffId, result.admin.id, 'the switch signs the person in there');
+  assert.ok(secondSession.token);
   assert.equal(
     (await post('/organization/facilities/open', { facilityId: input.code, ...proof() }, nurse.id))
       .statusCode,

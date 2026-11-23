@@ -220,7 +220,9 @@ describe('staff invitations by email', () => {
       const person = await newcomer('Funke Newcomer');
       await invite(person.id, 'funke@example.org');
       const code = lastCodeSentTo('funke@example.org');
-      assert.equal((await check(person.id, code)).statusCode, 204, 'checking does not spend it');
+      const checked = await check(person.id, code);
+      assert.equal(checked.statusCode, 200, 'checking does not spend it');
+      assert.deepEqual(checked.json(), { existingAccount: false }, 'a first password is chosen');
       const enrolled = await enrol(person.id, code);
       assert.equal(enrolled.statusCode, 200, enrolled.body);
       assert.ok(enrolled.json().token, 'a verified session from the first activation');
