@@ -7,10 +7,12 @@ import {
   StaffEmailRequest,
   type ApiErrorBody,
   type EmailSent,
+  type InvitationCheckResult,
   type PinSetupCodeIssued,
 } from '#shared';
 import { recordAuditEvent } from '../audit/auditEvents.ts';
 import { authenticateDevice } from '../auth/deviceAuth.ts';
+import { hasPassword } from '../auth/staffPasswords.ts';
 import { verifiedRequestStaff } from '../auth/staffSessions.ts';
 import type { DeviceIdentity } from '../devices/credentials.ts';
 import { authorizeStaff, describeDenial, findStaffInFacility } from '../auth/staffAuthorization.ts';
@@ -29,6 +31,7 @@ import { issuePinSetupCode } from '../staff/pinSetupCodes.ts';
 import {
   contactActivation,
   deliverInvitation,
+  invitationDestination,
   issueStaffInvitation,
   matchInvitationCode,
   onboardingSummaries,
@@ -36,6 +39,9 @@ import {
   type InvitationRefusal,
 } from '../staff/invitations.ts';
 import { z } from 'zod';
+
+const INVALID_INVITATION_CODE =
+  'That code is not right, has expired or was withdrawn. Ask your administrator to send a new one';
 
 /**
  * Staff access that has to be decided online. Every route is called from an
@@ -72,6 +78,17 @@ export const registerStaffRoutes = (
   mailer: Mailer,
   appUrl: string,
 ) => {
+  /** The invitation this code redeems, for an active member of staff here; a wrong code counts against it. */
+  const matchedInvitation = async (identity: DeviceIdentity, staffId: string, code: string) => {
+    const target = await findStaffInFacility(sql, identity.facilityId, staffId);
+
+    if (!target?.active) {
+      return undefined;
+    }
+
+    return matchInvitationCode(sql, identity.facilityId, target.id, code);
+  };
+
   /** Only an active facility admin of the device's facility has a recovery email. */
   const findAdmin = async (facilityId: string, staffId: string) => {
     const staff = await findStaffInFacility(sql, facilityId, staffId);
@@ -739,21 +756,87 @@ export const registerStaffRoutes = (
         return refuse(reply, 400, 'invalid_request', 'Enter the code from your invitation');
       }
 
-      const target = await findStaffInFacility(sql, identity.facilityId, request.params.staffId);
+      const invitationId = await matchedInvitation(
+        identity,
+        request.params.staffId,
+        body.data.code,
+      );
 
-      if (
-        !target?.active ||
-        !(await matchInvitationCode(sql, identity.facilityId, target.id, body.data.code))
-      ) {
+      if (!invitationId) {
+        return refuse(reply, 403, 'invalid_setup_code', INVALID_INVITATION_CODE);
+      }
+
+      const destination = (await invitationDestination(sql, invitationId)) ?? '';
+
+      return {
+        existingAccount: await hasPassword(sql, destination),
+      } satisfies InvitationCheckResult;
+    },
+  );
+
+  /**
+   * For an invited email that already has a password: emails a code that
+   * proves the person accepting is its owner, as an alternative to typing that
+   * password. The invitation code is the proof for asking; it is not spent.
+   */
+  app.post<{ Params: { staffId: string } }>(
+    '/staff/:staffId/invitations/account-code',
+    async (request, reply) => {
+      const identity = await authenticateDevice(sql, request, reply);
+
+      if (!identity) {
+        return;
+      }
+
+      const body = z
+        .strictObject({ code: z.string().trim().min(1).max(32) })
+        .safeParse(request.body);
+
+      if (!body.success) {
+        return refuse(reply, 400, 'invalid_request', 'Enter the code from your invitation');
+      }
+
+      if (!mailer.configured) {
         return refuse(
           reply,
-          403,
-          'invalid_setup_code',
-          'That code is not right, has expired or was withdrawn. Ask your administrator to send a new one',
+          503,
+          'email_not_configured',
+          'Email delivery is not configured for this deployment',
         );
       }
 
-      return reply.code(204).send();
+      const invitationId = await matchedInvitation(
+        identity,
+        request.params.staffId,
+        body.data.code,
+      );
+
+      if (!invitationId) {
+        return refuse(reply, 403, 'invalid_setup_code', INVALID_INVITATION_CODE);
+      }
+
+      const email = (await invitationDestination(sql, invitationId)) ?? '';
+
+      if (!(await hasPassword(sql, email))) {
+        return refuse(
+          reply,
+          409,
+          'no_existing_account',
+          'This email has no Geneus password yet. Choose one',
+        );
+      }
+
+      const fresh = await createVerificationCode(sql, {
+        purpose: 'staff_account',
+        subject: invitationId,
+        email,
+      });
+
+      await mailer.send({ to: email, ...verificationEmail(fresh.code, 'staff_account') });
+
+      return reply
+        .code(202)
+        .send({ sentTo: maskEmail(email), expiresOn: fresh.expiresOn } satisfies EmailSent);
     },
   );
 };

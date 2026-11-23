@@ -17,6 +17,7 @@ import { findStaffEmail } from '../email/verifications.ts';
 import { maskEmail } from '../lib/email.ts';
 import { issueCredential, verifyCredential } from '../devices/credentials.ts';
 import { recordAuditEvent } from '../audit/auditEvents.ts';
+import { openSession, verifiedRequestStaff } from '../auth/staffSessions.ts';
 import {
   authorizeFacilityMember,
   authorizeOrganizationAdmin,
@@ -268,6 +269,17 @@ export const registerOrganizationFacilityRoutes = (
       return;
     }
 
+    // A switch carries the person's sign-in to the destination, so it needs their
+    // proven session here — never a staff id the device merely asserts.
+    const verified = await verifiedRequestStaff(sql, identity, request.headers);
+
+    if (verified?.id !== identity.staffId) {
+      return reply.code(403).send({
+        error: 'staff_session_required',
+        message: 'Sign in again to switch facility',
+      });
+    }
+
     const parsed = OrganizationFacilityOpen.safeParse(request.body);
 
     if (!parsed.success) {
@@ -366,10 +378,31 @@ export const registerOrganizationFacilityRoutes = (
         });
       }
 
+      // A session is opened only on a device whose credential was just proven or
+      // issued: naming another device must not sign its current user out.
+      const session = credential
+        ? await openSession(
+            tx,
+            { facilityId: input.facilityId, deviceId: input.deviceId },
+            staff.id,
+          )
+        : undefined;
+
+      if (session) {
+        await recordAuditEvent(tx, {
+          facilityId: input.facilityId,
+          deviceId: input.deviceId,
+          actorStaffId: staff.id,
+          action: 'login',
+          metadata: { context: 'organization_facility_switch', fromFacility: identity.facilityId },
+        });
+      }
+
       return {
         facilityId: input.facilityId,
         staffId: staff.id,
         personId: staff.personId!,
+        ...(session ? { session } : {}),
         ...(credential
           ? {
               device: {

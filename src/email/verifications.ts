@@ -6,6 +6,9 @@ const PURPOSE_INSTRUCTIONS: Record<string, string> = {
   registration: 'Enter it on the facility registration screen to confirm this is your email.',
   staff_email: 'Enter it in Geneus to confirm this as your email address.',
   operator_login: 'Enter it on the Geneus operator sign-in screen.',
+  staff_password: 'Enter it in Geneus to choose a new password.',
+  staff_account: 'Enter it in Geneus to confirm it is you joining another facility.',
+  device_sign_in: 'Enter it in Geneus to finish signing in on a new device.',
 };
 
 /**
@@ -18,7 +21,14 @@ const PURPOSE_INSTRUCTIONS: Record<string, string> = {
  * code retires the old one. Only a hash is stored.
  */
 export type VerificationPurpose =
-  'registration' | 'staff_email' | 'staff_email_current' | 'workforce_access' | 'operator_login';
+  | 'registration'
+  | 'staff_email'
+  | 'staff_email_current'
+  | 'workforce_access'
+  | 'operator_login'
+  | 'staff_password'
+  | 'staff_account'
+  | 'device_sign_in';
 
 export type VerificationKey = { purpose: VerificationPurpose; subject: string; email: string };
 

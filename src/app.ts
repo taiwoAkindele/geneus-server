@@ -18,6 +18,7 @@ import { registerWorkforceRoutes } from './routes/workforce.ts';
 import { registerInsuranceRoutes } from './routes/insurance.ts';
 import { registerSelfServiceRoutes } from './routes/selfService.ts';
 import { registerStaffSessionRoutes } from './routes/staffSessions.ts';
+import { registerStaffPasswordRoutes } from './routes/staffPasswords.ts';
 import { ensureBootstrapOperators, registerOperatorRoutes } from './routes/operator.ts';
 import { billingRawBodies, registerBillingRoutes } from './routes/billing.ts';
 import { registerPatientDocumentRoutes } from './routes/patientDocuments.ts';
@@ -84,6 +85,16 @@ const RATE_LIMITED_ROUTES = new Set([
   'POST /staff/:staffId/pin-codes/email',
   'POST /workforce/access/code',
   'POST /workforce/access/verify',
+  // Checks a password, or sends or checks a password reset code. (Wrong passwords also lock out in PostgreSQL.)
+  'POST /staff/password/sign-in',
+  'POST /staff/password/reset/request',
+  'POST /staff/password/reset',
+  'POST /staff/password/change',
+  // Enrol a device with a password and an emailed code, with no device credential at all.
+  'POST /devices/password-sign-in',
+  'POST /devices/password-sign-in/confirm',
+  // Emails a code to the owner of an invited email that already has a password.
+  'POST /staff/:staffId/invitations/account-code',
   // Sends an invitation email, or checks an invitation code. (Each also has limits counted in PostgreSQL.)
   'POST /staff/:staffId/invitations',
   'POST /staff/:staffId/invitations/check',
@@ -276,6 +287,7 @@ export const buildApp = (
   registerInsuranceRoutes(app, sql);
   registerSelfServiceRoutes(app, sql, mailer);
   registerStaffSessionRoutes(app, sql, signer);
+  registerStaffPasswordRoutes(app, sql, mailer, config.powerSyncPublicUrl);
   registerOperatorRoutes(app, sql, mailer);
   // The deployment's first Geneus operators; the operator console manages the rest.
   app.addHook('onReady', async () => {
