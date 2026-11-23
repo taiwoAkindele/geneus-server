@@ -2,11 +2,11 @@ import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import type { FastifyInstance } from 'fastify';
 import type { FacilityRegistrationResult, Staff } from '#shared';
-import { issuePinSetupCode } from '../src/staff/pinSetupCodes.ts';
 import { verifyCredential } from '../src/devices/credentials.ts';
 import {
   addStaff,
   asDevice,
+  invitationCodeFor,
   lastCodeSentTo,
   mailbox,
   registerScratchFacility,
@@ -58,7 +58,7 @@ describe('staff passwords', () => {
     const accepted = await post('/staff/session/enrol', {
       staffId: nurse.id,
       pin: '583920',
-      setupCode: lastCodeSentTo(email),
+      setupCode: await invitationCodeFor(db.sql, email),
       password,
     });
 
@@ -168,24 +168,23 @@ describe('staff passwords', () => {
   });
 
   describe('choosing the first password', () => {
-    it('is refused with a setup code read aloud, which proves no inbox', async () => {
-      const nurse = await addStaff(db.sql, a, { role: 'nurse', name: 'Funmi Nurse' });
-      const issued = await issuePinSetupCode(db.sql, {
-        facilityId: a.facility.id,
-        staffId: nurse.id,
-        issuedBy: a.admin.id,
-        issuedFrom: a.device.deviceId,
-      });
-      assert.ok(issued.ok);
+    it('is refused with anything but an invitation, which proves the inbox', async () => {
+      await invitedNurse('funmi@example.org');
+      const nurse = await addStaff(db.sql, a, { role: 'nurse', name: 'Funmi Second' });
+      const { pinGrant } = (await signIn('funmi@example.org', PASSWORD)).json();
 
       const refused = await post('/staff/session/enrol', {
         staffId: nurse.id,
         pin: '583920',
-        setupCode: issued.code,
+        pinGrant,
         password: PASSWORD,
       });
 
-      assert.equal(refused.json().error, 'password_needs_invitation');
+      assert.equal(
+        refused.statusCode,
+        400,
+        'the contract allows a password only with an invitation',
+      );
       assert.deepEqual(await serverPins(nurse.id), [], 'nothing was registered');
     });
   });
@@ -225,6 +224,44 @@ describe('staff passwords', () => {
 
       assert.equal(requested.statusCode, 202);
       assert.equal(mailbox.length, sentBefore);
+    });
+
+    it('works on a device set up nowhere, recorded on the server alone', async () => {
+      await invitedNurse('jumoke@example.org');
+
+      const requested = await post(
+        '/staff/password/reset/request',
+        { email: 'jumoke@example.org' },
+        {},
+      );
+      assert.equal(requested.statusCode, 202, requested.body);
+
+      const reset = await post(
+        '/staff/password/reset',
+        {
+          email: 'jumoke@example.org',
+          code: lastCodeSentTo('jumoke@example.org'),
+          password: 'reset from my phone',
+        },
+        {},
+      );
+      assert.equal(reset.statusCode, 204, reset.body);
+      assert.equal((await signIn('jumoke@example.org', 'reset from my phone')).statusCode, 200);
+
+      const [event] = await db.sql`
+        SELECT action, facility_id FROM staff_account_events WHERE email = 'jumoke@example.org'`;
+      assert.equal(event?.action, 'password_reset');
+      assert.equal(event?.facility_id, a.facility.id);
+    });
+
+    it('refuses a device credential that is not right', async () => {
+      const refused = await post(
+        '/staff/password/reset/request',
+        { email: 'jumoke@example.org' },
+        { authorization: 'Bearer device:nowhere.wrong' },
+      );
+
+      assert.equal(refused.statusCode, 401);
     });
 
     it('refuses a wrong code', async () => {
@@ -302,7 +339,7 @@ describe('one person, several facilities, and new devices', () => {
 
     assert.equal(sent.statusCode, 201, sent.body);
 
-    return { nurse, code: lastCodeSentTo(email) };
+    return { nurse, code: await invitationCodeFor(db.sql, email) };
   };
 
   const accept = (f: FacilityRegistrationResult, staffId: string, extra: object) =>

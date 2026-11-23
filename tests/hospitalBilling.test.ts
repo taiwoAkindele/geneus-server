@@ -5,7 +5,6 @@ import type { FastifyInstance } from 'fastify';
 import type { FacilityRegistrationResult, Staff } from '#shared';
 import { buildApp } from '../src/app.ts';
 import { findRecord, insertRecord } from '../src/db/records.ts';
-import { issuePinSetupCode } from '../src/staff/pinSetupCodes.ts';
 import {
   config,
   signer,
@@ -16,6 +15,7 @@ import {
   scratchDatabase,
   upload,
   type ScratchDatabase,
+  staffSessionWith,
 } from './postgres.ts';
 
 describe('hospital department billing and Paystack reconciliation', () => {
@@ -107,7 +107,6 @@ describe('hospital department billing and Paystack reconciliation', () => {
     });
   };
 
-  const enrolled = new Set<string>();
   let activeStaff = '';
   let session: Promise<string> | undefined;
 
@@ -120,32 +119,13 @@ describe('hospital department billing and Paystack reconciliation', () => {
 
     if (credential === facility.device.credential && staffId && activeStaff !== staffId) {
       activeStaff = staffId;
-      session = (async () => {
-        const proof = !enrolled.has(staffId)
-          ? await issuePinSetupCode(db.sql, {
-              facilityId: facility.facility.id,
-              staffId,
-              issuedBy: facility.admin.id,
-              issuedFrom: facility.device.deviceId,
-            })
-          : undefined;
+      session = staffSessionWith(app, db.sql, credential, staffId).then(
+        (token: string | undefined) => {
+          assert.ok(token, `a session for ${staffId}`);
 
-        if (proof) {
-          assert.ok(proof.ok);
-        }
-
-        const response = await app.inject({
-          method: 'POST',
-          url: proof ? '/staff/session/enrol' : '/staff/session',
-          headers: { authorization: `Bearer ${credential}` },
-          payload: { staffId, pin: '246810', ...(proof?.ok ? { setupCode: proof.code } : {}) },
-        });
-
-        assert.equal(response.statusCode, 200, response.body);
-        enrolled.add(staffId);
-
-        return response.json().token as string;
-      })();
+          return token!;
+        },
+      );
     }
 
     const token = credential === facility.device.credential ? await session : undefined;

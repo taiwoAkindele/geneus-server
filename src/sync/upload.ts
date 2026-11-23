@@ -27,7 +27,6 @@ import {
   paymentPermission,
   rolesFor,
   staffPermissions,
-  PIN_SETUP_CODE_CLAIM_FIELDS,
   ROSTER_SIGNED_FIELDS,
   FACILITY_DOCUMENT_POLICY,
   RESTRICTED_FACILITY_DOCUMENT_TYPES,
@@ -42,7 +41,6 @@ import {
   type Payment,
   type Permission,
   type RegisterDefinition,
-  type PinSetupCode,
   type RejectionCategory,
   type Staff,
   type UploadMutation,
@@ -89,7 +87,6 @@ import {
   orderWorkforceMutations,
 } from '../workforce/compatibility.ts';
 import type { Signer } from '../lib/signing.ts';
-import { validatePinCodeClaim } from '../workforce/pin.ts';
 import { recordClientVersion } from '../workforce/readiness.ts';
 
 /**
@@ -117,7 +114,6 @@ const SERVER_WRITTEN: readonly DocType[] = [
   'facility',
   'device',
   'sync_rejection',
-  'pin_setup_code',
   'incoming_transfer',
   'inbound_referral',
   'patient_message',
@@ -130,11 +126,7 @@ const SERVER_WRITTEN: readonly DocType[] = [
 ];
 
 /** Server-written, but a device may patch the few columns that record what it did with them. */
-const DEVICE_MARKABLE: readonly DocType[] = [
-  'sync_rejection',
-  'pin_setup_code',
-  'inbound_referral',
-];
+const DEVICE_MARKABLE: readonly DocType[] = ['sync_rejection', 'inbound_referral'];
 
 /**
  * Never patched: the record is the event. An encounter is closed by a step, not
@@ -306,12 +298,6 @@ const patchPermissions = (
     case 'sync_rejection':
       return columns.every((column) => RESOLUTION_COLUMNS.has(column))
         ? ['sync_rejection:resolve']
-        : undefined;
-    case 'pin_setup_code':
-      return columns.every((column) =>
-        (PIN_SETUP_CODE_CLAIM_FIELDS as readonly string[]).includes(column),
-      )
-        ? ['pin_setup_code:claim']
         : undefined;
     default:
       return undefined;
@@ -512,45 +498,6 @@ const isStale = (
 };
 
 type Context = { tx: Tx; identity: DeviceIdentity; uploadedAt: number };
-
-/**
- * Claiming a PIN setup code is granted by no role (SCHEMA.md §10): it belongs
- * to the one person the code was issued for, who has no PIN yet to sign in
- * with. By the time this arrives the PIN is already set on that device, so a
- * refusal here is a record for the facility to look at, not a way to undo it.
- */
-const claimRefusal = (
-  code: PinSetupCode,
-  updatedBy: string,
-  changes: Record<string, unknown>,
-): Refusal | undefined => {
-  if (updatedBy !== code.staffId) {
-    return refuse(
-      'authorization',
-      'a PIN setup code can only be used by the person it was issued for',
-    );
-  }
-
-  if (code.usedOn) {
-    return refuse('conflict', 'this PIN setup code was already used on another device');
-  }
-
-  const usedOn = typeof changes.usedOn === 'string' ? Date.parse(changes.usedOn) : Number.NaN;
-
-  if (Number.isNaN(usedOn)) {
-    return refuse('validation', 'a used PIN setup code must say when it was used');
-  }
-
-  if (code.revokedOn && usedOn > Date.parse(code.revokedOn)) {
-    return refuse('validation', 'this PIN setup code had been replaced by a newer one');
-  }
-
-  if (usedOn > Date.parse(code.expiresOn)) {
-    return refuse('validation', 'this PIN setup code had expired');
-  }
-
-  return undefined;
-};
 
 /**
  * Whether this device's own registration of `patientId` was refused and is
@@ -1569,25 +1516,11 @@ const evaluatePatch = async (
     return refuse('authorization', describeDenial({ kind: 'deactivated', staffId: updatedBy }));
   }
 
-  if (table === 'pin_setup_code') {
-    const reset = await validatePinCodeClaim(tx, current as PinSetupCode, identity, uploadedAt);
+  for (const permission of permissions) {
+    const denial = staffDenial(staff, updatedBy, permission);
 
-    if (reset) {
-      return refuse('authorization', reset);
-    }
-
-    const refusal = claimRefusal(current as PinSetupCode, updatedBy, changes);
-
-    if (refusal) {
-      return refusal;
-    }
-  } else {
-    for (const permission of permissions) {
-      const denial = staffDenial(staff, updatedBy, permission);
-
-      if (denial) {
-        return refuse('authorization', describeDenial(denial));
-      }
+    if (denial) {
+      return refuse('authorization', describeDenial(denial));
     }
   }
 

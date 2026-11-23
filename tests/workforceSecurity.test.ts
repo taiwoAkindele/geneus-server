@@ -173,9 +173,9 @@ describe('workforce evidence and clinical security', { timeout: 120000 }, () => 
 
       const denied = await f.app.inject({
         method: 'POST',
-        url: `/staff/${f.worker.id}/pin-codes`,
+        url: `/staff/${f.worker.id}/invitations`,
         headers: await as(admin.id),
-        payload: { issuedBy: admin.id },
+        payload: { channel: 'email', email: 'worker.reset@example.org' },
       });
 
       assert.equal(denied.statusCode, 403);
@@ -183,12 +183,12 @@ describe('workforce evidence and clinical security', { timeout: 120000 }, () => 
 
       const allowed = await f.app.inject({
         method: 'POST',
-        url: `/staff/${f.worker.id}/pin-codes`,
+        url: `/staff/${f.worker.id}/invitations`,
         headers: await as(f.facility.admin.id),
-        payload: { issuedBy: f.facility.admin.id },
+        payload: { channel: 'email', email: 'worker.reset@example.org' },
       });
 
-      assert.equal(allowed.statusCode, 201);
+      assert.equal(allowed.statusCode, 201, allowed.body);
     } finally {
       await f.app.close();
     }

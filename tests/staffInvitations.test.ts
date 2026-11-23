@@ -4,12 +4,11 @@ import type { FastifyInstance } from 'fastify';
 import type { FacilityRegistrationResult, Staff } from '#shared';
 import { buildApp } from '../src/app.ts';
 import { EmailNotSent, type Mailer } from '../src/lib/email.ts';
-import { issuePinSetupCode } from '../src/staff/pinSetupCodes.ts';
 import {
   addStaff,
   asDevice,
   config,
-  lastCodeSentTo,
+  invitationCodeFor,
   mailbox,
   registerScratchFacility,
   scratchDatabase,
@@ -68,6 +67,18 @@ describe('staff invitations by email', () => {
   const aMinutePasses = (staffId: string) =>
     db.sql`UPDATE staff_invitations SET created_on = created_on - interval '2 minutes' WHERE staff_id = ${staffId}`;
 
+  /** The token from the newest invitation link emailed to `to` — what tapping "Accept invitation" opens. */
+  const lastLinkSentTo = (to: string) => {
+    const text = [...mailbox].reverse().find((m) => m.to === to)?.text ?? '';
+    const token = text.match(/\/onboarding\/invitation#token=([\w-]+)/)?.[1];
+
+    if (!token) {
+      throw new Error(`no invitation link was emailed to ${to}`);
+    }
+
+    return token;
+  };
+
   const newcomer = (name: string, f = a) => addStaff(db.sql, f, { role: 'nurse', name });
 
   before(async () => {
@@ -89,11 +100,12 @@ describe('staff invitations by email', () => {
   });
 
   describe('sending', () => {
-    it('emails the code to the address, and never shows it to the administrator', async () => {
+    it('emails the link to the address, and never shows a code to the administrator', async () => {
       const person = await newcomer('Ada Newcomer');
       const sent = await invite(person.id, ' Ada@Example.org ');
       assert.equal(sent.statusCode, 201, sent.body);
-      const code = lastCodeSentTo('ada@example.org');
+      assert.ok(lastLinkSentTo('ada@example.org'), 'the email carries the link');
+      const code = await invitationCodeFor(db.sql, 'ada@example.org');
       assert.ok(!sent.body.includes(code), 'the answer does not contain the code');
       const { invitation } = sent.json();
       assert.equal(invitation.destination, 'ada@example.org', 'normalised to lower case');
@@ -114,15 +126,6 @@ describe('staff invitations by email', () => {
         (
           await db.sql`SELECT 1 FROM audit_events WHERE metadata->>'context' = 'staff_invitation_created' AND entity_id = ${person.id}`
         ).length,
-      );
-    });
-
-    it('never syncs: an invitation is not a PIN setup code record on any device', async () => {
-      const person = await newcomer('Bisi Newcomer');
-      await invite(person.id, 'bisi@example.org');
-      assert.equal(
-        (await db.sql`SELECT 1 FROM pin_setup_codes WHERE staff_id = ${person.id}`).length,
-        0,
       );
     });
 
@@ -219,7 +222,7 @@ describe('staff invitations by email', () => {
     it('activates with the code alone — no PIN or session yet — and proves the address', async () => {
       const person = await newcomer('Funke Newcomer');
       await invite(person.id, 'funke@example.org');
-      const code = lastCodeSentTo('funke@example.org');
+      const code = await invitationCodeFor(db.sql, 'funke@example.org');
       const checked = await check(person.id, code);
       assert.equal(checked.statusCode, 200, 'checking does not spend it');
       assert.deepEqual(checked.json(), { existingAccount: false }, 'a first password is chosen');
@@ -257,7 +260,7 @@ describe('staff invitations by email', () => {
     it('grants nothing beyond the staff record: same role, no link to anyone else', async () => {
       const person = await newcomer('Gbenga Newcomer');
       await invite(person.id, 'gbenga@example.org');
-      await enrol(person.id, lastCodeSentTo('gbenga@example.org'));
+      await enrol(person.id, await invitationCodeFor(db.sql, 'gbenga@example.org'));
 
       const [row] =
         await db.sql`SELECT role, permission, additional_roles, person_id FROM staff WHERE id = ${person.id}`;
@@ -269,7 +272,7 @@ describe('staff invitations by email', () => {
     it('refuses a wrong code, and stops working after five', async () => {
       const person = await newcomer('Halima Newcomer');
       await invite(person.id, 'halima@example.org');
-      const code = lastCodeSentTo('halima@example.org');
+      const code = await invitationCodeFor(db.sql, 'halima@example.org');
 
       for (let i = 0; i < 5; i++) {
         assert.equal((await check(person.id, 'WRONGCDE')).statusCode, 403);
@@ -289,7 +292,7 @@ describe('staff invitations by email', () => {
       await invite(person.id, 'ike@example.org');
       await db.sql`UPDATE staff_invitations SET expires_on = now() - interval '1 second' WHERE staff_id = ${person.id}`;
       assert.equal(
-        (await enrol(person.id, lastCodeSentTo('ike@example.org'))).json().error,
+        (await enrol(person.id, await invitationCodeFor(db.sql, 'ike@example.org'))).json().error,
         'invalid_setup_code',
       );
 
@@ -309,7 +312,7 @@ describe('staff invitations by email', () => {
 
       assert.equal(revoked.statusCode, 200, revoked.body);
       assert.equal(
-        (await enrol(person.id, lastCodeSentTo('jide@example.org'))).json().error,
+        (await enrol(person.id, await invitationCodeFor(db.sql, 'jide@example.org'))).json().error,
         'invalid_setup_code',
       );
 
@@ -326,7 +329,7 @@ describe('staff invitations by email', () => {
     it('cannot be used for another person, or at another facility', async () => {
       const person = await newcomer('Kemi Newcomer');
       await invite(person.id, 'kemi@example.org');
-      const code = lastCodeSentTo('kemi@example.org');
+      const code = await invitationCodeFor(db.sql, 'kemi@example.org');
       assert.equal((await enrol(nurse.id, code)).json().error, 'invalid_setup_code');
       assert.equal(
         (await check(person.id, code, b)).statusCode,
@@ -353,14 +356,14 @@ describe('staff invitations by email', () => {
     it('replaces the earlier code, after a short wait', async () => {
       const person = await newcomer('Lola Newcomer');
       await invite(person.id, 'lola@example.org');
-      const first = lastCodeSentTo('lola@example.org');
+      const first = await invitationCodeFor(db.sql, 'lola@example.org');
       const soon = await invite(person.id, 'lola@example.org');
       assert.equal(soon.statusCode, 429);
       assert.equal(soon.json().error, 'too_soon');
       assert.ok(Number(soon.headers['retry-after']) > 0);
       await aMinutePasses(person.id);
       assert.equal((await invite(person.id, 'lola@example.org')).statusCode, 201);
-      const second = lastCodeSentTo('lola@example.org');
+      const second = await invitationCodeFor(db.sql, 'lola@example.org');
       assert.equal(
         (await enrol(person.id, first)).json().error,
         'invalid_setup_code',
@@ -396,46 +399,6 @@ describe('staff invitations by email', () => {
       await aMinutePasses(person.id);
       assert.equal((await invite(person.id, 'musa@example.org')).json().error, 'daily_limit');
     });
-
-    it('keeps one live code per person: an invitation and a code read aloud replace each other', async () => {
-      const person = await newcomer('Ngozi Newcomer');
-
-      const spoken = await issuePinSetupCode(db.sql, {
-        facilityId: a.facility.id,
-        staffId: person.id,
-        issuedBy: a.admin.id,
-        issuedFrom: a.device.deviceId,
-      });
-
-      assert.ok(spoken.ok);
-      await invite(person.id, 'ngozi@example.org');
-
-      const [code] =
-        await db.sql`SELECT revoked_on FROM pin_setup_codes WHERE staff_id = ${person.id}`;
-
-      assert.ok(
-        code.revoked_on,
-        'the code read aloud is revoked — the revocation syncs to devices',
-      );
-
-      await aMinutePasses(person.id);
-      assert.ok(
-        (
-          await issuePinSetupCode(db.sql, {
-            facilityId: a.facility.id,
-            staffId: person.id,
-            issuedBy: a.admin.id,
-            issuedFrom: a.device.deviceId,
-          })
-        ).ok,
-      );
-
-      assert.equal((await status(person.id)).invitation.revokedReason, 'pin_code_issued');
-      assert.equal(
-        (await enrol(person.id, lastCodeSentTo('ngozi@example.org'))).json().error,
-        'invalid_setup_code',
-      );
-    });
   });
 
   describe('contacts', () => {
@@ -449,7 +412,7 @@ describe('staff invitations by email', () => {
         'while the first invitation waits',
       );
 
-      await enrol(first.id, lastCodeSentTo('shared@example.org'));
+      await enrol(first.id, await invitationCodeFor(db.sql, 'shared@example.org'));
       assert.equal(
         (await invite(second.id, 'Shared@Example.org')).json().error,
         'email_in_use',
@@ -488,11 +451,7 @@ describe('staff invitations by email', () => {
         'a proven address stays masked to the administrator',
       );
 
-      assert.equal(
-        lastCodeSentTo('pelumi@example.org').length,
-        8,
-        'but the email went to the real address',
-      );
+      assert.ok(lastLinkSentTo('pelumi@example.org'), 'but the email went to the real address');
 
       const nobody = await newcomer('Quadri Newcomer');
       assert.equal(
@@ -508,7 +467,8 @@ describe('staff invitations by email', () => {
       await invite(person.id, 'rotimi.old@example.org');
       await db.sql`INSERT INTO staff_contacts (facility_id, staff_id, email, verified_on) VALUES (${a.facility.id}, ${person.id}, 'rotimi@example.org', now())`;
       assert.equal(
-        (await enrol(person.id, lastCodeSentTo('rotimi.old@example.org'))).statusCode,
+        (await enrol(person.id, await invitationCodeFor(db.sql, 'rotimi.old@example.org')))
+          .statusCode,
         200,
         'activation still works',
       );
@@ -556,18 +516,6 @@ describe('staff invitations by email', () => {
   });
 
   describe('invitation links', () => {
-    /** The token from the newest invitation link emailed to `to` — what tapping "Accept invitation" opens. */
-    const lastLinkSentTo = (to: string) => {
-      const text = [...mailbox].reverse().find((m) => m.to === to)?.text ?? '';
-      const token = text.match(/\/onboarding\/invitation#token=([\w-]+)/)?.[1];
-
-      if (!token) {
-        throw new Error(`no invitation link was emailed to ${to}`);
-      }
-
-      return token;
-    };
-
     const inviteWithDevice = async (staffId: string, email: string, by = a.admin.id) =>
       post(
         `/staff/${staffId}/invitations`,
@@ -587,17 +535,12 @@ describe('staff invitations by email', () => {
         db.sql`UPDATE staff_invitations SET created_on = created_on - interval '2 hours' WHERE facility_id = ${a.facility.id}`,
     );
 
-    it('leads the email with a link whose token is in the fragment, keeps the code as a fallback, and stores only a hash', async () => {
+    it('emails a link whose token is in the fragment, never a code to type, and stores only a hash', async () => {
       const person = await newcomer('Tola Newcomer');
       const sent = await invite(person.id, 'tola@example.org');
       const token = lastLinkSentTo('tola@example.org');
       const text = mailbox.at(-1)!.text;
-      assert.ok(
-        text.indexOf('Accept invitation') < text.indexOf('code is'),
-        'the link comes before the code',
-      );
-
-      assert.ok(lastCodeSentTo('tola@example.org'), 'the fallback code is still there');
+      assert.ok(!/code is/i.test(text), 'no code to type: the link leads the way');
       assert.ok(
         text.includes(`${config.corsOrigins[0]}/onboarding/invitation#token=`),
         'opens in the web app, token after #',
@@ -638,17 +581,17 @@ describe('staff invitations by email', () => {
     it('on a facility device, swaps the link for a fresh one-time code that sets the PIN and accepts the invitation', async () => {
       const person = await newcomer('Vera Newcomer');
       await invite(person.id, 'vera@example.org');
-      const emailed = lastCodeSentTo('vera@example.org');
+      const emailed = await invitationCodeFor(db.sql, 'vera@example.org');
       const token = lastLinkSentTo('vera@example.org');
       const exchanged = await linkCode(token);
       assert.equal(exchanged.statusCode, 200, exchanged.body);
       const { staffId, code } = exchanged.json();
       assert.equal(staffId, person.id);
-      assert.notEqual(code, emailed, 'a new code, never the emailed one');
+      assert.notEqual(code, emailed, 'a fresh code each time');
       assert.equal(
         (await check(person.id, emailed)).statusCode,
         403,
-        'the emailed code is replaced',
+        'the earlier code is replaced',
       );
 
       assert.equal((await enrol(person.id, code)).statusCode, 200);

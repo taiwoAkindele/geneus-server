@@ -22,13 +22,7 @@ import type { Signer } from '../lib/signing.ts';
 import { processUpload } from '../sync/upload.ts';
 
 /** What the person proved themselves with, for the audit trail. */
-const enrolmentProof = (body: { pinGrant?: string; setupCode?: string }) => {
-  if (body.pinGrant) {
-    return 'password';
-  }
-
-  return body.setupCode ? 'setup_code' : 'email';
-};
+const enrolmentProof = (body: { pinGrant?: string }) => (body.pinGrant ? 'password' : 'invitation');
 
 const header = (value: string | string[] | undefined) =>
   typeof value === 'string' ? value : undefined;

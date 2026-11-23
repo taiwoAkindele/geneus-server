@@ -19,6 +19,8 @@ import {
   endAccessForEmail,
   hashNewPassword,
   hasPassword,
+  primaryMembership,
+  recordAccountEvent,
   savePassword,
   staffWithEmail,
 } from '../auth/staffPasswords.ts';
@@ -61,9 +63,10 @@ const badRequest = (reply: FastifyReply, error: ZodError) =>
   refuse(reply, 400, 'invalid_request', error.issues[0]?.message ?? 'Check the form');
 
 /**
- * Staff passwords (SCHEMA.md §10). Signing in, resetting and changing need an
- * enrolled device. The two new-device routes are the exception: they are how a
- * device enrolled nowhere gets enrolled, with the password and an emailed code.
+ * Staff passwords (SCHEMA.md §10). Signing in and changing need an enrolled
+ * device. Resetting works from any device, because the emailed code is the
+ * proof; the two new-device routes are how a device set up nowhere gets
+ * enrolled, with the password and an emailed code.
  */
 export const registerStaffPasswordRoutes = (
   app: FastifyInstance,
@@ -151,14 +154,27 @@ export const registerStaffPasswordRoutes = (
   });
 
   /**
-   * Emails a reset code when the address belongs to someone active at this
-   * facility. The answer is the same either way, so it cannot be used to find
-   * out who works here.
+   * A reset works from any device: access to the email is the proof. A device
+   * that sends its credential must be a valid one; a device set up nowhere
+   * sends none. Undefined only when a credential was sent and refused.
    */
-  app.post('/staff/password/reset/request', async (request, reply) => {
+  const deviceIfAny = async (request: FastifyRequest, reply: FastifyReply) => {
+    if (!request.headers.authorization) {
+      return { identity: undefined };
+    }
+
     const identity = await authenticateDevice(sql, request, reply);
 
-    if (!identity) {
+    return identity ? { identity } : undefined;
+  };
+
+  /**
+   * Emails a reset code when the address belongs to someone active at any
+   * facility. The answer is the same either way, so it cannot be used to find
+   * out who works where.
+   */
+  app.post('/staff/password/reset/request', async (request, reply) => {
+    if (!(await deviceIfAny(request, reply))) {
       return;
     }
 
@@ -179,7 +195,7 @@ export const registerStaffPasswordRoutes = (
 
     const { email } = parsed.data;
 
-    if (await staffWithEmail(sql, identity.facilityId, email)) {
+    if (await primaryMembership(sql, email)) {
       const fresh = await createVerificationCode(sql, {
         purpose: 'staff_password',
         subject: email,
@@ -194,11 +210,13 @@ export const registerStaffPasswordRoutes = (
 
   /** Sets a new password with the emailed code, then signs that email out everywhere. */
   app.post('/staff/password/reset', async (request, reply) => {
-    const identity = await authenticateDevice(sql, request, reply);
+    const device = await deviceIfAny(request, reply);
 
-    if (!identity) {
+    if (!device) {
       return;
     }
+
+    const { identity } = device;
 
     const parsed = StaffPasswordReset.safeParse(request.body);
 
@@ -229,15 +247,17 @@ export const registerStaffPasswordRoutes = (
       await savePassword(tx, body.email, password, 'reset');
       await endAccessForEmail(tx, body.email);
 
-      const staffId = await staffWithEmail(tx, identity.facilityId, body.email);
-
-      await recordAuditEvent(tx, {
-        facilityId: identity.facilityId,
-        deviceId: identity.deviceId,
-        actorStaffId: staffId,
-        action: 'update',
-        metadata: { context: 'staff_password_reset', email: maskEmail(body.email) },
-      });
+      if (identity) {
+        await recordAuditEvent(tx, {
+          facilityId: identity.facilityId,
+          deviceId: identity.deviceId,
+          actorStaffId: await staffWithEmail(tx, identity.facilityId, body.email),
+          action: 'update',
+          metadata: { context: 'staff_password_reset', email: maskEmail(body.email) },
+        });
+      } else {
+        await recordAccountEvent(tx, body.email, 'password_reset');
+      }
 
       return true;
     });

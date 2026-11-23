@@ -2,7 +2,6 @@ import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import type { FastifyInstance } from 'fastify';
 import type { FacilityRegistrationResult, Staff } from '#shared';
-import { issuePinSetupCode } from '../src/staff/pinSetupCodes.ts';
 import {
   addStaff,
   asDevice,
@@ -12,6 +11,7 @@ import {
   staffSessionFor,
   testApp,
   type ScratchDatabase,
+  invitationCodeFor,
 } from './postgres.ts';
 
 /**
@@ -26,7 +26,7 @@ import {
  * staff has no PIN and no session, and registers one with a single-use setup
  * code alone.
  */
-describe('contact binding and PIN authority need a server-verified person', () => {
+describe('contact binding and invitations need a server-verified person', () => {
   let db: ScratchDatabase;
   let app: FastifyInstance;
   let f: FacilityRegistrationResult;
@@ -195,26 +195,26 @@ describe('contact binding and PIN authority need a server-verified person', () =
     });
   });
 
-  describe('issuing a PIN setup code', () => {
+  describe('sending an invitation', () => {
     it('is refused when the administrator is only asserted by the device', async () => {
       const response = await post(
-        `/staff/${clerk.id}/pin-codes`,
-        { issuedBy: f.admin.id },
+        `/staff/${clerk.id}/invitations`,
+        { channel: 'email', email: 'clerk@example.org' },
         asserting(f.admin.id),
       );
 
       assert.equal(response.statusCode, 403, response.body);
       assert.equal(response.json().error, 'staff_session_required');
       assert.equal(
-        (await db.sql`SELECT 1 FROM pin_setup_codes WHERE staff_id = ${clerk.id}`).length,
+        (await db.sql`SELECT 1 FROM staff_invitations WHERE staff_id = ${clerk.id}`).length,
         0,
       );
     });
 
-    it('is refused when the body names someone other than the verified person', async () => {
+    it('is refused for someone without authority over the person', async () => {
       const response = await post(
-        `/staff/${clerk.id}/pin-codes`,
-        { issuedBy: f.admin.id },
+        `/staff/${clerk.id}/invitations`,
+        { channel: 'email', email: 'clerk@example.org' },
         await withSession(nurse.id),
       );
 
@@ -223,32 +223,36 @@ describe('contact binding and PIN authority need a server-verified person', () =
 
     it('works for an administrator in their own verified session', async () => {
       const response = await post(
-        `/staff/${clerk.id}/pin-codes`,
-        { issuedBy: f.admin.id },
+        `/staff/${clerk.id}/invitations`,
+        { channel: 'email', email: 'clerk@example.org' },
         await withSession(f.admin.id),
       );
 
       assert.equal(response.statusCode, 201, response.body);
-      assert.match(response.json().code, /^[A-Z2-9]{8}$/);
     });
   });
 
   describe('first activation', () => {
-    it('needs no existing PIN or session: a single-use setup code is the proof', async () => {
+    /** An administrator invites the person; the code is what accepting the email's link gives. */
+    const invited = async (staffId: string, email: string) => {
+      const sent = await post(
+        `/staff/${staffId}/invitations`,
+        { channel: 'email', email },
+        await withSession(f.admin.id),
+      );
+
+      assert.equal(sent.statusCode, 201, sent.body);
+
+      return invitationCodeFor(db.sql, email);
+    };
+
+    it('needs no existing PIN or session: the invitation code is the proof', async () => {
       const newcomer = await addStaff(db.sql, f, { role: 'nurse', name: 'New Nurse' });
-
-      const issued = await issuePinSetupCode(db.sql, {
-        facilityId: f.facility.id,
-        staffId: newcomer.id,
-        issuedBy: f.admin.id,
-        issuedFrom: f.device.deviceId,
-      });
-
-      assert.ok(issued.ok);
+      const code = await invited(newcomer.id, 'new.nurse@example.org');
 
       const enrolled = await post(
         '/staff/session/enrol',
-        { staffId: newcomer.id, pin: '482916', setupCode: issued.code },
+        { staffId: newcomer.id, pin: '482916', setupCode: code },
         device(),
       );
 
@@ -262,22 +266,15 @@ describe('contact binding and PIN authority need a server-verified person', () =
       );
     });
 
-    it("refuses a wrong or someone else's setup code", async () => {
+    it("refuses a wrong or someone else's invitation code", async () => {
       const other = await addStaff(db.sql, f, { role: 'nurse' });
+      const code = await invited(other.id, 'other.nurse@example.org');
 
-      const issued = await issuePinSetupCode(db.sql, {
-        facilityId: f.facility.id,
-        staffId: other.id,
-        issuedBy: f.admin.id,
-        issuedFrom: f.device.deviceId,
-      });
-
-      assert.ok(issued.ok);
       assert.equal(
         (
           await post(
             '/staff/session/enrol',
-            { staffId: clerk.id, pin: '482916', setupCode: issued.code },
+            { staffId: clerk.id, pin: '482916', setupCode: code },
             device(),
           )
         ).json().error,

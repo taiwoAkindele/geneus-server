@@ -16,6 +16,11 @@ import { loadConfig, type Config } from '../src/lib/config.ts';
 import { createSigner, type Signer } from '../src/lib/signing.ts';
 import { buildApp } from '../src/app.ts';
 import { createInvite } from '../src/facilities/invites.ts';
+import {
+  hashInvitationCode,
+  INVITATION_CODE_ITERATIONS,
+  newInvitationCode,
+} from '../src/staff/invitationCodes.ts';
 import { registerFacility } from '../src/facilities/registration.ts';
 import { createVerificationCode, registrationSubject } from '../src/email/verifications.ts';
 import type { EmailMessage, Mailer } from '../src/lib/email.ts';
@@ -100,6 +105,32 @@ export const lastCodeSentTo = (to: string, pattern = /code is (\w+)\./): string 
 
   if (!code) {
     throw new Error(`no code was emailed to ${to}`);
+  }
+
+  return code;
+};
+
+/**
+ * The code that accepts the newest invitation to `email`. The email carries a
+ * link, which the app exchanges on a facility device for a fresh code; tests
+ * give the invitation a known code the same way, without the device step, so
+ * they can also try it on an invitation that has since expired or been revoked.
+ */
+export const invitationCodeFor = async (sql: Sql, email: string): Promise<string> => {
+  const code = newInvitationCode();
+  const salt = randomBytes(16).toString('base64');
+
+  const updated = await sql`
+    UPDATE staff_invitations
+    SET code_hash = ${hashInvitationCode(code, salt, INVITATION_CODE_ITERATIONS)},
+        code_salt = ${salt}, code_iterations = ${INVITATION_CODE_ITERATIONS}
+    WHERE id = (
+      SELECT id FROM staff_invitations WHERE destination = ${email.trim().toLowerCase()}
+      ORDER BY created_on DESC LIMIT 1
+    )`;
+
+  if (updated.count !== 1) {
+    throw new Error(`no invitation was sent to ${email}`);
   }
 
   return code;
@@ -274,6 +305,18 @@ export const staffSessionFor = (
   return pending;
 };
 
+/** As `staffSessionFor`, for a suite that builds its own app over `sql`. */
+export const staffSessionWith = (
+  app: FastifyInstance,
+  sql: Sql,
+  credential: string,
+  staffId: string,
+): Promise<string | undefined> => {
+  sqlForApp.set(app, sql);
+
+  return staffSessionFor(app, credential, staffId);
+};
+
 const openStaffSession = async (
   app: FastifyInstance,
   credential: string,
@@ -282,7 +325,7 @@ const openStaffSession = async (
   const sql = sqlForApp.get(app);
 
   if (!sql) {
-    throw new Error('staffSessionFor needs an app from testApp');
+    throw new Error('staffSessionFor needs an app from testApp, or staffSessionWith');
   }
 
   if (!enrolled.has(staffId)) {

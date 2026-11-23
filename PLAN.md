@@ -202,9 +202,9 @@ or a missed keep-awake check starting to matter. The fixed-price fallback — on
 - `POST /facilities` (invite-gated, `facility_invites`, atomic claim) creates the facility,
   its first admin and the registering device in one transaction and returns the device's
   credential — shown once, hashed at rest, never a database credential.
-- `POST /devices/codes` → `POST /devices`: an enrolled device with a `device:enroll` holder
-  issues a 15-minute single-use code; the joining device spends it. The code decides the
-  facility. `POST /devices/:id/revoke` de-enrols (optionally with a wipe request); the
+- Further devices are enrolled by a person signing in with their email, password and an
+  emailed code (`POST /devices/password-sign-in`), or by an invitation link the sender
+  allowed to set up a device. `POST /devices/:id/revoke` de-enrols (optionally with a wipe request); the
   credential stops verifying at the device's next contact.
 
 ### 4.2 Sync tokens and JWKS

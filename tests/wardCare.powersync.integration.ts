@@ -11,6 +11,7 @@ import { buildApp } from '../src/app.ts';
 import { buildSyncConfig } from '../src/sync/syncConfig.ts';
 import { writeFile } from 'node:fs/promises';
 import { insertRecord } from '../src/db/records.ts';
+import { enrollDevice, issueEnrollmentCode } from '../src/devices/enrollment.ts';
 import {
   POLICY_VERSION,
   UploadResponse,
@@ -160,27 +161,22 @@ test(
     const outsider = await registerScratchFacility(source.sql);
     const secondId = 'device-ward-' + randomBytes(5).toString('hex');
 
-    const code = await app.inject({
-      method: 'POST',
-      url: '/devices/codes',
-      headers: { authorization: `Bearer ${a.device.credential}` },
-      payload: { issuedBy: a.admin.id },
-    });
+    // A second device of facility A, enrolled the way an invitation link enrols one.
+    const { code } = await issueEnrollmentCode(
+      source.sql,
+      a.facility.id,
+      a.admin.id,
+      a.device.deviceId,
+    );
 
-    assert.equal(code.statusCode, 201);
+    const enrollment = await enrollDevice(
+      source.sql,
+      { code, deviceId: secondId, deviceLabel: 'Synthetic receiving device' },
+      endpoint,
+    );
 
-    const enrollment = await app.inject({
-      method: 'POST',
-      url: '/devices',
-      payload: {
-        code: code.json().code,
-        deviceId: secondId,
-        deviceLabel: 'Synthetic receiving device',
-      },
-    });
-
-    assert.equal(enrollment.statusCode, 201);
-    const second = enrollment.json() as { credential: string; deviceId: string };
+    assert.ok(enrollment.ok);
+    const second = enrollment.credential;
 
     const versions = {
       pharmacyWorkflowVersion: 1,

@@ -8,18 +8,18 @@ import {
   type Staff,
   type UploadMutation,
 } from '#shared';
-import { issuePinSetupCode } from '../src/staff/pinSetupCodes.ts';
 import { findRecord } from '../src/db/records.ts';
 import {
   addStaff,
   asDevice,
   clientId,
   envelopeFor,
-  lastCodeSentTo,
   registerScratchFacility,
   scratchDatabase,
   testApp,
   type ScratchDatabase,
+  invitationCodeFor,
+  staffSessionFor,
 } from './postgres.ts';
 
 /**
@@ -49,17 +49,17 @@ describe('server-verified staff sessions and online configuration', () => {
       headers: { ...device(), ...(token ? { 'x-staff-session': token } : {}) },
     });
 
+  let invited = 0;
+
+  /** Invites the person by email, as an administrator does, and returns the code that accepts it. */
   const codeFor = async (staffId: string) => {
-    const issued = await issuePinSetupCode(db.sql, {
-      facilityId: f.facility.id,
-      staffId,
-      issuedBy: f.admin.id,
-      issuedFrom: f.device.deviceId,
-    });
+    const email = `invited-${(invited += 1)}@example.org`;
+    const admin = await staffSessionFor(app, f.device.credential, f.admin.id);
 
-    assert.ok(issued.ok);
+    const sent = await post(`/staff/${staffId}/invitations`, { channel: 'email', email }, admin);
+    assert.equal(sent.statusCode, 201, sent.body);
 
-    return issued.code;
+    return invitationCodeFor(db.sql, email);
   };
 
   const enrol = async (staffId: string, pin: string) => {
@@ -120,9 +120,11 @@ describe('server-verified staff sessions and online configuration', () => {
   });
 
   describe('who is acting: the server checks the PIN, not the device', () => {
-    it("registers a PIN only with proof from an administrator's setup code or the person's own email", async () => {
+    it('registers a PIN only with proof from a password sign-in or an emailed invitation', async () => {
+      const person = await addStaff(db.sql, f, { role: 'nurse', name: 'Pelu Nurse' });
+
       assert.equal(
-        (await signIn(f.admin.id, '246810')).json().error,
+        (await signIn(person.id, '246810')).json().error,
         'pin_not_enrolled',
         'a PIN the server has never seen proves nothing',
       );
@@ -130,7 +132,7 @@ describe('server-verified staff sessions and online configuration', () => {
       assert.equal(
         (
           await post('/staff/session/enrol', {
-            staffId: f.admin.id,
+            staffId: person.id,
             pin: '246810',
             setupCode: 'WRONG-CODE',
           })
@@ -138,46 +140,22 @@ describe('server-verified staff sessions and online configuration', () => {
         'invalid_setup_code',
       );
 
-      const code = await codeFor(f.admin.id);
+      const byEmailCode = await post('/staff/session/enrol', {
+        staffId: person.id,
+        pin: '246810',
+        emailCode: '123456',
+      });
+
+      assert.equal(byEmailCode.statusCode, 400, 'an emailed code alone is no longer a proof');
 
       const enrolled = await post('/staff/session/enrol', {
-        staffId: f.admin.id,
+        staffId: person.id,
         pin: '246810',
-        setupCode: code,
+        setupCode: await codeFor(person.id),
       });
 
       assert.equal(enrolled.statusCode, 200, enrolled.body);
       assert.ok(enrolled.json().token);
-
-      // The same code cannot enrol a PIN on another device.
-      const other = await app.inject({
-        method: 'POST',
-        url: '/devices/codes',
-        headers: device(),
-        payload: { issuedBy: f.admin.id },
-      });
-
-      void other;
-      // The person's own verified email is the other proof (admin@example.org is verified at registration).
-      assert.equal(
-        (
-          await app.inject({
-            method: 'POST',
-            url: '/workforce/access/code',
-            headers: device(),
-            payload: { staffId: f.admin.id },
-          })
-        ).statusCode,
-        202,
-      );
-
-      const byEmail = await post('/staff/session/enrol', {
-        staffId: f.admin.id,
-        pin: '246810',
-        emailCode: lastCodeSentTo('admin@example.org'),
-      });
-
-      assert.equal(byEmail.statusCode, 200, byEmail.body);
       assert.ok(
         (await db.sql`SELECT 1 FROM audit_events WHERE metadata->>'context' = 'staff_pin_enrolled'`)
           .length,
@@ -203,7 +181,7 @@ describe('server-verified staff sessions and online configuration', () => {
     });
 
     it("on a shared device, the next person's sign-in ends the previous person's session at once", async () => {
-      const admin = (await signIn(f.admin.id, '246810')).json().token;
+      const admin = (await staffSessionFor(app, f.device.credential, f.admin.id))!;
       assert.equal((await post('/insurance/setup/status', {}, admin)).statusCode, 200);
       await signIn(nurse.id, '111222');
       const after = await post('/insurance/setup/status', {}, admin);
@@ -215,7 +193,7 @@ describe('server-verified staff sessions and online configuration', () => {
     });
 
     it('ends when idle, when signed out, and applies deactivation and permission changes immediately', async () => {
-      let admin = (await signIn(f.admin.id, '246810')).json().token;
+      let admin = (await staffSessionFor(app, f.device.credential, f.admin.id))!;
       await db.sql`UPDATE staff_sessions SET last_used_on = now() - interval '31 minutes' WHERE ended_on IS NULL`;
       assert.equal(
         (await post('/insurance/setup/status', {}, admin)).json().error,
@@ -223,7 +201,7 @@ describe('server-verified staff sessions and online configuration', () => {
         'idle sessions end',
       );
 
-      admin = (await signIn(f.admin.id, '246810')).json().token;
+      admin = (await staffSessionFor(app, f.device.credential, f.admin.id))!;
       assert.equal(
         (
           await app.inject({
@@ -294,7 +272,7 @@ describe('server-verified staff sessions and online configuration', () => {
       });
 
       assert.equal(unknown.json().error, 'staff_session_required', 'an unknown person is refused');
-      const admin = (await signIn(f.admin.id, '246810')).json().token;
+      const admin = (await staffSessionFor(app, f.device.credential, f.admin.id))!;
       assert.equal(
         (await save([fee('fee_item:a', clerk)], admin)).json().error,
         'attribution_mismatch',
@@ -328,7 +306,7 @@ describe('server-verified staff sessions and online configuration', () => {
     });
 
     it('refuses a change made from an outdated view instead of overwriting the newer one', async () => {
-      const admin = (await signIn(f.admin.id, '246810')).json().token;
+      const admin = (await staffSessionFor(app, f.device.credential, f.admin.id))!;
 
       const patch = (amountMinor: number, previous: number): UploadMutation => ({
         clientId: Date.now() * 1000 + clientId(),

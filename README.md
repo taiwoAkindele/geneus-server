@@ -82,13 +82,9 @@ parallel. The contract's own suites (`shared/tests`) run as part of the same com
 | `GET /time` | Ed25519-signed server clock — the anchor of the 7-day offline window |
 | `GET /invites/:token` | Check a facility invite before the admin fills anything in |
 | `POST /facilities` | Register a facility, its first admin, and enrol the registering device (returns the device credential, once) |
-| `POST /devices/codes` | *(device credential)* An enrolled device asks for a 15-minute, single-use enrollment code; `issuedBy` must hold `device:enroll` |
-| `POST /devices` | The joining device spends the code and receives its own credential; the code decides the facility |
 | `POST /devices/:id/revoke` | *(device credential)* De-enrol a device of the caller's facility; `revokedBy` must hold `device:revoke`; optional wipe |
 | `POST /email-verifications` | Email a 6-digit code to the would-be admin, proving their address before `POST /facilities` (needs a valid invite) |
 | `POST /staff/:staffId/email/code` · `POST /staff/:staffId/email` | *(device credential)* A facility admin adds or replaces their own recovery email: a code to the new address, and to the one on file when replacing it |
-| `POST /staff/:staffId/pin-codes/email` | *(device credential)* A facility admin who forgot their PIN gets a PIN setup code at their recovery email |
-| `POST /staff/:staffId/pin-codes` | *(device credential)* A 24-hour, one-time code that lets that staff member set their PIN on a facility device; `issuedBy` must hold `staff:manage`; revokes their earlier codes. Only the hash is stored and synced |
 | `GET /.well-known/jwks.json` | The Ed25519 public key as a JWK — PowerSync's `jwks_uri` |
 | `POST /sync/token` | *(device credential)* A ≤1-hour EdDSA JWT: `sub` = device, `facility_id` claim drives the Sync Streams |
 | `POST /sync/upload` | *(device credential)* The PowerSync connector's write-back; every mutation authorised server-side (below) |
@@ -98,7 +94,7 @@ Every shape is in the shared contract (`shared/src/api.ts`). Device-facing route
 reason (wrong secret, revoked, wipe requested) goes to the log.
 
 The routes a caller reaches without a device credential (`GET /invites/:token`,
-`POST /facilities`, `POST /devices`) allow 10 attempts a minute per address, then answer
+`POST /facilities`, `POST /devices/password-sign-in`, the password reset routes) allow 10 attempts a minute per address, then answer
 429 with `Retry-After`. Every response carries `no-store` and security headers; a 5xx
 answers with a plain sentence and logs the error, so database text never reaches a caller.
 On SIGTERM the server finishes requests in flight and the signing pass, then closes.
@@ -115,7 +111,7 @@ next pass signs the new values.
 Per mutation, in one PostgreSQL transaction (`src/sync/upload.ts`):
 
 1. **Ledger** — `(device, clientId)` claimed first; a retry is acknowledged as a duplicate and applies nothing.
-2. **Table and operation** — only contract types; `facility`, `device`, `sync_rejection` and `pin_setup_code` are server-written (a device may only resolve a rejection, or mark a PIN setup code used as the person it was issued for); deletes are never accepted.
+2. **Table and operation** — only contract types; `facility`, `device` and `sync_rejection` are server-written (a device may only resolve a rejection); deletes are never accepted.
 3. **Identity** — `facilityId` and `deviceId` in the payload must equal the *authenticated* device's; the client never chooses them.
 4. **Attribution** — `createdBy` (put) / `updatedBy` (patch) must be an **active** member of staff of that facility.
 5. **Permission** — from the server's `staff` row and the shared matrix; high-risk actions (`staff:*`, `device:*`) must arrive within 24 h of being performed.
@@ -147,7 +143,6 @@ verify which human typed the offline PIN — attribution rests on the device's s
 | `npm run sync:config` | Regenerate `powersync/sync-config.yaml` from the contract |
 | `npm run test:sync` | The stack integration suite (needs the compose services) |
 | `npm run invite -- "<label>" [days]` | Mint a single-use facility registration code |
-| `npm run pin-code -- <FACILITY> [staffId]` | Last resort for a locked-out facility admin: lists the admins, or issues one a PIN setup code. Confirm who is asking first |
 | `npm run key:generate` | Mint the Ed25519 signing keypair (once per environment) |
 | `scripts/backup.sh [dir]` | `pg_dump` of the source of truth (custom format), prunes by `RETENTION_DAYS` |
 | `scripts/restore.sh <dump> [db] [--replace]` | Restore into a new database (default) or replace the live one |

@@ -77,12 +77,10 @@ const RATE_LIMITED_ROUTES = new Set([
   'POST /documents/files/:id',
   'GET /invites/:token',
   'POST /facilities',
-  'POST /devices',
   // Each sends an email, or checks a 6-digit code.
   'POST /email-verifications',
   'POST /staff/:staffId/email/code',
   'POST /staff/:staffId/email',
-  'POST /staff/:staffId/pin-codes/email',
   'POST /workforce/access/code',
   'POST /workforce/access/verify',
   // Checks a password, or sends or checks a password reset code. (Wrong passwords also lock out in PostgreSQL.)
@@ -362,7 +360,7 @@ export const buildApp = (
   });
 
   registerFacilityRoutes(app, sql, config, mailer);
-  registerDeviceRoutes(app, sql, config);
+  registerDeviceRoutes(app, sql);
   registerOrganizationRoutes(app, sql);
   registerInvestigationRoutes(app, sql);
   registerResultTemplateRoutes(app, sql);

@@ -236,17 +236,21 @@ describe('staff editing and combined authorization', () => {
     assert.equal(create.rejected[0]?.category, 'authorization');
     assert.equal(await findRecord(db.sql, 'staff', id), undefined);
 
-    const pin = await app.inject({
+    const invitation = await app.inject({
       method: 'POST',
-      url: `/staff/${facility.admin.id}/pin-codes`,
+      url: `/staff/${facility.admin.id}/invitations`,
       headers: {
         authorization: `Bearer ${facility.device.credential}`,
         'x-staff-session': (await staffSessionFor(app, facility.device.credential, delegate.id))!,
       },
-      payload: { issuedBy: delegate.id },
+      payload: { channel: 'email', email: 'admin.reset@example.org' },
     });
 
-    assert.equal(pin.statusCode, 403);
+    assert.equal(
+      invitation.statusCode,
+      403,
+      'a delegate cannot hand out access to an admin account',
+    );
   });
 
   it('recognizes a secondary admin and prevents supervisors resetting that account', async () => {
@@ -259,29 +263,36 @@ describe('staff editing and combined authorization', () => {
 
     const response = await app.inject({
       method: 'POST',
-      url: `/staff/${target.id}/pin-codes`,
+      url: `/staff/${target.id}/invitations`,
       headers: {
         authorization: `Bearer ${facility.device.credential}`,
         'x-staff-session': (await staffSessionFor(app, facility.device.credential, secondary.id))!,
       },
-      payload: { issuedBy: secondary.id },
+      payload: { channel: 'email', email: 'cashier.reset@example.org' },
     });
 
-    assert.equal(response.statusCode, 201);
+    assert.equal(response.statusCode, 201, response.body);
     const server = await findStaffInFacility(db.sql, facility.facility.id, secondary.id);
     assert.equal(staffDenial(server, secondary.id, 'staff:permission'), undefined);
   });
 
-  it('rejects an unassignable PIN claim and unknown roles before persisting', async () => {
+  it('rejects an unassignable permission and unknown roles before persisting', async () => {
     const staff = await addStaff(db.sql, facility, { role: 'nurse' });
 
-    for (const changes of [
-      { additionalPermissions: ['pin_setup_code:claim'] },
-      { additionalRoles: ['janitor'] },
-    ]) {
-      const result = await send(facility, patch(staff.id, facility.admin, changes));
-      assert.equal(result.rejected[0]?.category, 'validation');
-    }
+    // A protected permission is refused as a malformed change; an unknown role, as invalid.
+    await assert.rejects(
+      send(
+        facility,
+        patch(staff.id, facility.admin, { additionalPermissions: ['clinical_capability:review'] }),
+      ),
+      /400/,
+    );
+
+    const unknownRole = await send(
+      facility,
+      patch(staff.id, facility.admin, { additionalRoles: ['janitor'] }),
+    );
+    assert.equal(unknownRole.rejected[0]?.category, 'validation');
 
     assert.deepEqual(
       (await findRecord<Staff>(db.sql, 'staff', staff.id))?.additionalPermissions,
