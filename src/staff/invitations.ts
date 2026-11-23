@@ -5,6 +5,7 @@ import type { DeviceCredential } from '#shared';
 import { authorizeStaff } from '../auth/staffAuthorization.ts';
 import type { DeviceIdentity } from '../devices/credentials.ts';
 import { claimCodeAndEnroll, issueEnrollmentCode } from '../devices/enrollment.ts';
+import { hasPassword } from '../auth/staffPasswords.ts';
 import { findStaffEmail, saveStaffEmail } from '../email/verifications.ts';
 import { EmailNotSent, maskEmail, type Mailer } from '../lib/email.ts';
 import {
@@ -551,6 +552,8 @@ export type ContactActivation = {
   invitation?: InvitationView;
   /** Facility devices where the server holds this person's PIN. A PIN set only offline is not counted until it reaches the server. */
   activation: { serverPinDevices: number; lastPinRegisteredOn?: string };
+  /** Whether their verified email has a Geneus password, for new devices and a forgotten PIN. */
+  password: 'set' | 'not_set';
   /** When the next invitation may be sent, while the resend cooldown runs. */
   nextSendAllowedOn?: string;
 };
@@ -579,6 +582,7 @@ export const contactActivation = async (
       serverPinDevices: pins.devices,
       ...(pins.last ? { lastPinRegisteredOn: iso(pins.last) } : {}),
     },
+    password: email && (await hasPassword(sql, email.toLowerCase())) ? 'set' : 'not_set',
     ...(nextSend > Date.now() ? { nextSendAllowedOn: new Date(nextSend).toISOString() } : {}),
   };
 };
@@ -586,10 +590,13 @@ export const contactActivation = async (
 export type StaffOnboardingSummary = {
   staffId: string;
   activated: boolean;
+  /** A verified email: needed for a password, and so for new devices and a forgotten PIN. */
+  hasEmail: boolean;
+  passwordSet: boolean;
   invitation?: { status: InvitationStatus; delivery: InvitationDelivery; expiresOn: string };
 };
 
-/** One line per person with an invitation or a server-registered PIN: for the Staff directory. */
+/** One line per member of staff, for the Staff directory: email, password, PIN and invitation. */
 export const onboardingSummaries = async (
   sql: Sql,
   facilityId: string,
@@ -605,16 +612,32 @@ export const onboardingSummaries = async (
     ).map((r) => r.staff_id),
   );
 
+  const accounts = await sql<{ staff_id: string; has_email: boolean; password_set: boolean }[]>`
+    SELECT s.id AS staff_id, c.email IS NOT NULL AS has_email, p.email IS NOT NULL AS password_set
+    FROM staff s
+    LEFT JOIN staff_contacts c ON c.facility_id = s.facility_id AND c.staff_id = s.id
+    LEFT JOIN staff_passwords p ON p.email = lower(c.email)
+    WHERE s.facility_id = ${facilityId}`;
+
   const summaries = new Map<string, StaffOnboardingSummary>();
 
-  for (const staffId of activated) {
-    summaries.set(staffId, { staffId, activated: true });
+  for (const account of accounts) {
+    summaries.set(account.staff_id, {
+      staffId: account.staff_id,
+      activated: activated.has(account.staff_id),
+      hasEmail: account.has_email,
+      passwordSet: account.password_set,
+    });
   }
 
   for (const row of latest) {
+    const account = summaries.get(row.staff_id);
+
     summaries.set(row.staff_id, {
       staffId: row.staff_id,
       activated: activated.has(row.staff_id),
+      hasEmail: account?.hasEmail ?? false,
+      passwordSet: account?.passwordSet ?? false,
       invitation: {
         status: statusOf(row),
         delivery: row.delivery_status,

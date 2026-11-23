@@ -90,6 +90,8 @@ const RATE_LIMITED_ROUTES = new Set([
   'POST /staff/password/reset/request',
   'POST /staff/password/reset',
   'POST /staff/password/change',
+  'POST /staff/me/password/code',
+  'POST /staff/me/password',
   // Enrol a device with a password and an emailed code, with no device credential at all.
   'POST /devices/password-sign-in',
   'POST /devices/password-sign-in/confirm',

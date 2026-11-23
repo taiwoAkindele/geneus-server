@@ -488,3 +488,112 @@ describe('one person, several facilities, and new devices', () => {
     });
   });
 });
+
+describe('a first password for staff who signed in before passwords', () => {
+  let db: ScratchDatabase;
+  let app: FastifyInstance;
+  let a: FacilityRegistrationResult;
+
+  const post = (url: string, payload: unknown, headers: Record<string, string>) =>
+    app.inject({ method: 'POST', url, payload: payload as object, headers });
+
+  /** A nurse with a verified email, signed in with their PIN: no password yet. */
+  const signedInNurse = async (email: string | undefined) => {
+    const nurse = await addStaff(db.sql, a, { role: 'nurse', name: `Nurse ${email ?? 'none'}` });
+
+    if (email) {
+      await db.sql`INSERT INTO staff_contacts (facility_id, staff_id, email, verified_on) VALUES (${a.facility.id}, ${nurse.id}, ${email}, now())`;
+    }
+
+    const session = (await staffSessionFor(app, a.device.credential, nurse.id))!;
+
+    return { nurse, headers: { ...asDevice(a.device.credential), 'x-staff-session': session } };
+  };
+
+  before(async () => {
+    db = await scratchDatabase();
+    app = testApp(db.sql);
+    a = await registerScratchFacility(db.sql);
+  });
+
+  after(async () => {
+    if (app) {
+      await app.close();
+    }
+
+    if (db) {
+      await db.drop();
+    }
+  });
+
+  it('sets it from a code to their own email, once, and never replaces it', async () => {
+    const { headers } = await signedInNurse('mide@example.org');
+
+    const before = await post('/staff/me/password/status', {}, headers);
+    assert.deepEqual(before.json(), { email: before.json().email, hasPassword: false });
+    assert.ok(before.json().email.includes('@example.org'), 'the masked address');
+
+    assert.equal((await post('/staff/me/password/code', {}, headers)).statusCode, 202);
+
+    const set = await post(
+      '/staff/me/password',
+      { code: lastCodeSentTo('mide@example.org'), password: 'my first password' },
+      headers,
+    );
+    assert.equal(set.statusCode, 204, set.body);
+    assert.equal((await post('/staff/me/password/status', {}, headers)).json().hasPassword, true);
+
+    const signedIn = await post(
+      '/staff/password/sign-in',
+      { email: 'mide@example.org', password: 'my first password' },
+      asDevice(a.device.credential),
+    );
+    assert.equal(signedIn.statusCode, 200, signedIn.body);
+
+    // Signing in on this device ended the earlier session here: one person at a time.
+    const again = await post(
+      '/staff/me/password/code',
+      {},
+      { ...asDevice(a.device.credential), 'x-staff-session': signedIn.json().token },
+    );
+    assert.equal(again.json().error, 'existing_account', 'a forgotten one is reset instead');
+  });
+
+  it('needs their proven session and a verified email', async () => {
+    const noSession = await post('/staff/me/password/status', {}, asDevice(a.device.credential));
+    assert.equal(noSession.json().error, 'staff_session_required');
+
+    const { headers } = await signedInNurse(undefined);
+    assert.deepEqual((await post('/staff/me/password/status', {}, headers)).json(), {
+      email: null,
+      hasPassword: false,
+    });
+    assert.equal((await post('/staff/me/password/code', {}, headers)).json().error, 'no_email');
+  });
+
+  it('shows administrators who has an email and a password', async () => {
+    const { nurse: withEmail } = await signedInNurse('nneka@example.org');
+    const { nurse: withoutEmail } = await signedInNurse(undefined);
+
+    const admin = {
+      ...asDevice(a.device.credential),
+      'x-staff-session': (await staffSessionFor(app, a.device.credential, a.admin.id))!,
+    };
+
+    const listed = await post('/staff/invitations/list', {}, admin);
+    assert.equal(listed.statusCode, 200, listed.body);
+
+    const byId = new Map(
+      (listed.json().staff as { staffId: string; hasEmail: boolean; passwordSet: boolean }[]).map(
+        (s) => [s.staffId, s],
+      ),
+    );
+
+    assert.equal(byId.get(withEmail.id)?.hasEmail, true);
+    assert.equal(byId.get(withEmail.id)?.passwordSet, false);
+    assert.equal(byId.get(withoutEmail.id)?.hasEmail, false);
+
+    const panel = await post(`/staff/${withEmail.id}/contact-activation`, {}, admin);
+    assert.equal(panel.json().password, 'not_set');
+  });
+});
