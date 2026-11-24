@@ -279,6 +279,30 @@ export const enrolPin = async (
 };
 
 /** Opens a session from the PIN the person just signed in with. Wrong PINs lock out like the device keypad does. */
+type PinHolder = { facilityId: string; staffId: string; deviceId: string };
+
+/**
+ * One PIN per person on a device: when a signed-in person switches to their
+ * membership at another facility of the organization, the PIN they registered
+ * where they came from is registered at the destination too, on that
+ * facility's enrollment of the same device. Only into an empty slot — a PIN
+ * already registered there is never replaced. The caller has proven the
+ * source session and the destination enrollment, and that both memberships
+ * are the same person.
+ */
+export const carryPinAcrossSwitch = async (
+  tx: Tx,
+  from: PinHolder,
+  to: PinHolder,
+): Promise<void> => {
+  await tx`
+    INSERT INTO staff_device_pins (facility_id, staff_id, device_id, salt, hash, iterations, enrolled_by)
+    SELECT ${to.facilityId}, ${to.staffId}, ${to.deviceId}, salt, hash, iterations, 'facility_switch'
+    FROM staff_device_pins
+    WHERE facility_id = ${from.facilityId} AND staff_id = ${from.staffId} AND device_id = ${from.deviceId}
+    ON CONFLICT (facility_id, staff_id, device_id) DO NOTHING`;
+};
+
 export const signInSession = async (
   sql: Sql,
   identity: DeviceIdentity,

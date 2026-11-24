@@ -17,7 +17,7 @@ import { findStaffEmail } from '../email/verifications.ts';
 import { maskEmail } from '../lib/email.ts';
 import { issueCredential, verifyCredential } from '../devices/credentials.ts';
 import { recordAuditEvent } from '../audit/auditEvents.ts';
-import { openSession, verifiedRequestStaff } from '../auth/staffSessions.ts';
+import { carryPinAcrossSwitch, openSession, verifiedRequestStaff } from '../auth/staffSessions.ts';
 import {
   authorizeFacilityMember,
   authorizeOrganizationAdmin,
@@ -389,6 +389,16 @@ export const registerOrganizationFacilityRoutes = (
         : undefined;
 
       if (session) {
+        await carryPinAcrossSwitch(
+          tx,
+          {
+            facilityId: identity.facilityId,
+            staffId: identity.staffId,
+            deviceId: identity.deviceId,
+          },
+          { facilityId: input.facilityId, staffId: staff.id, deviceId: input.deviceId },
+        );
+
         await recordAuditEvent(tx, {
           facilityId: input.facilityId,
           deviceId: input.deviceId,

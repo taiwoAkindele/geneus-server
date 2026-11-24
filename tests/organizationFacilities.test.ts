@@ -11,6 +11,7 @@ import {
   scratchFacilityCode,
   staffSessionFor,
   testApp,
+  TEST_PIN,
 } from './postgres.ts';
 import { findRecord, insertRecord } from '../src/db/records.ts';
 import { findStaffEmail } from '../src/email/verifications.ts';
@@ -151,8 +152,37 @@ test('organization facility creation reuses verified identity, isolates records 
   assert.equal(opened.json().staffId, result.admin.id);
   assert.equal(opened.json().personId, result.admin.personId);
   assert.ok('identity' in (await verifyCredential(db.sql, opened.json().device.credential)));
+  // One PIN per person on a device: the PIN they use at A now works at the destination too.
+  const pinRow = (facilityId: string, staffId: string, deviceId: string) =>
+    db.sql<{ hash: string; enrolled_by: string }[]>`
+      SELECT hash, enrolled_by FROM staff_device_pins
+      WHERE facility_id = ${facilityId} AND staff_id = ${staffId} AND device_id = ${deviceId}`;
+
+  const [sourcePin] = await pinRow(a.facility.id, a.admin.id, a.device.deviceId);
+  const [carriedPin] = await pinRow(input.code, result.admin.id, opening.deviceId);
+  assert.equal(carriedPin?.enrolled_by, 'facility_switch');
+  assert.equal(carriedPin?.hash, sourcePin?.hash);
+
+  const signedInThere = await app.inject({
+    method: 'POST',
+    url: '/staff/session',
+    headers: asDevice(opened.json().device.credential),
+    payload: { staffId: result.admin.id, pin: TEST_PIN },
+  });
+
+  assert.equal(signedInThere.statusCode, 200, signedInThere.body);
+
+  // A PIN already registered at the destination is never replaced.
+  await db.sql`
+    UPDATE staff_device_pins SET hash = 'chosen-there'
+    WHERE facility_id = ${input.code} AND staff_id = ${result.admin.id} AND device_id = ${opening.deviceId}`;
+
   const reopened = await post('/organization/facilities/open', opening);
   assert.equal(reopened.statusCode, 200, reopened.body);
+  assert.equal(
+    (await pinRow(input.code, result.admin.id, opening.deviceId))[0]?.hash,
+    'chosen-there',
+  );
   const { session: firstSession, ...first } = opened.json();
   const { session: secondSession, ...second } = reopened.json();
   assert.deepEqual(second, first);
@@ -205,6 +235,11 @@ test('organization facility creation reuses verified identity, isolates records 
   assert.equal(nurseOnEnrolledDevice.statusCode, 200, nurseOnEnrolledDevice.body);
   assert.equal(nurseOnEnrolledDevice.json().staffId, accepted.json().staffId);
   assert.equal(nurseOnEnrolledDevice.json().device, undefined);
+  assert.equal(
+    (await pinRow(input.code, accepted.json().staffId, result.device.deviceId)).length,
+    0,
+    'no PIN is carried to a device whose enrollment this switch did not prove',
+  );
   await db.sql`UPDATE staff SET active=false WHERE facility_id=${input.code} AND id=${result.admin.id}`;
   const revoked = await post('/organization/facilities/open', opening);
   assert.equal(revoked.statusCode, 403);
