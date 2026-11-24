@@ -1,7 +1,10 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyReply } from 'fastify';
+import { z } from 'zod';
 import {
   FacilityRegistration,
+  FacilitySignupRequest,
   RegistrationEmailRequest,
+  facilityRegistrationToken,
   type ApiErrorBody,
   type EmailSent,
 } from '#shared';
@@ -13,51 +16,50 @@ import {
   registrationSubject,
   verificationEmail,
 } from '../email/verifications.ts';
-import { findInvite, rejectionFor, type InviteRejection } from '../facilities/invites.ts';
+import type { InviteRejection } from '../facilities/invites.ts';
 import { registerFacility } from '../facilities/registration.ts';
+import {
+  notifyOperators,
+  openRegistrationLink,
+  submitSignupRequest,
+} from '../facilities/signupRequests.ts';
 
-const INVITE_REJECTIONS: Record<InviteRejection, string> = {
-  unknown: 'That invite code is not recognised',
-  expired: 'That invite code has expired',
-  already_used: 'That invite code has already been used',
+const LINK_REJECTIONS: Record<InviteRejection, string> = {
+  unknown: 'This registration link is not valid. Open it again from the approval email',
+  expired: 'This registration link has expired. Ask Geneus to send a new one',
+  already_used: 'This registration link has already been used. Sign in with your email instead',
 };
 
-const inviteError = (rejection: InviteRejection): ApiErrorBody => ({
-  error: 'invalid_invite',
-  message: INVITE_REJECTIONS[rejection],
-});
+const refuse = (reply: FastifyReply, status: number, error: string, message: string) =>
+  reply.code(status).send({ error, message } satisfies ApiErrorBody);
 
+const linkError = (reply: FastifyReply, status: number, rejection: InviteRejection) =>
+  refuse(reply, status, 'invalid_invite', LINK_REJECTIONS[rejection]);
+
+/**
+ * Facility sign-up (SCHEMA.md §10): prove an email, ask Geneus for a facility,
+ * and — once a Geneus operator approves it (facilitySignupReview.ts) — register
+ * it from the emailed link. Every route here is reachable with no credential,
+ * so each is rate-limited (app.ts).
+ */
 export const registerFacilityRoutes = (
   app: FastifyInstance,
   sql: Sql,
   config: Config,
   mailer: Mailer,
+  appUrl: string,
 ) => {
-  /**
-   * Proves the would-be admin's email before registration (SCHEMA.md §10). It
-   * needs a valid invite, so it cannot be used to send mail to anyone; it is
-   * rate-limited with the other routes reachable without a credential.
-   */
+  /** Proves the would-be admin's email before a request is sent to Geneus. */
   app.post('/email-verifications', async (request, reply) => {
     const parsed = RegistrationEmailRequest.safeParse(request.body);
 
     if (!parsed.success) {
-      return reply.code(400).send({
-        error: 'invalid_request',
-        message: 'A valid email address and invite code are needed',
-        issues: parsed.error.issues,
-      } satisfies ApiErrorBody);
-    }
-
-    const rejection = rejectionFor(await findInvite(sql, parsed.data.inviteToken));
-
-    if (rejection) {
-      return reply.code(404).send(inviteError(rejection));
+      return refuse(reply, 400, 'invalid_request', 'Enter a valid email address');
     }
 
     const { code, expiresOn } = await createVerificationCode(sql, {
       purpose: 'registration',
-      subject: registrationSubject(parsed.data.inviteToken),
+      subject: registrationSubject(parsed.data.email),
       email: parsed.data.email,
     });
 
@@ -67,21 +69,79 @@ export const registerFacilityRoutes = (
     return reply.code(202).send(response);
   });
 
-  /** Lets the onboarding screen reject a bad code before asking for any details. */
-  app.get<{ Params: { token: string } }>('/invites/:token', async (request, reply) => {
-    const invite = await findInvite(sql, request.params.token);
-    const rejection = rejectionFor(invite);
+  /** "Create an account": records the request and emails every Geneus operator. */
+  app.post('/facility-requests', async (request, reply) => {
+    const parsed = FacilitySignupRequest.safeParse(request.body);
 
-    if (rejection || !invite) {
-      return reply.code(404).send(inviteError(rejection ?? 'unknown'));
+    if (!parsed.success) {
+      return reply.code(400).send({
+        error: 'invalid_request',
+        message: 'Fill in every detail of the facility and your email code',
+        issues: parsed.error.issues,
+      } satisfies ApiErrorBody);
     }
 
-    return { label: invite.label, expiresOn: invite.expiresOn };
+    const submission = await submitSignupRequest(sql, parsed.data);
+
+    if (!submission.ok) {
+      switch (submission.error) {
+        case 'invalid_email_code':
+          return refuse(
+            reply,
+            403,
+            submission.error,
+            'That email code is not right, or has expired — ask for a new one',
+          );
+        case 'facility_code_taken':
+          return refuse(
+            reply,
+            409,
+            submission.error,
+            `Facility code ${parsed.data.code} is already registered. Choose another code`,
+          );
+        case 'already_requested':
+          return refuse(
+            reply,
+            409,
+            submission.error,
+            'A request from this email is already waiting for Geneus. You will get an email when it is decided',
+          );
+      }
+    }
+
+    const notified = await notifyOperators(mailer, appUrl, submission);
+
+    if (notified === 0) {
+      request.log.warn(
+        { operators: submission.reviewLinks.length },
+        'facility request recorded, but no Geneus operator was emailed',
+      );
+    }
+
+    return reply.code(201).send({ sentTo: maskEmail(parsed.data.adminEmail) });
+  });
+
+  /** What the registration link shows before anything is created. Spends nothing. */
+  app.post('/facility-registration/open', async (request, reply) => {
+    const parsed = z.strictObject({ token: facilityRegistrationToken }).safeParse(request.body);
+
+    if (!parsed.success) {
+      return linkError(reply, 400, 'unknown');
+    }
+
+    const outcome = await openRegistrationLink(sql, parsed.data.token);
+
+    if (!outcome.ok) {
+      return linkError(reply, 404, outcome.rejection);
+    }
+
+    return outcome.view;
   });
 
   /**
-   * The one bootstrap endpoint (PLAN.md §4.1a). The response carries the
-   * registering device's credential — shown once, never a database credential.
+   * Registers the approved facility (PLAN.md §4.1a). The response carries the
+   * registering device's credential — shown once, never a database credential —
+   * and the first admin's session on it.
    */
   app.post('/facilities', async (request, reply) => {
     const parsed = FacilityRegistration.safeParse(request.body);
@@ -99,22 +159,36 @@ export const registerFacilityRoutes = (
     if (!outcome.ok) {
       switch (outcome.error) {
         case 'invalid_invite':
-          return reply.code(403).send(inviteError(outcome.rejection));
-        case 'invalid_email_code':
-          return reply.code(403).send({
-            error: 'invalid_email_code',
-            message: 'That email code is not right, or has expired — ask for a new one',
-          } satisfies ApiErrorBody);
+          return linkError(reply, 403, outcome.rejection);
+        case 'invalid_password':
+          return refuse(reply, 400, outcome.error, outcome.message);
+        case 'wrong_password':
+          return refuse(
+            reply,
+            403,
+            outcome.error,
+            'That is not the password of this email. Enter your Geneus password, or reset it from the sign-in screen',
+          );
+        case 'locked':
+          return reply.code(429).send({
+            error: outcome.error,
+            message: 'Too many wrong passwords. Try again later',
+            retryAt: outcome.retryAt,
+          });
         case 'facility_code_taken':
-          return reply.code(409).send({
-            error: 'facility_code_taken',
-            message: `Facility code ${parsed.data.code} is already registered`,
-          } satisfies ApiErrorBody);
+          return refuse(
+            reply,
+            409,
+            outcome.error,
+            'This facility code was registered by someone else meanwhile. Contact Geneus',
+          );
         case 'device_already_enrolled':
-          return reply.code(409).send({
-            error: 'device_already_enrolled',
-            message: 'This device is already enrolled with a facility',
-          } satisfies ApiErrorBody);
+          return refuse(
+            reply,
+            409,
+            outcome.error,
+            'This device is already enrolled with a facility',
+          );
       }
     }
 

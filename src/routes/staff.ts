@@ -2,13 +2,11 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import {
   hasRole,
   mayApprovePin,
-  PinSetupCodeRequest,
   StaffEmailConfirmation,
   StaffEmailRequest,
   type ApiErrorBody,
   type EmailSent,
   type InvitationCheckResult,
-  type PinSetupCodeIssued,
 } from '#shared';
 import { recordAuditEvent } from '../audit/auditEvents.ts';
 import { authenticateDevice } from '../auth/deviceAuth.ts';
@@ -27,7 +25,6 @@ import {
   verificationEmail,
 } from '../email/verifications.ts';
 import { maskEmail, type Mailer } from '../lib/email.ts';
-import { issuePinSetupCode } from '../staff/pinSetupCodes.ts';
 import {
   contactActivation,
   deliverInvitation,
@@ -48,25 +45,11 @@ const INVALID_INVITATION_CODE =
  * enrolled device, and the facility comes from its credential, so a member of
  * staff of another facility is simply not found.
  *
- * - Issuing a PIN setup code for someone: an admin holding `staff:manage`,
- *   proven by their own server session (PIN or emailed code), never by a
- *   staff id the device asserts.
+ * - Inviting someone: an admin holding `staff:manage`, proven by their own
+ *   server session, never by a staff id the device asserts.
  * - A facility admin's recovery email: set only by that admin in their own
  *   proven session, plus a code to the new inbox (and the current one).
- * - A PIN setup code sent to the recovery email: the inbox protects it — a
- *   code is only ever emailed to the admin's own proven address.
  */
-const pinCodeEmail = (code: string, expiresOn: string) => ({
-  subject: 'Your Geneus PIN code',
-  text: [
-    `Your Geneus PIN code is ${code}.`,
-    '',
-    'On the sign-in screen, tap your name, choose "I have a code from my admin", enter this code and choose a new PIN.',
-    `It works once, until ${new Date(expiresOn).toUTCString()}.`,
-    '',
-    "If you did not ask for it, someone with one of your facility's phones did. Nobody can use it without this email, but tell your team.",
-  ].join('\n'),
-});
 
 const refuse = (reply: FastifyReply, status: number, error: string, message: string) =>
   reply.code(status).send({ error, message } satisfies ApiErrorBody);
@@ -97,7 +80,7 @@ export const registerStaffRoutes = (
   };
 
   /**
-   * A recovery email decides where PIN codes go, so it is set only by the
+   * A recovery email is where password reset codes go, so it is set only by the
    * admin themselves as the server has proven them — never by a device that
    * merely names them.
    */
@@ -127,178 +110,6 @@ export const registerStaffRoutes = (
 
     return undefined;
   };
-
-  app.post<{ Params: { staffId: string } }>('/staff/:staffId/pin-codes', async (request, reply) => {
-    const identity = await authenticateDevice(sql, request, reply);
-
-    if (!identity) {
-      return;
-    }
-
-    const parsed = PinSetupCodeRequest.safeParse(request.body);
-
-    if (!parsed.success) {
-      return reply.code(400).send({
-        error: 'invalid_request',
-        message: 'issuedBy is required',
-        issues: parsed.error.issues,
-      } satisfies ApiErrorBody);
-    }
-
-    // A PIN code makes whoever holds it that person on a device, so the issuer must be proven, not asserted.
-    const issuer = await verifiedRequestStaff(sql, identity, request.headers);
-
-    if (!issuer) {
-      return refuse(reply, 403, 'staff_session_required', 'Confirm your PIN to issue a PIN code');
-    }
-
-    if (issuer.id !== parsed.data.issuedBy) {
-      return refuse(
-        reply,
-        403,
-        'attribution_mismatch',
-        'A PIN code is issued in the name of the person signed in',
-      );
-    }
-
-    const authorized = await authorizeStaff(sql, identity.facilityId, issuer.id, 'staff:manage');
-
-    if ('denial' in authorized) {
-      request.log.warn(
-        { deviceId: identity.deviceId, denial: authorized.denial },
-        'PIN setup code refused',
-      );
-
-      return reply.code(403).send({
-        error: 'forbidden',
-        message: describeDenial(authorized.denial),
-      } satisfies ApiErrorBody);
-    }
-
-    const target = await findStaffInFacility(sql, identity.facilityId, request.params.staffId);
-
-    if (!target?.active) {
-      return refuse(
-        reply,
-        404,
-        'unknown_staff',
-        'No active member of staff with that id at this facility',
-      );
-    }
-
-    if (!mayApprovePin(authorized.staff, target)) {
-      return refuse(
-        reply,
-        403,
-        'forbidden',
-        'You cannot reset a PIN for someone with access you do not hold',
-      );
-    }
-
-    const outcome = await issuePinSetupCode(sql, {
-      facilityId: identity.facilityId,
-      staffId: request.params.staffId,
-      issuedBy: parsed.data.issuedBy,
-      issuedFrom: identity.deviceId,
-    });
-
-    if (!outcome.ok) {
-      if (outcome.error === 'clinical_review_required') {
-        return refuse(
-          reply,
-          403,
-          'clinical_review_required',
-          'An authorized clinical reviewer must approve this account reset',
-        );
-      }
-
-      return reply.code(404).send({
-        error: 'unknown_staff',
-        message: 'No active member of staff with that id at this facility',
-      } satisfies ApiErrorBody);
-    }
-
-    request.log.info(
-      {
-        facilityId: identity.facilityId,
-        staffId: request.params.staffId,
-        issuedBy: parsed.data.issuedBy,
-      },
-      'PIN setup code issued',
-    );
-
-    const response: PinSetupCodeIssued = {
-      code: outcome.code,
-      expiresOn: outcome.record.expiresOn,
-    };
-
-    return reply.code(201).send(response);
-  });
-
-  /**
-   * A facility admin who forgot their PIN gets a PIN setup code at their
-   * recovery email. Anyone holding a facility phone can ask; only the admin's
-   * inbox receives the code.
-   */
-  app.post<{ Params: { staffId: string } }>(
-    '/staff/:staffId/pin-codes/email',
-    async (request, reply) => {
-      const identity = await authenticateDevice(sql, request, reply);
-
-      if (!identity) {
-        return;
-      }
-
-      const admin = await findAdmin(identity.facilityId, request.params.staffId);
-
-      if (!admin) {
-        return refuse(
-          reply,
-          404,
-          'not_an_admin',
-          'Only a facility admin can get a PIN code by email',
-        );
-      }
-
-      const email = await findStaffEmail(sql, identity.facilityId, admin.id);
-
-      if (!email) {
-        return refuse(
-          reply,
-          404,
-          'no_recovery_email',
-          'No recovery email is on file for this admin — ask another admin for a code',
-        );
-      }
-
-      const outcome = await issuePinSetupCode(sql, {
-        facilityId: identity.facilityId,
-        staffId: admin.id,
-        issuedBy: 'system',
-        issuedFrom: identity.deviceId,
-        channel: 'email',
-      });
-
-      if (!outcome.ok) {
-        return refuse(
-          reply,
-          404,
-          'not_an_admin',
-          'Only a facility admin can get a PIN code by email',
-        );
-      }
-
-      await mailer.send({ to: email, ...pinCodeEmail(outcome.code, outcome.record.expiresOn) });
-      request.log.info(
-        { facilityId: identity.facilityId, staffId: admin.id },
-        'PIN setup code emailed',
-      );
-
-      const response: EmailSent = { sentTo: maskEmail(email), expiresOn: outcome.record.expiresOn };
-
-      return reply.code(202).send(response);
-    },
-  );
 
   /**
    * Step one of adding or changing an admin's own recovery email: a code to the

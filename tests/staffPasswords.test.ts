@@ -2,11 +2,11 @@ import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import type { FastifyInstance } from 'fastify';
 import type { FacilityRegistrationResult, Staff } from '#shared';
-import { issuePinSetupCode } from '../src/staff/pinSetupCodes.ts';
 import { verifyCredential } from '../src/devices/credentials.ts';
 import {
   addStaff,
   asDevice,
+  invitationCodeFor,
   lastCodeSentTo,
   mailbox,
   registerScratchFacility,
@@ -58,7 +58,7 @@ describe('staff passwords', () => {
     const accepted = await post('/staff/session/enrol', {
       staffId: nurse.id,
       pin: '583920',
-      setupCode: lastCodeSentTo(email),
+      setupCode: await invitationCodeFor(db.sql, email),
       password,
     });
 
@@ -168,24 +168,23 @@ describe('staff passwords', () => {
   });
 
   describe('choosing the first password', () => {
-    it('is refused with a setup code read aloud, which proves no inbox', async () => {
-      const nurse = await addStaff(db.sql, a, { role: 'nurse', name: 'Funmi Nurse' });
-      const issued = await issuePinSetupCode(db.sql, {
-        facilityId: a.facility.id,
-        staffId: nurse.id,
-        issuedBy: a.admin.id,
-        issuedFrom: a.device.deviceId,
-      });
-      assert.ok(issued.ok);
+    it('is refused with anything but an invitation, which proves the inbox', async () => {
+      await invitedNurse('funmi@example.org');
+      const nurse = await addStaff(db.sql, a, { role: 'nurse', name: 'Funmi Second' });
+      const { pinGrant } = (await signIn('funmi@example.org', PASSWORD)).json();
 
       const refused = await post('/staff/session/enrol', {
         staffId: nurse.id,
         pin: '583920',
-        setupCode: issued.code,
+        pinGrant,
         password: PASSWORD,
       });
 
-      assert.equal(refused.json().error, 'password_needs_invitation');
+      assert.equal(
+        refused.statusCode,
+        400,
+        'the contract allows a password only with an invitation',
+      );
       assert.deepEqual(await serverPins(nurse.id), [], 'nothing was registered');
     });
   });
@@ -225,6 +224,44 @@ describe('staff passwords', () => {
 
       assert.equal(requested.statusCode, 202);
       assert.equal(mailbox.length, sentBefore);
+    });
+
+    it('works on a device set up nowhere, recorded on the server alone', async () => {
+      await invitedNurse('jumoke@example.org');
+
+      const requested = await post(
+        '/staff/password/reset/request',
+        { email: 'jumoke@example.org' },
+        {},
+      );
+      assert.equal(requested.statusCode, 202, requested.body);
+
+      const reset = await post(
+        '/staff/password/reset',
+        {
+          email: 'jumoke@example.org',
+          code: lastCodeSentTo('jumoke@example.org'),
+          password: 'reset from my phone',
+        },
+        {},
+      );
+      assert.equal(reset.statusCode, 204, reset.body);
+      assert.equal((await signIn('jumoke@example.org', 'reset from my phone')).statusCode, 200);
+
+      const [event] = await db.sql`
+        SELECT action, facility_id FROM staff_account_events WHERE email = 'jumoke@example.org'`;
+      assert.equal(event?.action, 'password_reset');
+      assert.equal(event?.facility_id, a.facility.id);
+    });
+
+    it('refuses a device credential that is not right', async () => {
+      const refused = await post(
+        '/staff/password/reset/request',
+        { email: 'jumoke@example.org' },
+        { authorization: 'Bearer device:nowhere.wrong' },
+      );
+
+      assert.equal(refused.statusCode, 401);
     });
 
     it('refuses a wrong code', async () => {
@@ -302,7 +339,7 @@ describe('one person, several facilities, and new devices', () => {
 
     assert.equal(sent.statusCode, 201, sent.body);
 
-    return { nurse, code: lastCodeSentTo(email) };
+    return { nurse, code: await invitationCodeFor(db.sql, email) };
   };
 
   const accept = (f: FacilityRegistrationResult, staffId: string, extra: object) =>
@@ -486,5 +523,114 @@ describe('one person, several facilities, and new devices', () => {
 
       assert.equal(refused.json().error, 'wrong_password');
     });
+  });
+});
+
+describe('a first password for staff who signed in before passwords', () => {
+  let db: ScratchDatabase;
+  let app: FastifyInstance;
+  let a: FacilityRegistrationResult;
+
+  const post = (url: string, payload: unknown, headers: Record<string, string>) =>
+    app.inject({ method: 'POST', url, payload: payload as object, headers });
+
+  /** A nurse with a verified email, signed in with their PIN: no password yet. */
+  const signedInNurse = async (email: string | undefined) => {
+    const nurse = await addStaff(db.sql, a, { role: 'nurse', name: `Nurse ${email ?? 'none'}` });
+
+    if (email) {
+      await db.sql`INSERT INTO staff_contacts (facility_id, staff_id, email, verified_on) VALUES (${a.facility.id}, ${nurse.id}, ${email}, now())`;
+    }
+
+    const session = (await staffSessionFor(app, a.device.credential, nurse.id))!;
+
+    return { nurse, headers: { ...asDevice(a.device.credential), 'x-staff-session': session } };
+  };
+
+  before(async () => {
+    db = await scratchDatabase();
+    app = testApp(db.sql);
+    a = await registerScratchFacility(db.sql);
+  });
+
+  after(async () => {
+    if (app) {
+      await app.close();
+    }
+
+    if (db) {
+      await db.drop();
+    }
+  });
+
+  it('sets it from a code to their own email, once, and never replaces it', async () => {
+    const { headers } = await signedInNurse('mide@example.org');
+
+    const before = await post('/staff/me/password/status', {}, headers);
+    assert.deepEqual(before.json(), { email: before.json().email, hasPassword: false });
+    assert.ok(before.json().email.includes('@example.org'), 'the masked address');
+
+    assert.equal((await post('/staff/me/password/code', {}, headers)).statusCode, 202);
+
+    const set = await post(
+      '/staff/me/password',
+      { code: lastCodeSentTo('mide@example.org'), password: 'my first password' },
+      headers,
+    );
+    assert.equal(set.statusCode, 204, set.body);
+    assert.equal((await post('/staff/me/password/status', {}, headers)).json().hasPassword, true);
+
+    const signedIn = await post(
+      '/staff/password/sign-in',
+      { email: 'mide@example.org', password: 'my first password' },
+      asDevice(a.device.credential),
+    );
+    assert.equal(signedIn.statusCode, 200, signedIn.body);
+
+    // Signing in on this device ended the earlier session here: one person at a time.
+    const again = await post(
+      '/staff/me/password/code',
+      {},
+      { ...asDevice(a.device.credential), 'x-staff-session': signedIn.json().token },
+    );
+    assert.equal(again.json().error, 'existing_account', 'a forgotten one is reset instead');
+  });
+
+  it('needs their proven session and a verified email', async () => {
+    const noSession = await post('/staff/me/password/status', {}, asDevice(a.device.credential));
+    assert.equal(noSession.json().error, 'staff_session_required');
+
+    const { headers } = await signedInNurse(undefined);
+    assert.deepEqual((await post('/staff/me/password/status', {}, headers)).json(), {
+      email: null,
+      hasPassword: false,
+    });
+    assert.equal((await post('/staff/me/password/code', {}, headers)).json().error, 'no_email');
+  });
+
+  it('shows administrators who has an email and a password', async () => {
+    const { nurse: withEmail } = await signedInNurse('nneka@example.org');
+    const { nurse: withoutEmail } = await signedInNurse(undefined);
+
+    const admin = {
+      ...asDevice(a.device.credential),
+      'x-staff-session': (await staffSessionFor(app, a.device.credential, a.admin.id))!,
+    };
+
+    const listed = await post('/staff/invitations/list', {}, admin);
+    assert.equal(listed.statusCode, 200, listed.body);
+
+    const byId = new Map(
+      (listed.json().staff as { staffId: string; hasEmail: boolean; passwordSet: boolean }[]).map(
+        (s) => [s.staffId, s],
+      ),
+    );
+
+    assert.equal(byId.get(withEmail.id)?.hasEmail, true);
+    assert.equal(byId.get(withEmail.id)?.passwordSet, false);
+    assert.equal(byId.get(withoutEmail.id)?.hasEmail, false);
+
+    const panel = await post(`/staff/${withEmail.id}/contact-activation`, {}, admin);
+    assert.equal(panel.json().password, 'not_set');
   });
 });

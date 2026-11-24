@@ -1222,33 +1222,6 @@ streams:
           AND ifnull(entity_type, '') <> 'coverage_financial_summary'
           AND ifnull(entity_type, '') <> 'payer' AND ifnull(entity_type, '') <> 'cover_schedule' AND ifnull(entity_type, '') <> 'patient_cover' AND ifnull(entity_type, '') <> 'cover_check' AND ifnull(entity_type, '') <> 'coverage_election' AND ifnull(entity_type, '') <> 'coverage_allocation' AND ifnull(entity_type, '') <> 'refund' AND ifnull(entity_type, '') <> 'service_completion'
           AND (visibility IS NULL OR visibility = 'facility')
-  pin_setup_codes:
-    auto_subscribe: true
-    queries:
-      - |
-        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", staff_id AS "staffId", code_hash AS "codeHash", code_salt AS "codeSalt", code_iterations AS "codeIterations", expires_on AS "expiresOn", revoked_on AS "revokedOn", used_on AS "usedOn", used_on_device AS "usedOnDevice"
-        FROM pin_setup_codes
-        WHERE facility_id = auth.parameter('facility_id')
-          AND auth.parameter('facility_contract') = 1
-          AND auth.parameter('clinical_workflow') = 1
-      - |
-        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", staff_id AS "staffId", code_hash AS "codeHash", code_salt AS "codeSalt", code_iterations AS "codeIterations", expires_on AS "expiresOn", revoked_on AS "revokedOn", used_on AS "usedOn", used_on_device AS "usedOnDevice"
-        FROM pin_setup_codes
-        WHERE facility_id = auth.parameter('facility_id')
-          AND (auth.parameter('facility_contract') IS NULL OR auth.parameter('facility_contract') <> 1)
-          AND auth.parameter('clinical_workflow') = 1
-      - |
-        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", staff_id AS "staffId", code_hash AS "codeHash", code_salt AS "codeSalt", code_iterations AS "codeIterations", expires_on AS "expiresOn", revoked_on AS "revokedOn", used_on AS "usedOn", used_on_device AS "usedOnDevice"
-        FROM pin_setup_codes
-        WHERE facility_id = auth.parameter('facility_id')
-          AND auth.parameter('facility_contract') = 1
-          AND (auth.parameter('clinical_workflow') IS NULL OR auth.parameter('clinical_workflow') <> 1)
-      - |
-        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", staff_id AS "staffId", code_hash AS "codeHash", code_salt AS "codeSalt", code_iterations AS "codeIterations", expires_on AS "expiresOn", revoked_on AS "revokedOn", used_on AS "usedOn", used_on_device AS "usedOnDevice"
-        FROM pin_setup_codes
-        WHERE facility_id = auth.parameter('facility_id')
-          AND (auth.parameter('facility_contract') IS NULL OR auth.parameter('facility_contract') <> 1)
-          AND (auth.parameter('clinical_workflow') IS NULL OR auth.parameter('clinical_workflow') <> 1)
   fee_items:
     auto_subscribe: true
     queries:

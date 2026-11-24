@@ -8,13 +8,11 @@ import {
   consumeVerification,
   findStaffEmail,
 } from '../email/verifications.ts';
-import { hashPinSetupCode } from '../staff/pinSetupCodes.ts';
 import {
   acceptInvitation,
   invitationDestination,
   matchInvitationCode,
 } from '../staff/invitations.ts';
-import { completePrivateAccess } from '../workforce/privateAccess.ts';
 import {
   checkPassword,
   hasPassword,
@@ -196,10 +194,8 @@ const applyInvitationAccount = async (
 /**
  * Registers a PIN with the server for this person on this device, and opens a
  * session. Proof of who they are: the PIN grant from signing in with their
- * password on this device; a PIN setup code an administrator issued to them
- * (read aloud, or sent as an invitation — accepted here, online only); or a
- * code sent to their own verified email, for PINs set before server sessions
- * existed. Accepting an invitation is also where the first password is chosen.
+ * password on this device, or the code of an invitation emailed to them
+ * (accepted here, online only), which is also where the first password is chosen.
  */
 export const enrolPin = async (
   sql: Sql,
@@ -209,7 +205,6 @@ export const enrolPin = async (
     pin: string;
     pinGrant?: string;
     setupCode?: string;
-    emailCode?: string;
     password?: string;
     existingAccount?: ExistingAccountProof;
   },
@@ -218,70 +213,28 @@ export const enrolPin = async (
     throw new StaffSessionRefusal('unknown_staff', 'No such member of staff here');
   }
 
-  let proof: 'password' | 'setup_code' | 'email' | 'invitation';
+  let proof: 'password' | 'invitation';
   let invitationId: string | undefined;
 
   if (input.pinGrant) {
     // Spent with the PIN below, so a refused registration leaves the grant usable.
     proof = 'password';
-  } else if (input.setupCode) {
-    const codes = await sql<
-      {
-        id: string;
-        code_hash: string;
-        code_salt: string;
-        code_iterations: number;
-        used_on: Date | null;
-        used_on_device: string | null;
-      }[]
-    >`
-      SELECT id, code_hash, code_salt, code_iterations, used_on, used_on_device FROM pin_setup_codes
-      WHERE facility_id = ${identity.facilityId} AND staff_id = ${input.staffId} AND revoked_on IS NULL AND expires_on > now()
-        AND (used_on IS NULL OR (used_on_device = ${identity.deviceId} AND used_on > now() - interval '1 day'))`;
-
-    const match = codes.find((c) =>
-      same(hashPinSetupCode(input.setupCode!, c.code_salt, c.code_iterations), c.code_hash),
-    );
-
-    if (match) {
-      if (!match.used_on) {
-        await sql`UPDATE pin_setup_codes SET used_on = now(), used_on_device = ${identity.deviceId}, updated_by = ${input.staffId}, updated_on = now() WHERE id = ${match.id} AND used_on IS NULL`;
-      }
-
-      proof = 'setup_code';
-    } else {
-      invitationId = await matchInvitationCode(
-        sql,
-        identity.facilityId,
-        input.staffId,
-        input.setupCode,
-      );
-
-      if (!invitationId) {
-        throw new StaffSessionRefusal(
-          'invalid_setup_code',
-          'This PIN code is not right, has expired or was already used. Ask your administrator for a new one',
-        );
-      }
-
-      proof = 'invitation';
-    }
   } else {
-    const session = await completePrivateAccess(
+    invitationId = await matchInvitationCode(
       sql,
-      identity,
+      identity.facilityId,
       input.staffId,
-      input.emailCode ?? '',
+      input.setupCode ?? '',
     );
 
-    if (!session) {
+    if (!invitationId) {
       throw new StaffSessionRefusal(
-        'invalid_email_code',
-        'The email code is not right, or has expired',
+        'invalid_setup_code',
+        'This invitation code is not right, has expired or was already used. Ask your administrator to send a new invitation',
       );
     }
 
-    proof = 'email';
+    proof = 'invitation';
   }
 
   const salt = randomBytes(16).toString('base64');

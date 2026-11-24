@@ -3,16 +3,17 @@ import type { Sql, Tx } from '../db/client.ts';
 
 /**
  * Registering a facility creates an organisation and enrols a device, so it
- * cannot be open to anyone who can reach the server. An invite is issued out
- * of band (scripts/create-invite.ts) and spent exactly once.
+ * cannot be open to anyone who can reach the server. An invite is minted when
+ * a Geneus operator approves a sign-up request (signupRequests.ts), travels in
+ * the registration link emailed to the requester, and is spent exactly once.
  *
  * Invites are plain server state — they exist before any facility does and are
  * never synced — so they have their own table and no contract shape.
  */
 
-/** No I/O/0/1: these are read off a screen and typed in by hand. */
+/** Uppercase only, since lookups normalise case; 32 characters is 160 bits, as strong as any link token. */
 const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-const TOKEN_LENGTH = 10;
+const TOKEN_LENGTH = 32;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 export type Invite = {
@@ -48,7 +49,7 @@ const fromRow = (row: InviteRow): Invite => ({
 const normalise = (token: string) => token.trim().toUpperCase();
 
 export const createInvite = async (
-  sql: Sql,
+  sql: Sql | Tx,
   label: string,
   validForDays: number,
 ): Promise<Invite> => {

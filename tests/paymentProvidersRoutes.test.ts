@@ -5,13 +5,13 @@ import type { FastifyInstance } from 'fastify';
 import type { FacilityRegistrationResult } from '#shared';
 import { buildApp } from '../src/app.ts';
 import { resetMonnifyTokens } from '../src/billing/providers/monnify.ts';
-import { issuePinSetupCode } from '../src/staff/pinSetupCodes.ts';
 import {
   config,
   signer,
   registerScratchFacility,
   scratchDatabase,
   type ScratchDatabase,
+  staffSessionWith,
 } from './postgres.ts';
 
 // Fictional keys and provider replies only. Monnify replies follow its documentation; plan step 0 confirms them in the sandbox.
@@ -124,24 +124,12 @@ describe('payment providers: one central account, switching provider, Monnify ve
 
   const post = async (path: string, body: Record<string, unknown>) => {
     if (!session) {
-      const proof = await issuePinSetupCode(db.sql, {
-        facilityId: facility.facility.id,
-        staffId: facility.admin.id,
-        issuedBy: facility.admin.id,
-        issuedFrom: facility.device.deviceId,
-      });
-
-      assert.ok(proof.ok);
-
-      const response = await app.inject({
-        method: 'POST',
-        url: '/staff/session/enrol',
-        headers: { authorization: `Bearer ${facility.device.credential}` },
-        payload: { staffId: facility.admin.id, pin: '246810', setupCode: proof.code },
-      });
-
-      assert.equal(response.statusCode, 200, response.body);
-      session = response.json().token;
+      session = (await staffSessionWith(
+        app,
+        db.sql,
+        facility.device.credential,
+        facility.admin.id,
+      ))!;
     }
 
     return app.inject({

@@ -1,4 +1,4 @@
-import { createHash, pbkdf2, randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHash, pbkdf2, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
 import type { Sql, Tx } from '../db/client.ts';
 import type { DeviceIdentity } from '../devices/credentials.ts';
@@ -61,7 +61,7 @@ export const hashNewPassword = async (password: string): Promise<PasswordHash> =
   };
 };
 
-export type PasswordSetBy = 'invitation' | 'reset' | 'change';
+export type PasswordSetBy = 'invitation' | 'reset' | 'change' | 'registration';
 
 /** Sets or replaces the password for an email, clearing any lockout. */
 export const savePassword = async (
@@ -236,4 +236,22 @@ export const endAccessForEmail = async (tx: Tx, email: string): Promise<void> =>
     UPDATE staff_pin_grants SET used_on = now()
     WHERE used_on IS NULL AND (facility_id, staff_id) IN (
       SELECT facility_id, staff_id FROM staff_contacts WHERE lower(email) = ${email})`;
+};
+
+/**
+ * An account event with no facility device to record it against — a password
+ * reset from a device set up nowhere. Kept on the server only, attributed to
+ * the person's primary membership when they have one.
+ */
+export const recordAccountEvent = async (
+  tx: Tx,
+  email: string,
+  action: 'password_reset',
+): Promise<void> => {
+  const membership = await primaryMembership(tx, email);
+
+  await tx`
+    INSERT INTO staff_account_events (id, email, action, facility_id, staff_id)
+    VALUES (${`account_event:${randomUUID()}`}, ${email}, ${action},
+      ${membership?.facilityId ?? null}, ${membership?.staffId ?? null})`;
 };

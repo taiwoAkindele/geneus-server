@@ -5,16 +5,16 @@ import type { DeviceCredential } from '#shared';
 import { authorizeStaff } from '../auth/staffAuthorization.ts';
 import type { DeviceIdentity } from '../devices/credentials.ts';
 import { claimCodeAndEnroll, issueEnrollmentCode } from '../devices/enrollment.ts';
+import { hasPassword } from '../auth/staffPasswords.ts';
 import { findStaffEmail, saveStaffEmail } from '../email/verifications.ts';
 import { EmailNotSent, maskEmail, type Mailer } from '../lib/email.ts';
 import {
-  hashPinSetupCode,
-  newPinSetupCode,
-  PIN_SETUP_CODE_ITERATIONS,
-  PIN_SETUP_CODE_TTL_MS,
-  pinAuthorityRefusal,
-  revokeOpenPinSetupCodes,
-} from './pinSetupCodes.ts';
+  hashInvitationCode,
+  INVITATION_CODE_ITERATIONS,
+  INVITATION_CODE_TTL_MS,
+  invitationAuthorityRefusal,
+  newInvitationCode,
+} from './invitationCodes.ts';
 
 const newDeviceState = (row: { allows_new_device: unknown; device_enrolled_on: unknown }) => {
   if (!row.allows_new_device) {
@@ -25,10 +25,11 @@ const newDeviceState = (row: { allows_new_device: unknown; device_enrolled_on: u
 };
 
 /**
- * Staff invitations (SCHEMA.md §10): the PIN setup code an administrator would
- * read aloud, sent instead to a contact they entered. The person redeems it on
- * a facility device, online, through POST /staff/session/enrol — which checks
- * it here, accepts it and registers their PIN in one transaction.
+ * Staff invitations (SCHEMA.md §10): an email to a contact the administrator
+ * entered, whose link leads the person to choosing their password and PIN. The
+ * link is exchanged on a facility device for a one-time code, which
+ * POST /staff/session/enrol checks here, accepting the invitation and
+ * registering their PIN in one transaction, online.
  *
  * Three things are kept apart:
  * - delivery: whether the email provider took the message (never "delivered");
@@ -195,9 +196,8 @@ const linkHash = (token: string) => createHash('sha256').update(token.trim()).di
 
 /**
  * Creates an invitation for `staffId` to `email`. In one transaction, under the
- * facility row lock so limits are counted exactly: checks authority as for a
- * PIN code, the contact rules and the limits; revokes any code read aloud and
- * any earlier invitation; stores the hashes of the new code and link. Sending
+ * facility row lock so limits are counted exactly: checks the inviter's
+ * authority, the contact rules and the limits; revokes any earlier invitation; stores the hashes of the new code and link. Sending
  * is a separate step (`deliverInvitation`), after commit. `allowNewDevice` is
  * only passed by a route that has checked the sender may enrol devices.
  */
@@ -221,7 +221,7 @@ export const issueStaffInvitation = async (
       return { ok: false, error: 'own_account' };
     }
 
-    const refusal = await pinAuthorityRefusal(tx, input, true);
+    const refusal = await invitationAuthorityRefusal(tx, input);
 
     if (refusal) {
       return { ok: false, error: refusal };
@@ -273,21 +273,20 @@ export const issueStaffInvitation = async (
       return { ok: false, error: 'facility_limit' };
     }
 
-    await revokeOpenPinSetupCodes(tx, input);
     await tx`
       UPDATE staff_invitations SET revoked_on = now(), revoked_by = ${input.issuedBy}, revoked_reason = 'resent'
       WHERE facility_id = ${input.facilityId} AND staff_id = ${input.staffId} AND accepted_on IS NULL AND revoked_on IS NULL`;
 
-    const code = newPinSetupCode();
+    const code = newInvitationCode();
     const linkToken = newLinkToken();
     const salt = randomBytes(16).toString('base64');
     const id = `staff_invitation:${randomUUID()}`;
-    const expiresOn = new Date(Date.now() + PIN_SETUP_CODE_TTL_MS).toISOString();
+    const expiresOn = new Date(Date.now() + INVITATION_CODE_TTL_MS).toISOString();
 
     const [row] = await tx<InvitationRow[]>`
       INSERT INTO staff_invitations (id, facility_id, staff_id, channel, destination, code_hash, code_salt, code_iterations, created_by, created_from, expires_on, link_hash, allows_new_device)
-      VALUES (${id}, ${input.facilityId}, ${input.staffId}, 'email', ${email}, ${hashPinSetupCode(code, salt, PIN_SETUP_CODE_ITERATIONS)}, ${salt},
-        ${PIN_SETUP_CODE_ITERATIONS}, ${input.issuedBy}, ${input.issuedFrom}, ${expiresOn}, ${linkHash(linkToken)}, ${input.allowNewDevice === true})
+      VALUES (${id}, ${input.facilityId}, ${input.staffId}, 'email', ${email}, ${hashInvitationCode(code, salt, INVITATION_CODE_ITERATIONS)}, ${salt},
+        ${INVITATION_CODE_ITERATIONS}, ${input.issuedBy}, ${input.issuedFrom}, ${expiresOn}, ${linkHash(linkToken)}, ${input.allowNewDevice === true})
       RETURNING ${tx(VIEW_COLUMNS)}`;
 
     const [staff] = await tx<
@@ -328,7 +327,6 @@ export const invitationLink = (appUrl: string, token: string) =>
   `${appUrl.replace(/\/+$/, '')}/onboarding/invitation#token=${token}`;
 
 const invitationEmail = (input: {
-  code: string;
   link: string;
   expiresOn: string;
   staffName: string;
@@ -341,11 +339,9 @@ const invitationEmail = (input: {
     'Accept invitation:',
     input.link,
     '',
-    `Open the link on one of ${input.facilityName}'s phones or computers, or on the device your administrator set up for you. It guides you through choosing your PIN. The device needs an internet connection for this step; after it, you sign in with your PIN, even offline.`,
+    `Open the link on one of ${input.facilityName}'s phones or computers, or on the device your administrator set up for you. It guides you through choosing your password and your PIN. The device needs an internet connection for this step; after it, you sign in with your PIN, even offline.`,
     '',
-    `If the link does not open on the facility device: tap your name on the sign-in screen, choose "I have a code from my admin" and enter it there. Your Geneus PIN code is ${input.code}.`,
-    '',
-    `The link and the code work once, until ${new Date(input.expiresOn).toUTCString()}. Never share them — nobody from Geneus or your facility will ask for them.`,
+    `The link works once, until ${new Date(input.expiresOn).toUTCString()}. Never share it — nobody from Geneus or your facility will ask for it.`,
     'If you were not expecting this, you can ignore this email.',
   ].join('\n'),
 });
@@ -378,7 +374,6 @@ export const deliverInvitation = async (
     const receipt = await mailer.send({
       to: issued.destination,
       ...invitationEmail({
-        code: issued.code,
         link: invitationLink(appUrl, issued.linkToken),
         expiresOn: issued.invitation.expiresOn,
         staffName: issued.staffName,
@@ -458,7 +453,7 @@ export const matchInvitationCode = async (
     return undefined;
   }
 
-  if (same(hashPinSetupCode(code, open.code_salt, open.code_iterations), open.code_hash)) {
+  if (same(hashInvitationCode(code, open.code_salt, open.code_iterations), open.code_hash)) {
     return open.id;
   }
 
@@ -551,6 +546,8 @@ export type ContactActivation = {
   invitation?: InvitationView;
   /** Facility devices where the server holds this person's PIN. A PIN set only offline is not counted until it reaches the server. */
   activation: { serverPinDevices: number; lastPinRegisteredOn?: string };
+  /** Whether their verified email has a Geneus password, for new devices and a forgotten PIN. */
+  password: 'set' | 'not_set';
   /** When the next invitation may be sent, while the resend cooldown runs. */
   nextSendAllowedOn?: string;
 };
@@ -579,6 +576,7 @@ export const contactActivation = async (
       serverPinDevices: pins.devices,
       ...(pins.last ? { lastPinRegisteredOn: iso(pins.last) } : {}),
     },
+    password: email && (await hasPassword(sql, email.toLowerCase())) ? 'set' : 'not_set',
     ...(nextSend > Date.now() ? { nextSendAllowedOn: new Date(nextSend).toISOString() } : {}),
   };
 };
@@ -586,10 +584,13 @@ export const contactActivation = async (
 export type StaffOnboardingSummary = {
   staffId: string;
   activated: boolean;
+  /** A verified email: needed for a password, and so for new devices and a forgotten PIN. */
+  hasEmail: boolean;
+  passwordSet: boolean;
   invitation?: { status: InvitationStatus; delivery: InvitationDelivery; expiresOn: string };
 };
 
-/** One line per person with an invitation or a server-registered PIN: for the Staff directory. */
+/** One line per member of staff, for the Staff directory: email, password, PIN and invitation. */
 export const onboardingSummaries = async (
   sql: Sql,
   facilityId: string,
@@ -605,16 +606,32 @@ export const onboardingSummaries = async (
     ).map((r) => r.staff_id),
   );
 
+  const accounts = await sql<{ staff_id: string; has_email: boolean; password_set: boolean }[]>`
+    SELECT s.id AS staff_id, c.email IS NOT NULL AS has_email, p.email IS NOT NULL AS password_set
+    FROM staff s
+    LEFT JOIN staff_contacts c ON c.facility_id = s.facility_id AND c.staff_id = s.id
+    LEFT JOIN staff_passwords p ON p.email = lower(c.email)
+    WHERE s.facility_id = ${facilityId}`;
+
   const summaries = new Map<string, StaffOnboardingSummary>();
 
-  for (const staffId of activated) {
-    summaries.set(staffId, { staffId, activated: true });
+  for (const account of accounts) {
+    summaries.set(account.staff_id, {
+      staffId: account.staff_id,
+      activated: activated.has(account.staff_id),
+      hasEmail: account.has_email,
+      passwordSet: account.password_set,
+    });
   }
 
   for (const row of latest) {
+    const account = summaries.get(row.staff_id);
+
     summaries.set(row.staff_id, {
       staffId: row.staff_id,
       activated: activated.has(row.staff_id),
+      hasEmail: account?.hasEmail ?? false,
+      passwordSet: account?.passwordSet ?? false,
       invitation: {
         status: statusOf(row),
         delivery: row.delivery_status,
@@ -813,10 +830,10 @@ export const invitationLinkCode = async (
       return { ok: false, error: 'other_facility' };
     }
 
-    const code = newPinSetupCode();
+    const code = newInvitationCode();
     const salt = randomBytes(16).toString('base64');
     await tx`
-      UPDATE staff_invitations SET code_hash = ${hashPinSetupCode(code, salt, PIN_SETUP_CODE_ITERATIONS)}, code_salt = ${salt}, code_iterations = ${PIN_SETUP_CODE_ITERATIONS}
+      UPDATE staff_invitations SET code_hash = ${hashInvitationCode(code, salt, INVITATION_CODE_ITERATIONS)}, code_salt = ${salt}, code_iterations = ${INVITATION_CODE_ITERATIONS}
       WHERE id = ${row.id}`;
 
     await recordAuditEvent(tx, {

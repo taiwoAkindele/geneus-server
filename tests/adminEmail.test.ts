@@ -1,9 +1,7 @@
 import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import type { FastifyInstance } from 'fastify';
-import type { FacilityRegistrationResult, PinSetupCode, Staff } from '#shared';
-import { fromRow } from '../src/db/records.ts';
-import { hashPinSetupCode } from '../src/staff/pinSetupCodes.ts';
+import type { FacilityRegistrationResult, Staff } from '#shared';
 import {
   addStaff,
   asDevice,
@@ -51,13 +49,6 @@ describe('admin recovery email', () => {
       payload: { requestedBy: staffId, ...payload },
     });
 
-  const emailPinCode = (staffId: string, credential = a.device.credential) =>
-    app.inject({
-      method: 'POST',
-      url: `/staff/${staffId}/pin-codes/email`,
-      headers: asDevice(credential),
-    });
-
   const contactOf = async (staffId: string) =>
     (
       await db.sql<
@@ -75,38 +66,6 @@ describe('admin recovery email', () => {
   after(async () => {
     await app.close();
     await db.drop();
-  });
-
-  describe('a PIN code by email', () => {
-    it('sends the admin a working PIN setup code at their recovery email', async () => {
-      const response = await emailPinCode(a.admin.id);
-
-      assert.equal(response.statusCode, 202, response.body);
-      assert.equal(response.json().sentTo, 'a•••@example.org');
-      const code = lastCodeSentTo('admin@example.org');
-
-      const [row] = await db.sql<Record<string, unknown>[]>`
-        SELECT * FROM pin_setup_codes WHERE staff_id = ${a.admin.id} AND revoked_on IS NULL AND used_on IS NULL`;
-
-      const stored = fromRow<PinSetupCode>('pin_setup_code', row as Record<string, unknown>);
-      assert.equal(hashPinSetupCode(code, stored.codeSalt, stored.codeIterations), stored.codeHash);
-    });
-
-    it('is only for facility admins', async () => {
-      assert.equal((await emailPinCode(nurse.id)).statusCode, 404);
-    });
-
-    it('cannot reach an admin of another facility', async () => {
-      assert.equal((await emailPinCode(b.admin.id)).statusCode, 404);
-    });
-
-    it('needs an enrolled device', async () => {
-      assert.equal(
-        (await app.inject({ method: 'POST', url: `/staff/${a.admin.id}/pin-codes/email` }))
-          .statusCode,
-        401,
-      );
-    });
   });
 
   describe('setting the recovery email', () => {
@@ -175,14 +134,6 @@ describe('admin recovery email', () => {
       assert.equal(response.statusCode, 204, response.body);
       assert.equal(await contactOf(b.admin.id), 'first@example.org');
       assert.equal(mailbox.length, before);
-    });
-
-    it('says so when an admin has no recovery email', async () => {
-      await db.sql`DELETE FROM staff_contacts WHERE staff_id = ${b.admin.id}`;
-      const response = await emailPinCode(b.admin.id, b.device.credential);
-
-      assert.equal(response.statusCode, 404);
-      assert.equal(response.json().error, 'no_recovery_email');
     });
   });
 });

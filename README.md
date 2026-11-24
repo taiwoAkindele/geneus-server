@@ -80,15 +80,13 @@ parallel. The contract's own suites (`shared/tests`) run as part of the same com
 | --- | --- |
 | `GET /health` | PostgreSQL and PowerSync reachability, signing-key source and fingerprint, open rejections, schema version; **503** when degraded |
 | `GET /time` | Ed25519-signed server clock — the anchor of the 7-day offline window |
-| `GET /invites/:token` | Check a facility invite before the admin fills anything in |
-| `POST /facilities` | Register a facility, its first admin, and enrol the registering device (returns the device credential, once) |
-| `POST /devices/codes` | *(device credential)* An enrolled device asks for a 15-minute, single-use enrollment code; `issuedBy` must hold `device:enroll` |
-| `POST /devices` | The joining device spends the code and receives its own credential; the code decides the facility |
+| `POST /email-verifications` | Email a 6-digit code to someone asking for a facility, proving their address before `POST /facility-requests` |
+| `POST /facility-requests` | "Create an account": record a facility request and email every active Geneus operator a review link of their own |
+| `POST /facility-requests/review/open` · `/decide` · `/resend` | *(operator's review link)* Show the request; approve (emails the requester a registration link) or reject with a reason; send the decision email again |
+| `POST /facility-registration/open` | Show what a registration link was approved for, spending nothing |
+| `POST /facilities` | *(registration link)* Register the approved facility, its first admin (with their password) and the registering device; returns the device credential, once, and the admin's session |
 | `POST /devices/:id/revoke` | *(device credential)* De-enrol a device of the caller's facility; `revokedBy` must hold `device:revoke`; optional wipe |
-| `POST /email-verifications` | Email a 6-digit code to the would-be admin, proving their address before `POST /facilities` (needs a valid invite) |
 | `POST /staff/:staffId/email/code` · `POST /staff/:staffId/email` | *(device credential)* A facility admin adds or replaces their own recovery email: a code to the new address, and to the one on file when replacing it |
-| `POST /staff/:staffId/pin-codes/email` | *(device credential)* A facility admin who forgot their PIN gets a PIN setup code at their recovery email |
-| `POST /staff/:staffId/pin-codes` | *(device credential)* A 24-hour, one-time code that lets that staff member set their PIN on a facility device; `issuedBy` must hold `staff:manage`; revokes their earlier codes. Only the hash is stored and synced |
 | `GET /.well-known/jwks.json` | The Ed25519 public key as a JWK — PowerSync's `jwks_uri` |
 | `POST /sync/token` | *(device credential)* A ≤1-hour EdDSA JWT: `sub` = device, `facility_id` claim drives the Sync Streams |
 | `POST /sync/upload` | *(device credential)* The PowerSync connector's write-back; every mutation authorised server-side (below) |
@@ -97,8 +95,8 @@ Every shape is in the shared contract (`shared/src/api.ts`). Device-facing route
 `Authorization: Bearer <deviceId>.<secret>`; a refused credential is a bare 401 and the
 reason (wrong secret, revoked, wipe requested) goes to the log.
 
-The routes a caller reaches without a device credential (`GET /invites/:token`,
-`POST /facilities`, `POST /devices`) allow 10 attempts a minute per address, then answer
+The routes a caller reaches without a device credential (the facility sign-up routes,
+`POST /facilities`, `POST /devices/password-sign-in`, the password reset routes) allow 10 attempts a minute per address, then answer
 429 with `Retry-After`. Every response carries `no-store` and security headers; a 5xx
 answers with a plain sentence and logs the error, so database text never reaches a caller.
 On SIGTERM the server finishes requests in flight and the signing pass, then closes.
@@ -115,7 +113,7 @@ next pass signs the new values.
 Per mutation, in one PostgreSQL transaction (`src/sync/upload.ts`):
 
 1. **Ledger** — `(device, clientId)` claimed first; a retry is acknowledged as a duplicate and applies nothing.
-2. **Table and operation** — only contract types; `facility`, `device`, `sync_rejection` and `pin_setup_code` are server-written (a device may only resolve a rejection, or mark a PIN setup code used as the person it was issued for); deletes are never accepted.
+2. **Table and operation** — only contract types; `facility`, `device` and `sync_rejection` are server-written (a device may only resolve a rejection); deletes are never accepted.
 3. **Identity** — `facilityId` and `deviceId` in the payload must equal the *authenticated* device's; the client never chooses them.
 4. **Attribution** — `createdBy` (put) / `updatedBy` (patch) must be an **active** member of staff of that facility.
 5. **Permission** — from the server's `staff` row and the shared matrix; high-risk actions (`staff:*`, `device:*`) must arrive within 24 h of being performed.
@@ -146,8 +144,6 @@ verify which human typed the offline PIN — attribution rests on the device's s
 | `npm run sync:up` · `sync:down` | The PowerSync service in Docker (with PostgreSQL) |
 | `npm run sync:config` | Regenerate `powersync/sync-config.yaml` from the contract |
 | `npm run test:sync` | The stack integration suite (needs the compose services) |
-| `npm run invite -- "<label>" [days]` | Mint a single-use facility registration code |
-| `npm run pin-code -- <FACILITY> [staffId]` | Last resort for a locked-out facility admin: lists the admins, or issues one a PIN setup code. Confirm who is asking first |
 | `npm run key:generate` | Mint the Ed25519 signing keypair (once per environment) |
 | `scripts/backup.sh [dir]` | `pg_dump` of the source of truth (custom format), prunes by `RETENTION_DAYS` |
 | `scripts/restore.sh <dump> [db] [--replace]` | Restore into a new database (default) or replace the live one |
@@ -265,10 +261,9 @@ In order:
    `reachable`, `status` `ok`. Logs are on each service's *Logs* tab.
 7. **Web app** — build it with `VITE_API_URL=https://api.<domain>` and the public key
    (geneus-web README, *Deployment*); its origin must be in `APP_ORIGINS`.
-8. **First facility** — the server's *Shell* tab is not available on the Free plan, so
-   mint the invite from your machine against the production database:
-   `POSTGRES_URL=<direct URL> npm run invite -- "<label>"` (PowerShell: set
-   `$env:POSTGRES_URL` for that one command, then remove it).
+8. **First facility** — set `PLATFORM_OPERATOR_EMAILS` so someone at Geneus is emailed
+   facility requests. The facility uses *Create an account* in the web app; an operator
+   approves it from the email, and the approval emails the registration link.
 
 **Moving the server to Starter** ($7/month, no spin-down, *Shell* available): when real
 facilities depend on it, or when a missed keep-awake check (about a minute of wake-up
@@ -315,9 +310,8 @@ geneus-web's `.env`).
    `sync-dev` → geneus-powersync-dev's, both **DNS only**; then add each as a custom
    domain on its service.
 6. **Check** — `curl -s https://api-dev.geneush.com/health` (the first call may take a
-   minute while both wake): `status` `ok`. An invite for the dev database:
-   `npm run invite -- "<label>"` with `POSTGRES_URL` set to the dev URL — which the local
-   `.env` already holds.
+   minute while both wake): `status` `ok`. A facility on dev: *Create an account* in the dev web app, approved from
+   the email sent to the dev server's `PLATFORM_OPERATOR_EMAILS`.
 
 ### Alternative: one VM beside Neon
 
@@ -362,8 +356,8 @@ access or fate with development. In order:
 7. **Web app** — build it with `VITE_API_URL=https://api.<domain>` and the public key
    (geneus-web README, *Deployment*); its origin must be in `APP_ORIGINS` — change it in
    `.env` and rerun the `up` command.
-8. **First facility** — mint an invite inside the running container:
-   `docker compose -f docker-compose.yml -f docker-compose.prod.yml exec server node scripts/create-invite.ts "<label>"`.
+8. **First facility** — with `PLATFORM_OPERATOR_EMAILS` set in `.env`, the facility uses
+   *Create an account* in the web app and an operator approves it from the email.
 
 **Updating:** `git pull --recurse-submodules`, then the `up` command from step 6; the
 server migrates at boot. **Backups**, from the first real patient record (PLAN §6): the VM

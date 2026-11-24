@@ -6,7 +6,6 @@ import { PDFDocument } from 'pdf-lib';
 import { billKey, type FacilityRegistrationResult } from '#shared';
 import { buildApp } from '../src/app.ts';
 import { insertRecord } from '../src/db/records.ts';
-import { issuePinSetupCode } from '../src/staff/pinSetupCodes.ts';
 import { pdfSafe } from '../src/patientDocuments/documentPdf.ts';
 import { maskEmail, maskPhone } from '../src/messaging/mask.ts';
 import {
@@ -16,6 +15,7 @@ import {
   registerScratchFacility,
   scratchDatabase,
   type ScratchDatabase,
+  staffSessionWith,
 } from './postgres.ts';
 
 describe('patient document helpers', () => {
@@ -43,24 +43,7 @@ describe('patient document links', () => {
 
   const post = async (path: string, body: Record<string, unknown>) => {
     if (!session) {
-      const proof = await issuePinSetupCode(db.sql, {
-        facilityId: f.facility.id,
-        staffId: f.admin.id,
-        issuedBy: f.admin.id,
-        issuedFrom: f.device.deviceId,
-      });
-
-      assert.ok(proof.ok);
-
-      const response = await app.inject({
-        method: 'POST',
-        url: '/staff/session/enrol',
-        headers: { authorization: `Bearer ${f.device.credential}` },
-        payload: { staffId: f.admin.id, pin: '246810', setupCode: proof.code },
-      });
-
-      assert.equal(response.statusCode, 200, response.body);
-      session = response.json().token;
+      session = (await staffSessionWith(app, db.sql, f.device.credential, f.admin.id))!;
     }
 
     return app.inject({

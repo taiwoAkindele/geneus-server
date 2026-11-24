@@ -16,7 +16,13 @@ import { loadConfig, type Config } from '../src/lib/config.ts';
 import { createSigner, type Signer } from '../src/lib/signing.ts';
 import { buildApp } from '../src/app.ts';
 import { createInvite } from '../src/facilities/invites.ts';
-import { registerFacility } from '../src/facilities/registration.ts';
+import {
+  hashInvitationCode,
+  INVITATION_CODE_ITERATIONS,
+  newInvitationCode,
+} from '../src/staff/invitationCodes.ts';
+import { createFacilityRecords } from '../src/facilities/registration.ts';
+import { REGISTRATION_LINK_DAYS } from '../src/facilities/signupRequests.ts';
 import { createVerificationCode, registrationSubject } from '../src/email/verifications.ts';
 import type { EmailMessage, Mailer } from '../src/lib/email.ts';
 
@@ -105,6 +111,32 @@ export const lastCodeSentTo = (to: string, pattern = /code is (\w+)\./): string 
   return code;
 };
 
+/**
+ * The code that accepts the newest invitation to `email`. The email carries a
+ * link, which the app exchanges on a facility device for a fresh code; tests
+ * give the invitation a known code the same way, without the device step, so
+ * they can also try it on an invitation that has since expired or been revoked.
+ */
+export const invitationCodeFor = async (sql: Sql, email: string): Promise<string> => {
+  const code = newInvitationCode();
+  const salt = randomBytes(16).toString('base64');
+
+  const updated = await sql`
+    UPDATE staff_invitations
+    SET code_hash = ${hashInvitationCode(code, salt, INVITATION_CODE_ITERATIONS)},
+        code_salt = ${salt}, code_iterations = ${INVITATION_CODE_ITERATIONS}
+    WHERE id = (
+      SELECT id FROM staff_invitations WHERE destination = ${email.trim().toLowerCase()}
+      ORDER BY created_on DESC LIMIT 1
+    )`;
+
+  if (updated.count !== 1) {
+    throw new Error(`no invitation was sent to ${email}`);
+  }
+
+  return code;
+};
+
 /** The app under test: same construction as server.ts, no port, no log noise, no rate limit, mail kept in `mailbox`. */
 const sqlForApp = new WeakMap<object, Sql>();
 
@@ -119,21 +151,53 @@ export const testApp = (sql: Sql) => {
   return app;
 };
 
-/** A proven admin email for a registration, without the round trip through mail. */
-export const verifiedEmailFor = async (
-  sql: Sql,
-  inviteToken: string,
-  email = 'admin@example.org',
-) => ({
+/** A proven email for a facility sign-up request, without the round trip through mail. */
+export const verifiedEmailFor = async (sql: Sql, email = 'admin@example.org') => ({
   adminEmail: email,
   emailCode: (
     await createVerificationCode(sql, {
       purpose: 'registration',
-      subject: registrationSubject(inviteToken),
+      subject: registrationSubject(email),
       email,
     })
   ).code,
 });
+
+/** A Geneus operator to decide sign-up requests. */
+export const addOperator = async (sql: Sql, email = 'operator@geneus.example'): Promise<string> => {
+  const id = `operator:${randomBytes(4).toString('hex')}`;
+
+  const [row] = await sql<{ id: string }[]>`
+    INSERT INTO platform_operators (id, email, name, added_by)
+    VALUES (${id}, ${email}, ${email.split('@')[0]}, 'test')
+    ON CONFLICT (email) DO UPDATE SET active = true
+    RETURNING id`;
+
+  return row.id;
+};
+
+/**
+ * A sign-up request already approved, and the token of its registration link —
+ * what `POST /facilities` needs, without going through the review emails.
+ */
+export const approvedSignupFor = async (
+  sql: Sql,
+  overrides: { code?: string; email?: string; adminFullName?: string } = {},
+): Promise<{ token: string; code: string; email: string }> => {
+  const code = overrides.code ?? scratchFacilityCode();
+  const email = overrides.email ?? `admin-${randomBytes(3).toString('hex')}@example.org`;
+  const operatorId = await addOperator(sql);
+  const invite = await createInvite(sql, `Scratch ${code}`, REGISTRATION_LINK_DAYS);
+
+  await sql`
+    INSERT INTO facility_signup_requests
+      (id, code, name, state, lga, level, admin_full_name, email, status, decided_by, decided_on, invite_token)
+    VALUES (${`facility_signup:${randomBytes(6).toString('hex')}`}, ${code}, ${`Scratch ${code}`},
+      'Oyo', 'Ibadan SW', 'phc', ${overrides.adminFullName ?? 'Test Admin'}, ${email},
+      'approved', ${operatorId}, now(), ${invite.token})`;
+
+  return { token: invite.token, code, email };
+};
 
 /** Uppercase and hyphenated so it satisfies the facility-code contract. */
 export const scratchFacilityCode = (): string =>
@@ -151,29 +215,25 @@ export const registerScratchFacility = async (
   overrides: { code?: string; deviceId?: string } = {},
 ): Promise<FacilityRegistrationResult> => {
   const code = overrides.code ?? scratchFacilityCode();
-  const invite = await createInvite(sql, `Scratch ${code}`, 1);
 
-  const outcome = await registerFacility(
-    sql,
-    {
-      code,
-      name: `Scratch ${code}`,
-      state: 'Oyo',
-      lga: 'Ibadan SW',
-      level: 'phc',
-      adminFullName: 'Test Admin',
-      ...(await verifiedEmailFor(sql, invite.token)),
-      deviceId: overrides.deviceId ?? `device-${randomBytes(4).toString('hex')}`,
-      inviteToken: invite.token,
-    },
-    SYNC_ENDPOINT,
+  // The records registration creates, without the sign-up and the slow
+  // password hash: POST /facilities itself is covered by facilityRegistration.test.ts.
+  return sql.begin((tx) =>
+    createFacilityRecords(
+      tx,
+      {
+        code,
+        name: `Scratch ${code}`,
+        state: 'Oyo',
+        lga: 'Ibadan SW',
+        level: 'phc',
+        adminFullName: 'Test Admin',
+        adminEmail: 'admin@example.org',
+        deviceId: overrides.deviceId ?? `device-${randomBytes(4).toString('hex')}`,
+      },
+      SYNC_ENDPOINT,
+    ),
   );
-
-  if (!outcome.ok) {
-    throw new Error(`could not register scratch facility: ${outcome.error}`);
-  }
-
-  return outcome.result;
 };
 
 /** The envelope for a record written by the facility's admin from its device. */
@@ -274,6 +334,18 @@ export const staffSessionFor = (
   return pending;
 };
 
+/** As `staffSessionFor`, for a suite that builds its own app over `sql`. */
+export const staffSessionWith = (
+  app: FastifyInstance,
+  sql: Sql,
+  credential: string,
+  staffId: string,
+): Promise<string | undefined> => {
+  sqlForApp.set(app, sql);
+
+  return staffSessionFor(app, credential, staffId);
+};
+
 const openStaffSession = async (
   app: FastifyInstance,
   credential: string,
@@ -282,7 +354,7 @@ const openStaffSession = async (
   const sql = sqlForApp.get(app);
 
   if (!sql) {
-    throw new Error('staffSessionFor needs an app from testApp');
+    throw new Error('staffSessionFor needs an app from testApp, or staffSessionWith');
   }
 
   if (!enrolled.has(staffId)) {

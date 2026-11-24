@@ -3,7 +3,7 @@ import type { Sql, Tx } from '../db/client.ts';
 
 /** What to do with the code, by why it was sent; a recovery-email change is the remaining purpose. */
 const PURPOSE_INSTRUCTIONS: Record<string, string> = {
-  registration: 'Enter it on the facility registration screen to confirm this is your email.',
+  registration: 'Enter it on the Create an account screen to confirm this is your email.',
   staff_email: 'Enter it in Geneus to confirm this as your email address.',
   operator_login: 'Enter it on the Geneus operator sign-in screen.',
   staff_password: 'Enter it in Geneus to choose a new password.',
@@ -38,9 +38,8 @@ const MAX_ATTEMPTS = 5;
 const hashOf = (id: string, code: string): string =>
   createHash('sha256').update(`${id}:${code}`).digest('hex');
 
-/** What a registration code is tied to: the invite, as it is stored. */
-export const registrationSubject = (inviteToken: string): string =>
-  inviteToken.trim().toUpperCase();
+/** What a sign-up code is tied to: the email asking Geneus for a facility. */
+export const registrationSubject = (email: string): string => `facility_signup:${email}`;
 
 /** What a staff email code is tied to: that admin, at that facility. */
 export const staffEmailSubject = (facilityId: string, staffId: string): string =>
