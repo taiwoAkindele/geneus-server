@@ -9,7 +9,6 @@
   "scripts": {
     "dev": "node --env-file-if-exists=.env --watch src/server.ts",
     "start": "node --env-file-if-exists=.env src/server.ts",
-    "invite": "node --env-file-if-exists=.env scripts/create-invite.ts",
     "key:generate": "node --env-file-if-exists=.env scripts/generate-signing-key.ts",
     "typecheck": "tsc --noEmit",
     "test": "node --test",

@@ -56,12 +56,20 @@ describe('server hardening', () => {
     assert.equal(response.json().powerSync, 'unreachable');
   });
 
-  it('stops an address guessing invite codes after ten tries a minute', async () => {
+  it('stops an address guessing registration links after ten tries a minute', async () => {
     const statuses: number[] = [];
 
     for (let attempt = 0; attempt < 11; attempt += 1) {
+      const guess = `GUESS${attempt}`.padEnd(32, 'A');
+
       statuses.push(
-        (await app.inject({ method: 'GET', url: `/invites/GUESS${attempt}` })).statusCode,
+        (
+          await app.inject({
+            method: 'POST',
+            url: '/facility-registration/open',
+            payload: { token: guess },
+          })
+        ).statusCode,
       );
     }
 

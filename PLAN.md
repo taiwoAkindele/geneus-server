@@ -290,7 +290,7 @@ geneus-server/
     lib/               # signing, config (Zod-validated env)
   powersync/           # service.yaml (PS_* env), sync-config.yaml (generated)
   docker/postgres/     # first-start init: powersync role + storage database
-  scripts/             # migrate, create-invite, generate-signing-key, generate-sync-config,
+  scripts/             # migrate, generate-signing-key, generate-sync-config,
                        # backup.sh, restore.sh, restore-drill.sh
   tests/               # node:test against real PostgreSQL (scratch DB per file);
                        # powersync.integration.ts against the compose stack (test:sync)

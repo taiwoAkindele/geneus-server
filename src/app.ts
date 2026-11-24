@@ -10,6 +10,7 @@ import type { Config } from './lib/config.ts';
 import type { Signer } from './lib/signing.ts';
 import { registerDeviceRoutes } from './routes/devices.ts';
 import { registerFacilityRoutes } from './routes/facilities.ts';
+import { registerFacilitySignupReviewRoutes } from './routes/facilitySignupReview.ts';
 import { registerStaffRoutes } from './routes/staff.ts';
 import { registerInvitationLinkRoutes } from './routes/invitationLinks.ts';
 import { registerSyncRoutes } from './routes/sync.ts';
@@ -51,13 +52,11 @@ export type AppDependencies = {
 export type AppOptions = { logger?: boolean; rateLimit?: boolean };
 
 /**
- * An invite token in a URL is as good as the invite until it is claimed, so it
- * never reaches the log. Everything else about the request is kept.
+ * A token in a URL is as good as what it unlocks, so it never reaches the log.
+ * Everything else about the request is kept.
  */
 const redactUrl = (url: string): string =>
-  url
-    .replace(/^\/invites\/[^/?#]+/, '/invites/[redacted]')
-    .replace(/^(\/public\/documents\/[^/]+\/)[^/?#]+/, '$1[redacted]');
+  url.replace(/^(\/public\/documents\/[^/]+\/)[^/?#]+/, '$1[redacted]');
 
 const serializers = {
   req: (request: FastifyRequest) => ({
@@ -75,10 +74,15 @@ const serializers = {
  */
 const RATE_LIMITED_ROUTES = new Set([
   'POST /documents/files/:id',
-  'GET /invites/:token',
-  'POST /facilities',
-  // Each sends an email, or checks a 6-digit code.
+  // Facility sign-up: each sends an email, checks a code or a password, or reads a link token.
   'POST /email-verifications',
+  'POST /facility-requests',
+  'POST /facility-registration/open',
+  'POST /facilities',
+  'POST /facility-requests/review/open',
+  'POST /facility-requests/review/decide',
+  'POST /facility-requests/review/resend',
+  // Each sends an email, or checks a 6-digit code.
   'POST /staff/:staffId/email/code',
   'POST /staff/:staffId/email',
   'POST /workforce/access/code',
@@ -359,7 +363,9 @@ export const buildApp = (
     return { ...payload, signature: signer.sign(payload), publicKey: signer.publicKeyBase64 };
   });
 
-  registerFacilityRoutes(app, sql, config, mailer);
+  // Sign-up emails link to the web app: the first configured app origin is its public address.
+  registerFacilityRoutes(app, sql, config, mailer, config.corsOrigins[0]);
+  registerFacilitySignupReviewRoutes(app, sql, mailer, config.corsOrigins[0]);
   registerDeviceRoutes(app, sql);
   registerOrganizationRoutes(app, sql);
   registerInvestigationRoutes(app, sql);

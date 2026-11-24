@@ -61,7 +61,7 @@ export const hashNewPassword = async (password: string): Promise<PasswordHash> =
   };
 };
 
-export type PasswordSetBy = 'invitation' | 'reset' | 'change';
+export type PasswordSetBy = 'invitation' | 'reset' | 'change' | 'registration';
 
 /** Sets or replaces the password for an email, clearing any lockout. */
 export const savePassword = async (

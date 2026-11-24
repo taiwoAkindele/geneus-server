@@ -4,21 +4,28 @@ import {
   Facility,
   SCHEMA_VERSION,
   Staff,
+  staffPassword,
   type FacilityDetails,
   type FacilityRegistration,
+  type FacilityRegistrationResponse,
   type FacilityRegistrationResult,
 } from '#shared';
 import { isPostgresError, UNIQUE_VIOLATION, type Sql, type Tx } from '../db/client.ts';
 import { insertRecord } from '../db/records.ts';
 import { recordAuditEvent } from '../audit/auditEvents.ts';
-import { issueCredential } from '../devices/credentials.ts';
 import {
-  checkVerificationCode,
-  consumeVerification,
-  registrationSubject,
-  saveStaffEmail,
-} from '../email/verifications.ts';
+  checkPassword,
+  hashNewPassword,
+  hasPassword,
+  issuePinGrant,
+  savePassword,
+  type PasswordHash,
+} from '../auth/staffPasswords.ts';
+import { openSession } from '../auth/staffSessions.ts';
+import { issueCredential } from '../devices/credentials.ts';
+import { saveStaffEmail } from '../email/verifications.ts';
 import { claimInvite, findInvite, rejectionFor, type InviteRejection } from './invites.ts';
+import { approvedRequestForInvite, type ApprovedSignup } from './signupRequests.ts';
 
 /**
  * Facility registration is the one thing a device cannot do for itself: no
@@ -26,20 +33,67 @@ import { claimInvite, findInvite, rejectionFor, type InviteRejection } from './i
  * staff, rosters, patients — is an ordinary record written on the device and
  * carried up by sync.
  *
- * One transaction: claim the invite, create the facility, its first admin and
- * the registering device, mint that device's credential, and keep the admin's
- * proven email for PIN recovery. Any failure rolls the whole thing back,
- * invite included.
+ * It starts from a registration link: the invite minted when Geneus approved
+ * a sign-up request. The facility details and the admin's proven email are
+ * the approved request's, never the device's.
  *
- * The email code is checked before the transaction, because a wrong guess must
- * count against it even when the registration then fails; it is spent inside.
+ * One transaction: claim the invite, create the facility, its first admin and
+ * the registering device, mint that device's credential, keep the admin's
+ * email, save their first password, and sign them in on this device. Any
+ * failure rolls the whole thing back, invite included.
+ *
+ * The password is hashed or checked before the transaction: both are slow,
+ * and a wrong guess must count against the email even when registering fails.
  */
 export type RegistrationOutcome =
-  | { ok: true; result: FacilityRegistrationResult }
+  | { ok: true; result: FacilityRegistrationResponse }
   | { ok: false; error: 'invalid_invite'; rejection: InviteRejection }
-  | { ok: false; error: 'invalid_email_code' }
+  | { ok: false; error: 'invalid_password'; message: string }
+  | { ok: false; error: 'wrong_password' }
+  | { ok: false; error: 'locked'; retryAt: string }
   | { ok: false; error: 'facility_code_taken' }
   | { ok: false; error: 'device_already_enrolled' };
+
+type PasswordSettlement =
+  | { ok: true; newPassword?: PasswordHash }
+  | Extract<RegistrationOutcome, { error: 'invalid_password' | 'wrong_password' | 'locked' }>;
+
+/**
+ * Registration never replaces a password the email already has (the person
+ * works at another facility): they prove it is them with it instead. An email
+ * with no password chooses its first one here.
+ */
+const settlePassword = async (
+  sql: Sql,
+  email: string,
+  password: string,
+): Promise<PasswordSettlement> => {
+  if (await hasPassword(sql, email)) {
+    const check = await checkPassword(sql, email, password);
+
+    if (check.ok) {
+      return { ok: true };
+    }
+
+    if (check.reason === 'locked') {
+      return { ok: false, error: 'locked', retryAt: check.retryAt };
+    }
+
+    return { ok: false, error: 'wrong_password' };
+  }
+
+  const chosen = staffPassword.safeParse(password);
+
+  if (!chosen.success) {
+    return {
+      ok: false,
+      error: 'invalid_password',
+      message: chosen.error.issues[0]?.message ?? 'Choose a longer password',
+    };
+  }
+
+  return { ok: true, newPassword: await hashNewPassword(chosen.data) };
+};
 
 type UniqueViolation = { constraint_name?: string };
 
@@ -63,46 +117,82 @@ export const facilityRegistrationConflict = (
   return undefined;
 };
 
+/** The facility, its admin and this device, then the admin's session and PIN permission here. */
+const createRegisteredFacility = async (
+  tx: Tx,
+  signup: ApprovedSignup,
+  registration: FacilityRegistration,
+  newPassword: PasswordHash | undefined,
+  syncEndpoint: string,
+): Promise<FacilityRegistrationResponse> => {
+  const created = await createFacilityRecords(
+    tx,
+    {
+      ...signup.facility,
+      adminFullName: signup.adminFullName,
+      adminEmail: signup.email,
+      deviceId: registration.deviceId,
+      deviceLabel: registration.deviceLabel,
+    },
+    syncEndpoint,
+  );
+
+  if (newPassword) {
+    await savePassword(tx, signup.email, newPassword, 'registration');
+  }
+
+  const identity = { facilityId: created.facility.id, deviceId: created.device.deviceId };
+  const session = await openSession(tx, identity, created.admin.id);
+  const grant = await issuePinGrant(tx, identity, created.admin.id);
+
+  return { ...created, session: { ...session, ...grant } };
+};
+
 export const registerFacility = async (
   sql: Sql,
   registration: FacilityRegistration,
   syncEndpoint: string,
 ): Promise<RegistrationOutcome> => {
-  const inviteRejection = rejectionFor(await findInvite(sql, registration.inviteToken));
+  const inviteRejection = rejectionFor(await findInvite(sql, registration.token));
 
   if (inviteRejection) {
     return { ok: false, error: 'invalid_invite', rejection: inviteRejection };
   }
 
-  const verificationId = await checkVerificationCode(sql, {
-    purpose: 'registration',
-    subject: registrationSubject(registration.inviteToken),
-    email: registration.adminEmail,
-    code: registration.emailCode,
-  });
+  const signup = await approvedRequestForInvite(sql, registration.token);
 
-  if (!verificationId) {
-    return { ok: false, error: 'invalid_email_code' };
+  if (!signup) {
+    return { ok: false, error: 'invalid_invite', rejection: 'unknown' };
+  }
+
+  const password = await settlePassword(sql, signup.email, registration.password);
+
+  if (!password.ok) {
+    return password;
   }
 
   try {
     return await sql.begin(async (tx): Promise<RegistrationOutcome> => {
-      const invite = await findInvite(tx, registration.inviteToken);
+      const invite = await findInvite(tx, registration.token);
       const rejection = rejectionFor(invite);
 
       if (rejection) {
         return { ok: false, error: 'invalid_invite', rejection };
       }
 
-      if (!(await consumeVerification(tx, verificationId))) {
-        return { ok: false, error: 'invalid_email_code' };
-      }
-
-      if (!(await claimInvite(tx, registration.inviteToken, registration.code))) {
+      if (!(await claimInvite(tx, registration.token, signup.facility.code))) {
         return { ok: false, error: 'invalid_invite', rejection: 'already_used' };
       }
 
-      return { ok: true, result: await createFacilityRecords(tx, registration, syncEndpoint) };
+      const result = await createRegisteredFacility(
+        tx,
+        signup,
+        registration,
+        password.newPassword,
+        syncEndpoint,
+      );
+
+      return { ok: true, result };
     });
   } catch (cause) {
     const taken = facilityRegistrationConflict(cause);
@@ -118,11 +208,18 @@ export const registerFacility = async (
 export const facilityExists = async (sql: Sql, code: string): Promise<boolean> =>
   (await sql`SELECT 1 FROM facilities WHERE id = ${code}`).length === 1;
 
-/** Shared bootstrap for invite registration and an authorized organization administrator. */
+/** What creating a facility's first records needs, whichever way it is registered. */
+export type FacilityCreation = FacilityDetails & {
+  deviceId: string;
+  deviceLabel?: string;
+  adminFullName: string;
+  adminEmail: string;
+};
+
+/** Shared bootstrap for sign-up registration and an authorized organization administrator. */
 export const createFacilityRecords = async (
   tx: Sql | Tx,
-  registration: FacilityDetails &
-    Pick<FacilityRegistration, 'deviceId' | 'deviceLabel' | 'adminFullName' | 'adminEmail'>,
+  registration: FacilityCreation,
   syncEndpoint: string,
   personId?: string,
   deviceSecret?: string,

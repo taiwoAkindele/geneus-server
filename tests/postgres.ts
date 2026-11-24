@@ -21,7 +21,8 @@ import {
   INVITATION_CODE_ITERATIONS,
   newInvitationCode,
 } from '../src/staff/invitationCodes.ts';
-import { registerFacility } from '../src/facilities/registration.ts';
+import { createFacilityRecords } from '../src/facilities/registration.ts';
+import { REGISTRATION_LINK_DAYS } from '../src/facilities/signupRequests.ts';
 import { createVerificationCode, registrationSubject } from '../src/email/verifications.ts';
 import type { EmailMessage, Mailer } from '../src/lib/email.ts';
 
@@ -150,21 +151,53 @@ export const testApp = (sql: Sql) => {
   return app;
 };
 
-/** A proven admin email for a registration, without the round trip through mail. */
-export const verifiedEmailFor = async (
-  sql: Sql,
-  inviteToken: string,
-  email = 'admin@example.org',
-) => ({
+/** A proven email for a facility sign-up request, without the round trip through mail. */
+export const verifiedEmailFor = async (sql: Sql, email = 'admin@example.org') => ({
   adminEmail: email,
   emailCode: (
     await createVerificationCode(sql, {
       purpose: 'registration',
-      subject: registrationSubject(inviteToken),
+      subject: registrationSubject(email),
       email,
     })
   ).code,
 });
+
+/** A Geneus operator to decide sign-up requests. */
+export const addOperator = async (sql: Sql, email = 'operator@geneus.example'): Promise<string> => {
+  const id = `operator:${randomBytes(4).toString('hex')}`;
+
+  const [row] = await sql<{ id: string }[]>`
+    INSERT INTO platform_operators (id, email, name, added_by)
+    VALUES (${id}, ${email}, ${email.split('@')[0]}, 'test')
+    ON CONFLICT (email) DO UPDATE SET active = true
+    RETURNING id`;
+
+  return row.id;
+};
+
+/**
+ * A sign-up request already approved, and the token of its registration link —
+ * what `POST /facilities` needs, without going through the review emails.
+ */
+export const approvedSignupFor = async (
+  sql: Sql,
+  overrides: { code?: string; email?: string; adminFullName?: string } = {},
+): Promise<{ token: string; code: string; email: string }> => {
+  const code = overrides.code ?? scratchFacilityCode();
+  const email = overrides.email ?? `admin-${randomBytes(3).toString('hex')}@example.org`;
+  const operatorId = await addOperator(sql);
+  const invite = await createInvite(sql, `Scratch ${code}`, REGISTRATION_LINK_DAYS);
+
+  await sql`
+    INSERT INTO facility_signup_requests
+      (id, code, name, state, lga, level, admin_full_name, email, status, decided_by, decided_on, invite_token)
+    VALUES (${`facility_signup:${randomBytes(6).toString('hex')}`}, ${code}, ${`Scratch ${code}`},
+      'Oyo', 'Ibadan SW', 'phc', ${overrides.adminFullName ?? 'Test Admin'}, ${email},
+      'approved', ${operatorId}, now(), ${invite.token})`;
+
+  return { token: invite.token, code, email };
+};
 
 /** Uppercase and hyphenated so it satisfies the facility-code contract. */
 export const scratchFacilityCode = (): string =>
@@ -182,29 +215,25 @@ export const registerScratchFacility = async (
   overrides: { code?: string; deviceId?: string } = {},
 ): Promise<FacilityRegistrationResult> => {
   const code = overrides.code ?? scratchFacilityCode();
-  const invite = await createInvite(sql, `Scratch ${code}`, 1);
 
-  const outcome = await registerFacility(
-    sql,
-    {
-      code,
-      name: `Scratch ${code}`,
-      state: 'Oyo',
-      lga: 'Ibadan SW',
-      level: 'phc',
-      adminFullName: 'Test Admin',
-      ...(await verifiedEmailFor(sql, invite.token)),
-      deviceId: overrides.deviceId ?? `device-${randomBytes(4).toString('hex')}`,
-      inviteToken: invite.token,
-    },
-    SYNC_ENDPOINT,
+  // The records registration creates, without the sign-up and the slow
+  // password hash: POST /facilities itself is covered by facilityRegistration.test.ts.
+  return sql.begin((tx) =>
+    createFacilityRecords(
+      tx,
+      {
+        code,
+        name: `Scratch ${code}`,
+        state: 'Oyo',
+        lga: 'Ibadan SW',
+        level: 'phc',
+        adminFullName: 'Test Admin',
+        adminEmail: 'admin@example.org',
+        deviceId: overrides.deviceId ?? `device-${randomBytes(4).toString('hex')}`,
+      },
+      SYNC_ENDPOINT,
+    ),
   );
-
-  if (!outcome.ok) {
-    throw new Error(`could not register scratch facility: ${outcome.error}`);
-  }
-
-  return outcome.result;
 };
 
 /** The envelope for a record written by the facility's admin from its device. */

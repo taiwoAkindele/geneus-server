@@ -10,10 +10,9 @@ import {
 } from '#shared';
 import { mintSyncToken } from '../src/auth/syncToken.ts';
 import { createSql } from '../src/db/client.ts';
-import { createVerificationCode, registrationSubject } from '../src/email/verifications.ts';
-import { createInvite } from '../src/facilities/invites.ts';
 import { createSigner } from '../src/lib/signing.ts';
 import { loadConfig } from '../src/lib/config.ts';
+import { approvedSignupFor } from './postgres.ts';
 import { readFirstCheckpoint, waitForRow, type SyncedRow } from './powersyncClient.ts';
 import { setupWorkforce, put, versions } from './workforceFixtures.ts';
 
@@ -157,29 +156,19 @@ describe('PowerSync stack', { timeout: 120_000 }, () => {
 
   const register = async (): Promise<Facility> => {
     const code = `SYNC-${randomBytes(2).toString('hex').toUpperCase()}`;
-    const invite = await createInvite(sql, `Stack test ${code}`, 1);
+    const signup = await approvedSignupFor(sql, {
+      code,
+      email: `stack-${code.toLowerCase()}@example.org`,
+    });
 
     return json(
       await fetch(`${SERVER_URL}/facilities`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
-          code,
-          name: `Stack test ${code}`,
-          state: 'Oyo',
-          lga: 'Ibadan SW',
-          level: 'phc',
-          adminFullName: 'Stack Admin',
-          adminEmail: 'stack@example.org',
-          emailCode: (
-            await createVerificationCode(sql, {
-              purpose: 'registration',
-              subject: registrationSubject(invite.token),
-              email: 'stack@example.org',
-            })
-          ).code,
+          token: signup.token,
           deviceId: `device-${code}`,
-          inviteToken: invite.token,
+          password: 'stack test password',
         }),
       }),
       FacilityRegistrationResult.parse,
