@@ -6,7 +6,7 @@ import {
   type ApiErrorBody,
   type ConfigurationSaveResponse,
 } from '#shared';
-import type { FastifyInstance, FastifyReply } from 'fastify';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { recordAuditEvent } from '../audit/auditEvents.ts';
 import { authenticateDevice } from '../auth/deviceAuth.ts';
 import {
@@ -20,6 +20,7 @@ import {
 import type { Sql } from '../db/client.ts';
 import type { Signer } from '../lib/signing.ts';
 import { processUpload } from '../sync/upload.ts';
+import { isStockImport } from '../sync/stockImport.ts';
 
 /** What the person proved themselves with, for the audit trail. */
 const enrolmentProof = (body: { pinGrant?: string }) => (body.pinGrant ? 'password' : 'invitation');
@@ -154,7 +155,11 @@ export const registerStaffSessionRoutes = (
    * a sync upload, plus an exact-version check, and the answer says what the
    * server accepted. Nothing is queued: a refusal leaves no trace to retry.
    */
-  app.post('/config/save', async (request, reply) => {
+  const saveConfiguration = async (
+    request: FastifyRequest,
+    reply: FastifyReply,
+    stockImport: boolean,
+  ) => {
     const identity = await authenticateDevice(sql, request, reply);
 
     if (!identity) {
@@ -167,13 +172,16 @@ export const registerStaffSessionRoutes = (
       return refuse(reply, 400, 'invalid_request', 'The change is malformed');
     }
 
-    const financial = body.data.mutations.some(
-      (m) =>
-        m.table === 'fee_item' ||
-        m.table === 'billing_department' ||
-        (['stock_item', 'service_definition', 'service_offering'].includes(m.table) &&
-          'feeItemId' in m.data),
-    );
+    const query = request.query as Record<string, unknown>;
+    const financial =
+      stockImport ||
+      body.data.mutations.some(
+        (m) =>
+          m.table === 'fee_item' ||
+          m.table === 'billing_department' ||
+          (['stock_item', 'service_definition', 'service_offering'].includes(m.table) &&
+            'feeItemId' in m.data),
+      );
 
     const staff = await (financial ? verifiedRequestStaff : requestStaff)(
       sql,
@@ -207,8 +215,17 @@ export const registerStaffSessionRoutes = (
       }
     }
 
-    const billingPolicy = (request.query as Record<string, unknown>).billingPolicy === '1';
-    const billingImport = (request.query as Record<string, unknown>).billingImport === '1';
+    const billingPolicy = query.billingPolicy === '1';
+    const billingImport = query.billingImport === '1';
+
+    if (stockImport && (billingImport || billingPolicy || !isStockImport(body.data.mutations))) {
+      return refuse(
+        reply,
+        400,
+        'invalid_request',
+        'Import up to 500 new medicines with their linked Pharmacy prices. Existing items are skipped.',
+      );
+    }
 
     if (
       billingImport &&
@@ -232,7 +249,12 @@ export const registerStaffSessionRoutes = (
     }
 
     const response = await processUpload(sql, identity, body.data, Date.now(), signer, {
-      online: { staffId: staff.id, billingPolicy, atomic: billingImport },
+      online: {
+        staffId: staff.id,
+        billingPolicy,
+        atomic: billingImport || stockImport,
+        stockImport,
+      },
     });
 
     const result: ConfigurationSaveResponse = {
@@ -255,5 +277,10 @@ export const registerStaffSessionRoutes = (
           }
         : result,
     );
-  });
+  };
+
+  app.post('/config/save', (request, reply) => saveConfiguration(request, reply, false));
+  app.post('/config/stock-import', { bodyLimit: 8 * 1024 * 1024 }, (request, reply) =>
+    saveConfiguration(request, reply, true),
+  );
 };
