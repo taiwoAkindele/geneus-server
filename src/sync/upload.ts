@@ -60,6 +60,7 @@ import {
   type Tx,
 } from '../db/client.ts';
 import { findRecord, insertRecord, TABLE_FOR, toRow } from '../db/records.ts';
+import { stockImportIssue } from './stockImport.ts';
 import { recordAuditEvent } from '../audit/auditEvents.ts';
 import type { DeviceIdentity } from '../devices/credentials.ts';
 import { describeDenial, findStaffInFacility, staffDenial } from '../auth/staffAuthorization.ts';
@@ -313,7 +314,7 @@ type Refusal = {
 
 /** How an upload arrived: through a device's offline queue, or saved online by a person the server verified. */
 export type UploadOptions = {
-  online?: { staffId: string; billingPolicy?: boolean; atomic?: boolean };
+  online?: { staffId: string; billingPolicy?: boolean; atomic?: boolean; stockImport?: boolean };
 };
 
 /** Release 1: old fee forms cannot opt patients into automatic bills or reclassify insured services. */
@@ -2075,12 +2076,16 @@ const processMutation = async (
   options: UploadOptions = {},
   existingTx?: Tx,
 ): Promise<MutationResult> => {
+  const stockBatch = options.online?.stockImport && existingTx !== undefined;
+
   const write = async (tx: Tx): Promise<MutationResult> => {
-    // One order everywhere, including operator changes: facility, then record/calendar locks.
-    await tx`SELECT id FROM facilities WHERE id=${identity.facilityId} FOR UPDATE`;
-    await assertWorkforceCompatibility(tx, identity.facilityId, request, uploadedAt);
-    await assertCatalogueUpload(tx, identity.facilityId, request);
-    await assertIntegratedUpload(tx, identity.facilityId, request);
+    if (!stockBatch) {
+      // One order everywhere, including operator changes: facility, then record/calendar locks.
+      await tx`SELECT id FROM facilities WHERE id=${identity.facilityId} FOR UPDATE`;
+      await assertWorkforceCompatibility(tx, identity.facilityId, request, uploadedAt);
+      await assertCatalogueUpload(tx, identity.facilityId, request);
+      await assertIntegratedUpload(tx, identity.facilityId, request);
+    }
     const ledger = { deviceId: identity.deviceId, clientId: mutation.clientId, transactionId };
 
     if (!(await claimMutation(tx, ledger, mutation.table, mutation.id, 'applied'))) {
@@ -2120,6 +2125,14 @@ const processMutation = async (
       }
 
       if (configuration) {
+        if (options.online?.stockImport) {
+          const issue = await stockImportIssue(tx, identity.facilityId, mutation);
+
+          if (issue) {
+            return refuse('conflict', issue);
+          }
+        }
+
         return (
           (await feeCatalogueRefusal(tx, identity, mutation, options)) ??
           (await staleConfiguration(tx, mutation)) ??
@@ -2196,7 +2209,12 @@ const processMutation = async (
     return { outcome: partial ? 'applied_with_conflicts' : 'rejected', refusal };
   };
 
-  return existingTx ? existingTx.savepoint(write) : sql.begin(write);
+  if (!existingTx) {
+    return sql.begin(write);
+  }
+
+  // A refused stock row aborts the outer transaction, so it needs no per-row savepoint.
+  return stockBatch ? write(existingTx) : existingTx.savepoint(write);
 };
 
 export const processUpload = async (
@@ -2215,6 +2233,11 @@ export const processUpload = async (
         await tx`SELECT id FROM facilities WHERE id=${identity.facilityId} FOR UPDATE`;
         await assertWorkforceCompatibility(tx, identity.facilityId, request, now);
         await assertIntegratedUpload(tx, identity.facilityId, request);
+
+        if (options.online?.stockImport) {
+          await assertCatalogueUpload(tx, identity.facilityId, request);
+        }
+
         await recordClientVersion(tx, identity, { ...request, pendingMutationCount: 1 }, now);
         let applied = 0;
         let duplicates = 0;
