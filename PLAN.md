@@ -10,6 +10,14 @@
 
 **Version:** 2.0 · **Owner:** Solo founder-builder · **Supersedes:** 1.1 (CouchDB)
 
+### Classified Laboratory catalogue (28 November 2026)
+
+Migration 0053 adds optional classified Laboratory metadata to service definitions. Verified
+service managers save tests in one facility-locked batch; Billing publishes first prices
+and activates their tests in the same transaction. The filtered reading stream and order
+validation enforce clinical availability. Legacy definitions and published financial
+evidence retain their existing identifiers and behavior during reconciliation.
+
 ### Patient bill checkout (22 November 2026)
 
 Patient bill links now start Paystack or Monnify checkout from accepted balances.

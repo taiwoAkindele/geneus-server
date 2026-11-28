@@ -1423,7 +1423,7 @@ streams:
     auto_subscribe: true
     queries:
       - |
-        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", fee_item_id AS "feeItemId", name, category, investigation, concept, orderable, active, revision
+        SELECT id, facility_id AS "facilityId", schema_version AS "schemaVersion", created_by AS "createdBy", created_on AS "createdOn", device_id AS "deviceId", updated_by AS "updatedBy", updated_on AS "updatedOn", fee_item_id AS "feeItemId", laboratory_catalogue AS "laboratoryCatalogue", name, category, investigation, concept, orderable, active, revision
         FROM service_definitions
         WHERE facility_id = auth.parameter('facility_id')
           AND auth.parameter('facility_contract') = 1
@@ -1783,3 +1783,10 @@ streams:
           AND auth.parameter('facility_contract') = 1
           AND auth.parameter('clinical_workflow') = 1
           AND auth.parameter('insurance_workflow') = 1
+  orderable_laboratory_tests:
+    auto_subscribe: true
+    query: |
+      SELECT id, facility_id AS "facilityId" FROM service_definitions AS orderable_laboratory_tests
+      WHERE facility_id = auth.parameter('facility_id')
+        AND auth.parameter('clinical_workflow') = 1
+        AND laboratory_catalogue IS NOT NULL AND active = TRUE AND orderable = TRUE

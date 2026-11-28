@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util';
 import {
   FACILITY_DOCUMENT_POLICY,
   HIGH_RISK_PERMISSIONS,
@@ -382,6 +383,22 @@ export const validateWorkforceRecord = async (
       issues = facilityReferenceIssues(record, data);
       break;
     case 'service_definition':
+      if (
+        record.laboratoryCatalogue ||
+        (current?.type === 'service_definition' && current.laboratoryCatalogue)
+      ) {
+        if (
+          current?.type !== 'service_definition' ||
+          !isDeepStrictEqual(record.laboratoryCatalogue, current.laboratoryCatalogue) ||
+          record.feeItemId !== current.feeItemId ||
+          (record.orderable && !current.orderable)
+        ) {
+          issues.push(
+            'Use the Laboratory catalogue and Billing to classify and activate this test',
+          );
+        }
+      }
+
       if (record.feeItemId) {
         const fee = await findRecord(tx, 'fee_item', record.feeItemId);
 

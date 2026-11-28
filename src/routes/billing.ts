@@ -8,6 +8,7 @@ import {
   Payment,
   PaymentAllocation,
   ServiceChargeAllocation,
+  LaboratoryPriceInput,
   SCHEMA_VERSION,
   billKeyParts,
   staffPermissions,
@@ -24,6 +25,7 @@ import {
 import { sendDocumentToPatient, type MessagingDeps } from '../messaging/patientMessages.ts';
 import { providerConnection } from '../billing/connection.ts';
 import { nextReceiptNumber } from '../billing/receipts.ts';
+import { activateLaboratoryPrices } from '../billing/laboratoryPrices.ts';
 import { acceptCheckoutWebhook } from '../billing/checkout.ts';
 import { loadBill, loadReceipt } from '../patientDocuments/documentData.ts';
 import { authenticateDevice } from '../auth/deviceAuth.ts';
@@ -164,6 +166,30 @@ export const registerBillingRoutes = (
 
     return { ...identity, actorStaffId: staff.id };
   };
+
+  app.post('/billing/catalogue/laboratory-prices', async (request, reply) => {
+    const who = await authorize(request, reply, 'fee_item:manage');
+
+    if (!who) {
+      return;
+    }
+
+    const payload = parseBody(
+      z.object({
+        prices: z
+          .array(LaboratoryPriceInput)
+          .min(1)
+          .max(500)
+          .refine(
+            (prices) =>
+              new Set(prices.map(({ definitionId }) => definitionId)).size === prices.length,
+          ),
+      }),
+      request.body,
+    );
+
+    return sql.begin((tx) => activateLaboratoryPrices(tx, who, payload.prices));
+  });
 
   app.post('/billing/catalogue/readiness', async (request, reply) => {
     const who = await authorize(request, reply, 'fee_item:manage');
