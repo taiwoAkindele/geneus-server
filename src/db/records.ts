@@ -104,7 +104,7 @@ const JSONB_COLUMNS: Partial<Record<DocType, readonly string[]>> = {
   ],
   fee_item: ['exemptions'],
   payment: ['allocations'],
-  service_definition: ['concept', 'investigation'],
+  service_definition: ['concept', 'investigation', 'laboratory_catalogue'],
   service_offering: ['location_ids', 'required_actions'],
   practitioner_profile: ['profession', 'specialties'],
   capability_decision: ['scope', 'credential_revision_ids'],

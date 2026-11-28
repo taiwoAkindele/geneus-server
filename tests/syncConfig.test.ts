@@ -40,7 +40,11 @@ describe('sync-config.yaml', () => {
       );
     }
 
-    assert.equal((config.match(/auto_subscribe: true/g) ?? []).length, syncedTypes().length + 9);
+    assert.equal((config.match(/auto_subscribe: true/g) ?? []).length, syncedTypes().length + 10);
+    assert.match(
+      config,
+      /FROM service_definitions AS orderable_laboratory_tests[\s\S]*?active = TRUE AND orderable = TRUE/,
+    );
     assert.ok(config.includes('  sync_rejections_legacy:'));
 
     for (const type of ['audit_events', 'sync_rejections']) {

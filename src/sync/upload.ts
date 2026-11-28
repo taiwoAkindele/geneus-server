@@ -369,6 +369,30 @@ const feeCatalogueRefusal = async (
       mutation.data[key] !== undefined && !isDeepStrictEqual(mutation.data[key], current[key]),
   );
 
+  const changesLaboratoryIdentity =
+    (mutation.data.name !== undefined && mutation.data.name !== current.name) ||
+    (mutation.data.active !== undefined && mutation.data.active !== current.active);
+  const changesLaboratoryTrigger =
+    mutation.data.chargeWhen !== undefined && mutation.data.chargeWhen !== 'when_ordered';
+
+  if (
+    current.category === 'laboratory' &&
+    (changesLaboratoryIdentity || changesLaboratoryTrigger)
+  ) {
+    const [linked] =
+      await tx`SELECT id FROM service_definitions WHERE facility_id=${identity.facilityId}
+      AND fee_item_id=${mutation.id} AND laboratory_catalogue IS NOT NULL LIMIT 1`;
+
+    if (linked) {
+      return refuse(
+        'validation',
+        changesLaboratoryIdentity
+          ? 'Manage the linked test name and availability in Laboratory'
+          : 'Laboratory catalogue prices apply when the test is ordered',
+      );
+    }
+  }
+
   if (policyChanged && !options.online?.billingPolicy) {
     return refuse(
       'authorization',

@@ -51,7 +51,7 @@ const CARE_FIELDS: Partial<Record<DocType, readonly string[]>> = {
   facility: ['allowCustomInvestigations'],
   staff: ['personId'],
   fee_item: ['priceVersion'],
-  service_definition: ['investigation'],
+  service_definition: ['investigation', 'laboratoryCatalogue'],
   service_offering: ['feeItemId'],
   encounter: ['workflowVersion'],
   encounter_entry: ['workflowVersion'],
@@ -516,6 +516,16 @@ export const buildSyncConfig = (): string => {
       );
     }
   }
+
+  lines.push(
+    '  orderable_laboratory_tests:',
+    '    auto_subscribe: true',
+    '    query: |',
+    '      SELECT id, facility_id AS "facilityId" FROM service_definitions AS orderable_laboratory_tests',
+    `      WHERE facility_id = auth.parameter('${FACILITY_CLAIM}')`,
+    "        AND auth.parameter('clinical_workflow') = 1",
+    '        AND laboratory_catalogue IS NOT NULL AND active = TRUE AND orderable = TRUE',
+  );
 
   return `${lines.join('\n')}\n`;
 };

@@ -15,6 +15,45 @@ import { findRecord, fromRow } from '../db/records.ts';
 import { labReportUploadIssues } from './labReports.ts';
 import { isDeepStrictEqual } from 'node:util';
 
+const classifiedLaboratoryOrderIssue = async (
+  tx: Tx,
+  facilityId: string,
+  item: InvestigationItem,
+) => {
+  const [row] = await tx`SELECT id, active, orderable, fee_item_id FROM service_definitions
+    WHERE facility_id=${facilityId} AND laboratory_catalogue IS NOT NULL
+    AND (id=${item.serviceDefinitionId ?? ''} OR fee_item_id=${item.feeItemId ?? ''}) LIMIT 1`;
+
+  if (
+    row &&
+    (!row.active ||
+      !row.orderable ||
+      row.id !== item.serviceDefinitionId ||
+      !item.offeringId ||
+      (row.fee_item_id ?? undefined) !== item.feeItemId)
+  ) {
+    return 'This Laboratory investigation is unavailable for ordering';
+  }
+
+  if (row?.fee_item_id) {
+    const fee = await findRecord<FeeItem>(tx, 'fee_item', row.fee_item_id);
+
+    if (!fee?.active || !item.feePriceVersion || item.priceMinor === undefined) {
+      return 'This billable Laboratory investigation needs an active price';
+    }
+  }
+
+  if (row) {
+    const [offering] = await tx`SELECT id FROM service_offerings WHERE facility_id=${facilityId}
+      AND service_definition_id=${row.id} AND id=${item.offeringId ?? ''}
+      AND configuration='active' AND resource_readiness='available'`;
+
+    if (!offering) {
+      return 'This Laboratory investigation does not have an available service';
+    }
+  }
+};
+
 export const careWorkflowIssues = async (tx: Tx, entry: EncounterEntry): Promise<string[]> => {
   const encounter = await findRecord<Encounter>(tx, 'encounter', entry.encounterId);
 
@@ -58,7 +97,23 @@ export const careWorkflowIssues = async (tx: Tx, entry: EncounterEntry): Promise
           return ['Unlisted requests cannot invent a catalogue price'];
         }
 
+        const [draft] = await tx`SELECT id FROM service_definitions d
+          WHERE d.facility_id=${entry.facilityId} AND d.laboratory_catalogue IS NOT NULL AND (NOT d.active OR NOT d.orderable)
+            AND (lower(regexp_replace(btrim(d.name), '\\s+', ' ', 'g'))=lower(regexp_replace(btrim(${item.name}), '\\s+', ' ', 'g'))
+              OR EXISTS (SELECT 1 FROM jsonb_array_elements_text(d.investigation->'aliases') AS alias(value)
+                         WHERE lower(regexp_replace(btrim(alias.value), '\\s+', ' ', 'g'))=lower(regexp_replace(btrim(${item.name}), '\\s+', ' ', 'g')))) LIMIT 1`;
+
+        if (draft) {
+          return ['This Laboratory investigation is unavailable for ordering'];
+        }
+
         continue;
+      }
+
+      const catalogueIssue = await classifiedLaboratoryOrderIssue(tx, entry.facilityId, item);
+
+      if (catalogueIssue) {
+        return [catalogueIssue];
       }
 
       if (item.catalogueSource === 'billing') {
@@ -96,7 +151,12 @@ export const careWorkflowIssues = async (tx: Tx, entry: EncounterEntry): Promise
             legacy?.snapshot.configuration === 'active' &&
             legacy?.snapshot.resource_readiness === 'available';
 
-          if (!profile || (profile.snapshot.fee_item_id !== item.feeItemId && !explicitlyLinked)) {
+          if (
+            !profile ||
+            (profile.snapshot.laboratory_catalogue &&
+              (!profile.snapshot.active || !profile.snapshot.orderable)) ||
+            (profile.snapshot.fee_item_id !== item.feeItemId && !explicitlyLinked)
+          ) {
             return ['The clinical profile must belong to this selected central Laboratory item'];
           }
         }

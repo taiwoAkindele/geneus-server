@@ -1,8 +1,16 @@
 import { randomUUID } from 'node:crypto';
-import { Location, ServiceDefinition, ServiceOffering, Unit, unitIsRoutable } from '#shared';
+import {
+  Location,
+  ResultTemplate,
+  ServiceDefinition,
+  ServiceOffering,
+  Unit,
+  unitIsRoutable,
+  type LaboratoryCatalogueDetails,
+} from '#shared';
 import type { DeviceIdentity } from '../devices/credentials.ts';
 import type { Tx } from '../db/client.ts';
-import { insertRecord } from '../db/records.ts';
+import { fromRow, insertRecord } from '../db/records.ts';
 import { recordsInFacility } from '../workforce/records.ts';
 import { recordAuditEvent } from '../audit/auditEvents.ts';
 
@@ -12,6 +20,8 @@ export type LabTestDraft = {
   classification: string;
   aliases: string[];
   concept?: ServiceDefinition['concept'];
+  catalogue?: LaboratoryCatalogueDetails;
+  resultTemplateId?: string;
 };
 
 const LABORATORY = 'Laboratory';
@@ -24,11 +34,69 @@ export const testKey = (name: string) => name.trim().replace(/\s+/g, ' ').toLowe
 export const takenTestKeys = (definitions: readonly ServiceDefinition[]) =>
   new Set(
     definitions
-      .filter((d) => d.active && d.investigation)
+      .filter((d) => d.investigation && (d.active || d.laboratoryCatalogue))
       .flatMap((d) => [d.name, ...(d.investigation?.aliases ?? [])].map(testKey)),
   );
 
 export class CatalogueRefusal extends Error {}
+
+export const retireLaboratoryTest = async (
+  tx: Tx,
+  identity: DeviceIdentity,
+  staffId: string,
+  definitionId: string,
+  revision: number,
+) => {
+  await tx`SELECT id FROM facilities WHERE id=${identity.facilityId} FOR UPDATE`;
+  const [row] = await tx`SELECT active, fee_item_id, revision FROM service_definitions
+    WHERE facility_id=${identity.facilityId} AND id=${definitionId} AND laboratory_catalogue IS NOT NULL FOR UPDATE`;
+
+  if (!row || row.revision !== revision) {
+    throw new CatalogueRefusal('The test changed. Sync your catalogue and try again');
+  }
+
+  if (!row.active) {
+    return;
+  }
+
+  const now = new Date().toISOString();
+  await tx`UPDATE service_offerings SET configuration='retired', revision=revision+1, updated_on=${now}, updated_by=${staffId}
+    WHERE facility_id=${identity.facilityId} AND service_definition_id=${definitionId} AND configuration<>'retired'`;
+  await tx`UPDATE service_definitions SET active=false, orderable=false, revision=revision+1, updated_on=${now}, updated_by=${staffId}
+    WHERE facility_id=${identity.facilityId} AND id=${definitionId}`;
+
+  if (row.fee_item_id) {
+    await tx`UPDATE fee_items SET active=false, updated_on=${now}, updated_by=${staffId}
+      WHERE facility_id=${identity.facilityId} AND id=${row.fee_item_id}`;
+  }
+
+  await recordAuditEvent(tx, {
+    facilityId: identity.facilityId,
+    deviceId: identity.deviceId,
+    actorStaffId: staffId,
+    action: 'update',
+    entityType: 'service_definition',
+    entityId: definitionId,
+    metadata: { workflow: 'laboratory_test_retirement' },
+  });
+};
+
+const lockTemplate = async (tx: Tx, facilityId: string, templateId: string) => {
+  const [row] = await tx`SELECT * FROM result_templates
+    WHERE facility_id=${facilityId} AND id=${templateId} FOR UPDATE`;
+
+  if (!row) {
+    throw new CatalogueRefusal('Choose an active result template in this facility');
+  }
+
+  const template = fromRow<ResultTemplate>('result_template', row);
+
+  if (template.status !== 'active' || template.serviceDefinitionIds.length >= 500) {
+    throw new CatalogueRefusal(`${template.name} is unavailable for another test`);
+  }
+
+  return template;
+};
 
 /**
  * Every catalogue test is filed under the facility's Laboratory unit and location.
@@ -95,7 +163,7 @@ export const addLabTests = async (
   identity: DeviceIdentity,
   staffId: string,
   drafts: readonly LabTestDraft[],
-  source: 'standard' | 'own',
+  source: 'standard' | 'own' | 'classified',
 ) => {
   const [facility] =
     await tx`SELECT time_zone FROM facilities WHERE id = ${identity.facilityId} FOR UPDATE`;
@@ -142,6 +210,9 @@ export const addLabTests = async (
     keys.forEach((key) => taken.add(key));
     placement ??= await laboratoryPlacement(tx, envelope, identity.facilityId);
     const definitionId = `service_definition:${randomUUID()}`;
+    const template = draft.resultTemplateId
+      ? await lockTemplate(tx, identity.facilityId, draft.resultTemplateId)
+      : undefined;
 
     const definition = ServiceDefinition.parse({
       ...envelope,
@@ -150,7 +221,8 @@ export const addLabTests = async (
       name,
       category: 'laboratory',
       concept: draft.concept ?? { system: 'local', code: definitionId, label: name },
-      orderable: true,
+      laboratoryCatalogue: draft.catalogue,
+      orderable: draft.catalogue?.pricingCategory !== 'billable',
       active: true,
       revision: 1,
       investigation: {
@@ -179,6 +251,13 @@ export const addLabTests = async (
 
     await insertRecord(tx, 'service_definition', definition);
     await insertRecord(tx, 'service_offering', offering);
+
+    if (template) {
+      await tx`UPDATE result_templates SET service_definition_ids=${tx.json([...template.serviceDefinitionIds, definitionId])},
+        revision=revision+1, updated_by=${staffId}, updated_on=${now}
+        WHERE facility_id=${identity.facilityId} AND id=${template.id}`;
+    }
+
     added.push(name);
   }
 
